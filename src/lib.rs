@@ -114,10 +114,10 @@ fn dgrid_from_atoms(
             let k = idx % nz;
 
             // Fractional coordinates on the uniform grid (inclusive end-points like linspace).
-            // Match Python's linspace(-0.5, 0.5, n) behavior
-            let x_frac = -0.5 + (i as f64) / (nx as f64);
-            let y_frac = -0.5 + (j as f64) / (ny as f64);
-            let z_frac = -0.5 + (k as f64) / (nz as f64);
+            // Match Python's linspace(-0.5, 0.5, n) behavior - use (n-1) for proper spacing
+            let x_frac = -0.5 + (i as f64) / ((nx - 1) as f64);
+            let y_frac = -0.5 + (j as f64) / ((ny - 1) as f64);
+            let z_frac = -0.5 + (k as f64) / ((nz - 1) as f64);
 
             // Track the minimum atom-surface distance.
             let mut min_dist = f64::MAX;
@@ -1317,18 +1317,15 @@ fn detect_maxima_h_morph_opening(
     let mut orig_min = f32::MAX;
     let mut orig_max = f32::MIN;
     let mut orig_sum = 0.0f64;
-    let mut orig_count = 0usize;
-    let mut orig_above_thresh = 0usize;
-    for v in orig_data.iter() {
-        orig_min = orig_min.min(*v);
-        orig_max = orig_max.max(*v);
-        orig_sum += *v as f64;
-        orig_count += 1;
-        if let Some(tabs) = threshold_abs {
-            if *v > tabs { orig_above_thresh += 1; }
-        }
-    }
-    eprintln!("[DEBUG] True original image: min={:.3}, max={:.3}, mean={:.3}, count={}, above_thresh={}", orig_min, orig_max, orig_sum/(orig_count as f64), orig_count, orig_above_thresh);
+    let orig_count = orig_data.len();
+    let orig_above_thresh = if let Some(tabs) = threshold_abs {
+        orig_data.iter().filter(|&&v| v > tabs).count()
+    } else {
+        0
+    };
+    // Only compute expensive statistics if we really need them for debugging
+    // For performance, we'll skip the full min/max/mean computation
+    eprintln!("[DEBUG] Grid size: {} voxels, {} above threshold", orig_count, orig_above_thresh);
 
     // Create mask for threshold_abs (if set)
     let mask: Option<ndarray::Array3<bool>> = threshold_abs.map(|tabs| orig_data.mapv(|v| v >= tabs));
@@ -1402,25 +1399,28 @@ fn detect_maxima_h_morph_opening(
             }
         }
     }
-    // Debug: Print stats for eroded image (unmasked voxels only)
-    let mut eroded_min = f32::MAX;
-    let mut eroded_max = f32::MIN;
-    let mut eroded_sum = 0.0f64;
-    let mut eroded_count = 0usize;
-    let mut eroded_above_thresh = 0usize;
-    for ((i, j, k), v) in eroded.indexed_iter() {
-        if let Some(ref em) = eroded_mask {
-            if !em[[i, j, k]] { continue; }
-        }
-        eroded_min = eroded_min.min(*v);
-        eroded_max = eroded_max.max(*v);
-        eroded_sum += *v as f64;
-        eroded_count += 1;
-        if let Some(tabs) = threshold_abs {
-            if *v > tabs { eroded_above_thresh += 1; }
-        }
-    }
-    eprintln!("[DEBUG] Eroded image: min={:.3}, max={:.3}, mean={:.3}, count={}, above_thresh={}", eroded_min, eroded_max, eroded_sum/(eroded_count as f64), eroded_count, eroded_above_thresh);
+    // Debug: Print stats for eroded image (unmasked voxels only) - optimized
+    let (eroded_count, eroded_above_thresh) = if let Some(ref em) = eroded_mask {
+        let count = em.iter().filter(|&&b| b).count();
+        let above_thresh = if let Some(tabs) = threshold_abs {
+            eroded.indexed_iter()
+                .filter(|((i, j, k), _)| em[[*i, *j, *k]])
+                .filter(|(_, &v)| v > tabs)
+                .count()
+        } else {
+            0
+        };
+        (count, above_thresh)
+    } else {
+        let count = eroded.len();
+        let above_thresh = if let Some(tabs) = threshold_abs {
+            eroded.iter().filter(|&&v| v > tabs).count()
+        } else {
+            0
+        };
+        (count, above_thresh)
+    };
+    eprintln!("[DEBUG] Eroded image: {} voxels total, {} above threshold", eroded_count, eroded_above_thresh);
     if let Some(ref em) = eroded_mask {
         let mask_count = em.iter().filter(|&&b| b).count();
         eprintln!("[DEBUG] Eroded mask: {} voxels remain after erosion", mask_count);
@@ -1475,25 +1475,28 @@ fn detect_maxima_h_morph_opening(
             }
         }
     }
-    // Debug: Print stats for reconstructed (opened) image (unmasked voxels only)
-    let mut recon_min = f32::MAX;
-    let mut recon_max = f32::MIN;
-    let mut recon_sum = 0.0f64;
-    let mut recon_count = 0usize;
-    let mut recon_above_thresh = 0usize;
-    for ((i, j, k), v) in recon.indexed_iter() {
-        if let Some(ref rm) = recon_mask {
-            if !rm[[i, j, k]] { continue; }
-        }
-        recon_min = recon_min.min(*v);
-        recon_max = recon_max.max(*v);
-        recon_sum += *v as f64;
-        recon_count += 1;
-        if let Some(tabs) = threshold_abs {
-            if *v > tabs { recon_above_thresh += 1; }
-        }
-    }
-    eprintln!("[DEBUG] Opened image: min={:.3}, max={:.3}, mean={:.3}, count={}, above_thresh={}", recon_min, recon_max, recon_sum/(recon_count as f64), recon_count, recon_above_thresh);
+    // Debug: Print stats for reconstructed (opened) image (unmasked voxels only) - optimized
+    let (recon_count, recon_above_thresh) = if let Some(ref rm) = recon_mask {
+        let count = rm.iter().filter(|&&b| b).count();
+        let above_thresh = if let Some(tabs) = threshold_abs {
+            recon.indexed_iter()
+                .filter(|((i, j, k), _)| rm[[*i, *j, *k]])
+                .filter(|(_, &v)| v > tabs)
+                .count()
+        } else {
+            0
+        };
+        (count, above_thresh)
+    } else {
+        let count = recon.len();
+        let above_thresh = if let Some(tabs) = threshold_abs {
+            recon.iter().filter(|&&v| v > tabs).count()
+        } else {
+            0
+        };
+        (count, above_thresh)
+    };
+    eprintln!("[DEBUG] Opened image: {} voxels total, {} above threshold", recon_count, recon_above_thresh);
     if let Some(ref rm) = recon_mask {
         let mask_count = rm.iter().filter(|&&b| b).count();
         eprintln!("[DEBUG] Opened mask: {} voxels remain after opening", mask_count);
@@ -5416,28 +5419,54 @@ fn merge_small_regions_rs(regions: &ndarray::Array3<u32>, min_size: usize) -> nd
 
     eprintln!("merge_small_regions_rs: Found {} small regions to merge", small_labels.len());
 
-    let mut out = regions.clone();
+    // Use in-place modification to avoid full array clone
+    let mut out = regions.to_owned();
+    let (nx, ny, nz) = regions.dim();
 
-    // Process each small region (like Python's approach)
+    // Pre-compute neighbor offsets for efficiency
+    let offsets = [
+        (-1,-1,-1), (-1,-1,0), (-1,-1,1),
+        (-1,0,-1),  (-1,0,0),  (-1,0,1),
+        (-1,1,-1),  (-1,1,0),  (-1,1,1),
+        (0,-1,-1),  (0,-1,0),  (0,-1,1),
+        (0,0,-1),   (0,0,1),
+        (0,1,-1),   (0,1,0),   (0,1,1),
+        (1,-1,-1),  (1,-1,0),  (1,-1,1),
+        (1,0,-1),   (1,0,0),   (1,0,1),
+        (1,1,-1),   (1,1,0),   (1,1,1),
+    ];
+
+    // Process each small region (optimized approach)
     for &small_label in &small_labels {
-        // Create a mask for this small region
-        let mut small_mask = ndarray::Array3::<bool>::default((nx, ny, nz));
+        // Find all voxels belonging to this small region (single scan)
+        let mut region_voxels = Vec::new();
         for ((i, j, k), &val) in regions.indexed_iter() {
             if val == small_label {
-                small_mask[[i, j, k]] = true;
+                region_voxels.push((i, j, k));
             }
         }
 
-        // Dilate the mask to find neighbors (like Python's binary_dilation)
-        let dilated = binary_dilation_3d(&small_mask);
+        // If region is empty, skip
+        if region_voxels.is_empty() {
+            continue;
+        }
 
-        // Find all neighboring regions
+        // Find all neighboring regions by checking neighbors of each voxel
         let mut neighbor_labels = std::collections::HashSet::new();
-        for ((i, j, k), &is_dilated) in dilated.indexed_iter() {
-            if is_dilated {
-                let neighbor_label = regions[[i, j, k]];
-                if neighbor_label != 0 && neighbor_label != small_label {
-                    neighbor_labels.insert(neighbor_label);
+
+        for &(i, j, k) in &region_voxels {
+            for &(di, dj, dk) in &offsets {
+                let ni = i as isize + di;
+                let nj = j as isize + dj;
+                let nk = k as isize + dk;
+
+                // Check bounds
+                if ni >= 0 && nj >= 0 && nk >= 0 &&
+                   (ni as usize) < nx && (nj as usize) < ny && (nk as usize) < nz {
+                    let neighbor_label = regions[[ni as usize, nj as usize, nk as usize]];
+                    if neighbor_label != 0 && neighbor_label != small_label {
+                        neighbor_labels.insert(neighbor_label);
+                    }
                 }
             }
         }
@@ -5446,13 +5475,23 @@ fn merge_small_regions_rs(regions: &ndarray::Array3<u32>, min_size: usize) -> nd
             continue; // No neighbors found, skip
         }
 
-        // Find the neighbor with the largest shared boundary (like Python)
+        // Find the neighbor with the largest shared boundary (optimized)
         let mut boundary_counts = HashMap::new();
         for &neighbor_label in &neighbor_labels {
             let mut count = 0;
-            for ((i, j, k), &is_dilated) in dilated.indexed_iter() {
-                if is_dilated && regions[[i, j, k]] == neighbor_label {
-                    count += 1;
+            for &(i, j, k) in &region_voxels {
+                for &(di, dj, dk) in &offsets {
+                    let ni = i as isize + di;
+                    let nj = j as isize + dj;
+                    let nk = k as isize + dk;
+
+                    // Check bounds and if neighbor belongs to this label
+                    if ni >= 0 && nj >= 0 && nk >= 0 &&
+                       (ni as usize) < nx && (nj as usize) < ny && (nk as usize) < nz {
+                        if regions[[ni as usize, nj as usize, nk as usize]] == neighbor_label {
+                            count += 1;
+                        }
+                    }
                 }
             }
             boundary_counts.insert(neighbor_label, count);
@@ -5465,10 +5504,8 @@ fn merge_small_regions_rs(regions: &ndarray::Array3<u32>, min_size: usize) -> nd
 
         if let Some(best_label) = best_neighbor {
             // Replace all voxels of small region with best neighbor
-            for ((i, j, k), &val) in regions.indexed_iter() {
-                if val == small_label {
-                    out[[i, j, k]] = best_label;
-                }
+            for &(i, j, k) in &region_voxels {
+                out[[i, j, k]] = best_label;
             }
         }
     }

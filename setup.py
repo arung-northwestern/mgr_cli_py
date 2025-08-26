@@ -49,6 +49,8 @@ setup(
         RustExtension(
             "mgr_cli_py",
             path="Cargo.toml",
+            # Enable additional optimizations for better performance
+            rustc_flags=["-C", "target-cpu=native", "-C", "opt-level=3"],
         )
     ],
     entry_points={
