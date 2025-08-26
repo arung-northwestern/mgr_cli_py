@@ -1,0 +1,5 @@
+include README.md
+include LICENSE
+recursive-include mcli *.py
+recursive-include tests *.py
+recursive-include configs *.json
