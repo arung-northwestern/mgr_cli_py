@@ -210,8 +210,8 @@ def main() -> None:
         show_connections = st.checkbox("Show pore graph", value=True)
         show_maxima_spheres = st.checkbox("Show maxima spheres", value=False)
 
-    surface_opacity = 0.6
-    surface_pbc_opacity = 0.4
+    surface_opacity = 0.8
+    surface_pbc_opacity = 0.6
 
     compute_clicked = st.button("Compute and Visualize")
 

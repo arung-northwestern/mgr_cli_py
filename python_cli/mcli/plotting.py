@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, List, Sequence, Tuple
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
+from plotly.colors import hex_to_rgb
 from ase import neighborlist
 from ase.data import colors as ase_colors
 from ase.data import covalent_radii
@@ -259,16 +260,21 @@ def _make_region_color_map(regions: np.ndarray, opacity: float) -> Dict[int, str
     positive = np.unique(regions[regions > 0])
     if positive.size == 0:
         positive = np.array([1])
-    colors = px.colors.sample_colorscale("Turbo", np.linspace(0, 1, positive.size))
 
-    def with_opacity(rgb: str) -> str:
-        if rgb.startswith("rgb("):
-            vals = rgb[4:-1].split(",")
+    palette = px.colors.qualitative.Pastel or px.colors.qualitative.Light24
+    colors: List[str] = []
+    for i in range(positive.size):
+        base = palette[i % len(palette)]
+        if base.startswith("#"):
+            r, g, b = hex_to_rgb(base)
+        elif base.startswith("rgb"):
+            vals = base[4:-1].split(",")
             r, g, b = [int(float(v)) for v in vals]
-            return f"rgba({r},{g},{b},{opacity})"
-        return rgb
+        else:
+            r = g = b = 200
+        colors.append(f"rgba({r},{g},{b},{opacity})")
 
-    return {idx: with_opacity(col) for idx, col in zip(positive, colors)}
+    return {idx: col for idx, col in zip(positive, colors)}
 
 
 def plot_surface_dgrid(
@@ -277,7 +283,7 @@ def plot_surface_dgrid(
     ase_atoms,
     region_labels: np.ndarray | None = None,
     select: Iterable[int] | str = "all",
-    opacity: float = 0.5,
+    opacity: float = 0.8,
     color: str = "royalblue",
     stepsize: int = 1,
     hover_label: str = "Region:",
@@ -844,8 +850,8 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         "plot_surface": True,
         "plot_surface_pbc": True,
         "plot_surface_isovalue": 0.75,
-        "plot_surface_opacity": 0.6,
-        "plot_surface_pbc_opacity": 0.4,
+        "plot_surface_opacity": 0.8,
+        "plot_surface_pbc_opacity": 0.6,
         "plot_projection": "perspective",
         "plot_layout": "dark",
     }
