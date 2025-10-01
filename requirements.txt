@@ -1,2 +1,11 @@
-# numpy>=1.20.0  # Optional - only needed for numpy-based .npz saving
+# Core runtime dependencies
+numpy>=1.20.0
+scipy>=1.10
+scikit-image>=0.21
+plotly>=5.20
+ase>=3.22
+pyvista>=0.43
+matplotlib>=3.3
+
+# Build requirements
 setuptools-rust

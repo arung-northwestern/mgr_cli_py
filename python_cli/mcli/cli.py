@@ -15,8 +15,13 @@ import sys
 import os
 import json
 import struct
+import time
 import zipfile
 from pathlib import Path
+CURRENT_FILE = Path(__file__).resolve()
+REPO_ROOT = CURRENT_FILE.parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 from typing import List, Dict, Any, Optional
 
 # Optional numpy import - only needed for numpy-based .npz saving
@@ -26,6 +31,11 @@ try:
 except ImportError:
     HAS_NUMPY = False
     np = None
+
+from do_not_commit.mgr.rust_fun import (
+    dgrid_from_atoms_rust as compute_dgrid_rust,
+    do_periodic_segmentation_rust as python_do_periodic_segmentation_rust,
+)
 
 # Import the Rust library (will be available when built)
 # Note: Import is deferred to avoid immediate failure during CLI help/version commands
@@ -37,6 +47,21 @@ class MCLI:
     # Flag to use standalone (numpy-free) implementation
     USE_STANDALONE = False  # Set to True for standalone builds
 
+    PLOT_DEFAULTS = {
+        'plot_enable': True,
+        'plot_cell': True,
+        'plot_framework': True,
+        'plot_framework_style': 'mesh',
+        'plot_maxima': True,
+        'plot_maxima_show_spheres': False,
+        'plot_connections': True,
+        'plot_surface': True,
+        'plot_surface_pbc': True,
+        'plot_surface_isovalue': 0.75,
+        'plot_surface_opacity': 0.6,
+        'plot_surface_pbc_opacity': 0.4,
+    }
+
     # Default configuration values
     DEFAULTS = {
         'spacing': 0.5,
@@ -44,16 +69,17 @@ class MCLI:
         'mask_thickness': 0.5,
         'threshold_abs': 1.5,
         'min_distance': 1.5,
-        'minimum_window_separation': 1.0,
+        'minimum_window_separation': None,
         'compactness': 0,  # Not exposed in CLI
-        'wall_thickness': 0.08,
-        'extra_padding': 2.0,
-        'min_region_size': 0.01,
+        'wall_thickness': 0.05,
+        'extra_padding': 5.0,
+        'min_region_size': 0.001,
         'disable_tqdm': False,
         'compute_connections': True,
         'return_padded_regions': False,
         'return_dgrid': True,
     }
+    DEFAULTS.update(PLOT_DEFAULTS)
 
     def __init__(self):
         """Initialize the CLI."""
@@ -174,6 +200,18 @@ Examples:
             '--disable-tqdm', action='store_true',
             help='Disable progress bars'
         )
+        flag_group.add_argument(
+            '--plot-html', action='store_true',
+            help='Generate Plotly HTML visualization after processing'
+        )
+        process_parser.add_argument(
+            '--html-dir',
+            help='Directory for HTML visualizations (defaults to output directory)'
+        )
+        flag_group.add_argument(
+            '--no-stylize', action='store_true',
+            help='Disable stylized framework rendering in plots'
+        )
 
         # Generate-config command
         config_parser = subparsers.add_parser(
@@ -194,6 +232,32 @@ Examples:
             help='Interactive configuration builder'
         )
 
+        # Plot command
+        plot_parser = subparsers.add_parser(
+            'plot',
+            help='Generate Plotly visualization from existing results file'
+        )
+        plot_parser.add_argument(
+            'results_files', nargs='+',
+            help='Result NPZ file(s) produced by the process command'
+        )
+        plot_parser.add_argument(
+            '-o', '--output-dir', default='.',
+            help='Directory to store generated HTML files (default: current directory)'
+        )
+        plot_parser.add_argument(
+            '-c', '--config',
+            help='Configuration file to control plotting options'
+        )
+        plot_parser.add_argument(
+            '--no-stylize', action='store_true',
+            help='Disable stylized framework rendering in plots'
+        )
+        plot_parser.add_argument(
+            '--cif',
+            help='Optional CIF file to use when metadata is missing (only for single input)'
+        )
+
         # Parse arguments
         args = parser.parse_args()
 
@@ -208,6 +272,8 @@ Examples:
             self.generate_config_command(args)
         elif args.command == 'config-building':
             self.config_building_command(args)
+        elif args.command == 'plot':
+            self.plot_command(args)
 
     def process_command(self, args):
         """Handle the process command."""
@@ -250,6 +316,8 @@ Examples:
 
         print(f"Found {len(cif_files)} CIF file(s) to process")
 
+        plot_options = self._get_plot_options(config)
+
         for cif_file in cif_files:
             if not cif_file.exists():
                 print(f"Warning: {cif_file} does not exist, skipping")
@@ -258,17 +326,84 @@ Examples:
             print(f"\nProcessing: {cif_file}")
             try:
                 result = self.process_single_cif(cif_file, config)
+                atoms = self._read_atoms(cif_file)
 
                 # Generate output filename
                 output_file = output_dir / f"{cif_file.stem}_results.npz"
 
                 # Save results
-                self.save_results(result, output_file)
+                save_payload = dict(result)
+                save_payload['cif_path'] = str(cif_file)
+                self.save_results(save_payload, output_file)
                 print(f"Results saved to: {output_file}")
+
+                if getattr(args, 'plot_html', False):
+                    from .plotting import prepare_results_for_plot, show_mof
+                    plot_ready = prepare_results_for_plot(dict(result), atoms)
+                    html_dir = Path(getattr(args, 'html_dir', '') or output_dir)
+                    html_dir.mkdir(parents=True, exist_ok=True)
+                    html_path = html_dir / f"{cif_file.stem}.html"
+                    fig = show_mof(plot_ready, stylize=not getattr(args, 'no_stylize', False), options=plot_options)
+                    fig.write_html(html_path)
+                    print(f"Plot saved to: {html_path}")
 
             except Exception as e:
                 print(f"Error processing {cif_file}: {e}")
                 continue
+
+    def plot_command(self, args):
+        """Generate HTML plots from existing results files."""
+        try:
+            import numpy as imported_numpy  # noqa: F401  # Ensure numpy is present for npz loading
+        except ImportError as exc:  # pragma: no cover
+            print("Error: numpy is required to load results files.")
+            print(f"Original error: {exc}")
+            sys.exit(1)
+
+        global np
+        if np is None:
+            np = imported_numpy
+
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        from .plotting import prepare_results_for_plot, show_mof
+
+        config_data = self.DEFAULTS.copy()
+        if getattr(args, 'config', None):
+            loaded = self.load_config(args.config)
+            if isinstance(loaded, dict):
+                config_data.update(loaded)
+        plot_options = self._get_plot_options(config_data)
+
+        for result_path_str in args.results_files:
+            result_path = Path(result_path_str)
+            if not result_path.exists():
+                print(f"Warning: {result_path} does not exist, skipping")
+                continue
+
+            print(f"Generating plot for: {result_path}")
+            try:
+                result_dict = self.load_results_file(result_path)
+            except Exception as exc:  # pragma: no cover - defensive
+                print(f"  Failed to load {result_path}: {exc}")
+                continue
+
+            cif_path_str = result_dict.get('cif_path')
+            if not cif_path_str:
+                if len(args.results_files) == 1 and args.cif:
+                    cif_path_str = args.cif
+                else:
+                    print("  Error: CIF path metadata missing. Re-run process command or supply --cif for single file.")
+                    continue
+
+            atoms = self._read_atoms(Path(cif_path_str))
+            plot_ready = prepare_results_for_plot(result_dict, atoms)
+
+            html_path = output_dir / f"{result_path.stem}.html"
+            fig = show_mof(plot_ready, stylize=not args.no_stylize, options=plot_options)
+            fig.write_html(html_path)
+            print(f"  Plot saved to: {html_path}")
 
     def generate_config_command(self, args):
         """Handle the generate-config command."""
@@ -304,6 +439,9 @@ Examples:
             'wall_thickness': f'Wall thickness percentage (default: {self.DEFAULTS["wall_thickness"]})',
             'extra_padding': f'Extra padding in Å (default: {self.DEFAULTS["extra_padding"]})',
             'min_region_size': f'Minimum region size percentage (default: {self.DEFAULTS["min_region_size"]})',
+            'plot_surface_isovalue': f'Isovalue for surface plotting (default: {self.DEFAULTS["plot_surface_isovalue"]})',
+            'plot_surface_opacity': f'Surface opacity (0-1) (default: {self.DEFAULTS["plot_surface_opacity"]})',
+            'plot_surface_pbc_opacity': f'PBC surface opacity (0-1) (default: {self.DEFAULTS["plot_surface_pbc_opacity"]})',
         }
 
         for key, prompt in prompts.items():
@@ -325,11 +463,30 @@ Examples:
             'return_padded_regions': 'Return padded regions in output?',
             'return_dgrid': 'Return distance grid in output?',
             'disable_tqdm': 'Disable progress bars?',
+            'plot_enable': 'Enable plotting outputs by default?',
+            'plot_cell': 'Include unit cell trace in plots?',
+            'plot_framework': 'Include framework in plots?',
+            'plot_maxima': 'Include maxima trace in plots?',
+            'plot_maxima_show_spheres': 'Show maxima spheres?',
+            'plot_connections': 'Include connection graph traces?',
+            'plot_surface': 'Include regions surface?',
+            'plot_surface_pbc': 'Include regions PBC surface?',
         }
 
         for key, prompt in bool_prompts.items():
             response = input(f"{prompt} (y/N): ").strip().lower()
             config[key] = response in ('y', 'yes', 'true', '1')
+
+        style_default = self.DEFAULTS['plot_framework_style']
+        while True:
+            style_input = input(f"Framework plotting style (mesh/scatter) (default: {style_default}): ").strip().lower()
+            if not style_input:
+                config['plot_framework_style'] = style_default
+                break
+            if style_input in ('mesh', 'scatter'):
+                config['plot_framework_style'] = style_input
+                break
+            print("Please enter 'mesh' or 'scatter'.")
 
         # Save configuration
         output_file = input("Save configuration to file (default: config.json): ").strip()
@@ -383,19 +540,22 @@ Examples:
         return result
 
     def process_single_cif(self, cif_file: Path, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Process a single CIF file using the Rust library."""
-        # Get the Rust library (will exit if not available)
-        rust_lib = self._get_rust_library()
+        """Process a single CIF file using the Python workflow built on the Rust backend."""
 
-        # Call the Rust function
-        result = rust_lib.do_periodic_segmentation_rust(
-            path_to_struct_file=str(cif_file),
-            spacing=config['spacing'],
+        atoms = self._read_atoms(cif_file)
+        spacing = config['spacing']
+
+        dgrid = compute_dgrid_rust(atoms, spacing)
+
+        segmentation_kwargs = dict(
+            dgrid=dgrid,
+            mat_atoms=atoms,
             mask_thickness=config['mask_thickness'],
             h=config['h'],
             min_distance=config['min_distance'],
             threshold_abs=config['threshold_abs'],
             return_padded_regions=config['return_padded_regions'],
+            spacing=spacing,
             minimum_window_separation=config.get('minimum_window_separation'),
             wall_thickness=config['wall_thickness'],
             extra_padding=config['extra_padding'],
@@ -405,6 +565,17 @@ Examples:
             compute_connections=config['compute_connections'],
             return_dgrid=config['return_dgrid'],
         )
+
+        total_start = time.perf_counter()
+        result = python_do_periodic_segmentation_rust(**segmentation_kwargs)
+        total_end = time.perf_counter()
+
+        if config['return_dgrid'] and 'dgrid' not in result:
+            result['dgrid'] = dgrid
+
+        timing = result.get('timing_results', {}) or {}
+        timing.setdefault('total_time', total_end - total_start)
+        result['timing_results'] = timing
 
         return result
 
@@ -505,6 +676,53 @@ Examples:
             self.save_results_standalone(result, output_file)
         else:
             self.save_results_numpy(result, output_file)
+
+    def load_results_file(self, path: Path) -> Dict[str, Any]:
+        """Load a previously saved results NPZ file."""
+        data: Dict[str, Any] = {}
+        with np.load(path, allow_pickle=True) as npz:  # type: ignore[arg-type]
+            for key in npz.files:
+                value = npz[key]
+                if isinstance(value, np.ndarray):
+                    if value.dtype == object and value.size == 1:
+                        data[key] = value.item()
+                        continue
+                    if value.shape == ():
+                        data[key] = value.item()
+                        continue
+                data[key] = value
+        return data
+
+    def _get_plot_options(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            'plot_enable': config.get('plot_enable', True),
+            'plot_cell': config.get('plot_cell', True),
+            'plot_framework': config.get('plot_framework', True),
+            'plot_framework_style': config.get('plot_framework_style', 'mesh'),
+            'plot_maxima': config.get('plot_maxima', True),
+            'plot_maxima_show_spheres': config.get('plot_maxima_show_spheres', False),
+            'plot_connections': config.get('plot_connections', True),
+            'plot_surface': config.get('plot_surface', True),
+            'plot_surface_pbc': config.get('plot_surface_pbc', True),
+            'plot_surface_isovalue': config.get('plot_surface_isovalue', self.PLOT_DEFAULTS['plot_surface_isovalue']),
+            'plot_surface_opacity': config.get('plot_surface_opacity', self.PLOT_DEFAULTS['plot_surface_opacity']),
+            'plot_surface_pbc_opacity': config.get('plot_surface_pbc_opacity', self.PLOT_DEFAULTS['plot_surface_pbc_opacity']),
+        }
+
+    def _read_atoms(self, cif_path: Path):
+        """Read an ASE Atoms object from CIF file."""
+        try:
+            from ase.io import read
+        except ImportError as exc:  # pragma: no cover
+            print("Error: ASE is required for plotting. Install via pip install ase")
+            print(f"Original error: {exc}")
+            sys.exit(1)
+
+        try:
+            return read(str(cif_path))
+        except Exception as exc:  # pragma: no cover - file errors
+            print(f"Error reading CIF file {cif_path}: {exc}")
+            sys.exit(1)
 
 
 def main():
