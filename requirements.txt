@@ -6,6 +6,7 @@ plotly>=5.20
 ase>=3.22
 pyvista>=0.43
 matplotlib>=3.3
+streamlit>=1.32
 
 # Build requirements
 setuptools-rust

@@ -18,6 +18,7 @@ import struct
 import time
 import zipfile
 from pathlib import Path
+import subprocess
 CURRENT_FILE = Path(__file__).resolve()
 REPO_ROOT = CURRENT_FILE.parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -258,6 +259,20 @@ Examples:
             help='Optional CIF file to use when metadata is missing (only for single input)'
         )
 
+        # Interactive command
+        interactive_parser = subparsers.add_parser(
+            'interactive',
+            help='Launch interactive Streamlit web application'
+        )
+        interactive_parser.add_argument(
+            '--port', type=int,
+            help='Port to serve the Streamlit app (default chosen by Streamlit)'
+        )
+        interactive_parser.add_argument(
+            '--no-browser', action='store_true',
+            help='Do not automatically open a browser window'
+        )
+
         # Parse arguments
         args = parser.parse_args()
 
@@ -274,6 +289,8 @@ Examples:
             self.config_building_command(args)
         elif args.command == 'plot':
             self.plot_command(args)
+        elif args.command == 'interactive':
+            self.interactive_command(args)
 
     def process_command(self, args):
         """Handle the process command."""
@@ -404,6 +421,36 @@ Examples:
             fig = show_mof(plot_ready, stylize=not args.no_stylize, options=plot_options)
             fig.write_html(html_path)
             print(f"  Plot saved to: {html_path}")
+
+    def interactive_command(self, args):
+        """Launch the Streamlit interactive application."""
+        app_path = Path(__file__).resolve().parent / "interactive_app.py"
+        if not app_path.exists():
+            print("Error: interactive app script not found.")
+            sys.exit(1)
+
+        cmd = ["streamlit", "run", str(app_path)]
+        if getattr(args, 'port', None):
+            cmd.extend(["--server.port", str(args.port)])
+
+        env = os.environ.copy()
+        repo_path = str(REPO_ROOT)
+        existing_pythonpath = env.get("PYTHONPATH")
+        if existing_pythonpath:
+            env["PYTHONPATH"] = f"{repo_path}{os.pathsep}{existing_pythonpath}"
+        else:
+            env["PYTHONPATH"] = repo_path
+
+        if getattr(args, 'no_browser', False):
+            env["STREAMLIT_SERVER_HEADLESS"] = "true"
+
+        env.setdefault("MCLI_SAMPLE_CIF_DIR", str(REPO_ROOT / "cifs"))
+
+        try:
+            subprocess.run(cmd, check=True, env=env)
+        except FileNotFoundError:  # pragma: no cover
+            print("Error: streamlit executable not found. Please install streamlit to use interactive mode.")
+            sys.exit(1)
 
     def generate_config_command(self, args):
         """Handle the generate-config command."""

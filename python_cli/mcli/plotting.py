@@ -15,6 +15,17 @@ from skimage.measure import marching_cubes
 from scipy.interpolate import RegularGridInterpolator
 from matplotlib.colors import to_rgba
 
+import do_not_commit.mgr.visualize as mgr_visualize
+
+
+DEFAULT_LIGHTING = dict(
+    ambient=0.3,
+    diffuse=1.0,
+    fresnel=0.2,
+    specular=0.05,
+    roughness=0.5,
+)
+
 
 
 white_layout = dict(
@@ -27,7 +38,7 @@ white_layout = dict(
     ),
     margin=dict(t=20, b=20, l=20, r=20),
     showlegend=True,
-    legend=dict(x=1.1, y=0.75, groupclick="togglegroup"),
+    legend=dict(x=1.1, y=0.75, groupclick="toggleitem"),
 )
 
 dark_layout = dict(
@@ -40,7 +51,7 @@ dark_layout = dict(
     ),
     margin=dict(t=20, b=20, l=20, r=20),
     showlegend=True,
-    legend=dict(x=0.1, y=1.1, groupclick="togglegroup"),
+    legend=dict(x=0.1, y=1.1, groupclick="toggleitem"),
 )
 
 
@@ -49,7 +60,7 @@ def make_fig_orthographic(fig: go.Figure) -> go.Figure:
 
     for trace in fig.data:
         if getattr(trace, "type", "") == "mesh3d":
-            trace.update(lighting=dict(ambient=0.3, diffuse=1.0, specular=0.1, roughness=0.5))
+            trace.update(lighting=DEFAULT_LIGHTING)
     fig.update_layout(scene_camera_projection_type="orthographic")
     return fig
 
@@ -290,7 +301,6 @@ def plot_surface_dgrid(
 
     name = kwargs.pop("name", f"Isosurface {isovalue:.2f} Å")
     kwargs.setdefault("showlegend", True)
-    kwargs.setdefault("legendgroup", "surface")
 
     if region_labels is None:
         return go.Mesh3d(
@@ -525,51 +535,38 @@ def _draw_framework_scatter(ase_atoms, stylize: bool = True) -> Tuple[go.Scatter
 def plot_framework_as_mesh(ase_atoms, stylize: bool = True, style: str = "mesh") -> Tuple[go.BaseTraceType, ...]:
     """Return framework traces, defaulting to mesh rendering with scatter fallback."""
 
+def plot_framework_as_mesh(ase_atoms, stylize: bool = True, style: str = "mesh", show_rings: bool = True) -> Tuple[go.BaseTraceType, ...]:
+    """Return framework traces, defaulting to mesh rendering with scatter fallback."""
+
     if style.lower() != "mesh":
         return _draw_framework_scatter(ase_atoms, stylize=stylize)
 
     try:
-        numbers = ase_atoms.get_atomic_numbers()
-        positions = ase_atoms.get_positions()
-        radii = covalent_radii[numbers]
-        jmol = ase_colors.jmol_colors[numbers]
-        rgba_colors = [[int(r * 255), int(g * 255), int(b * 255), 255] for r, g, b in jmol]
-
-        spheres = spheres_for_positions(
-            positions,
-            radii,
-            scale=0.8,
-            theta_resolution=24,
-            phi_resolution=24,
-            colors=rgba_colors,
-        )
-
-        bonds = _bond_pairs(ase_atoms)
-        cylinders = cylinders_for_bonds(ase_atoms, bonds, radius=0.18, resolution=20)
-
-        mesh_trace = plot_mesh(
-            [*spheres, *cylinders],
+        traces = mgr_visualize.plot_framework_as_mesh(
+            ase_atoms,
+            show_rings=show_rings,
             stylize=stylize,
-            opacity=0.9,
-            name="Framework mesh",
-            legendgroup="framework",
-            showscale=False,
+            kwargs_frame_mesh=dict(
+                showlegend=True,
+                showscale=False,
+                name="Framework",
+                legendgroup="framework",
+                legendgrouptitle_text="Framework",
+            ),
         )
-        return (mesh_trace,)
+        # Ensure tuple output for consistency
+        if not isinstance(traces, (list, tuple)):
+            traces = (traces,)
+        else:
+            traces = tuple(traces)
+
+        if not stylize:
+            for trace in traces:
+                if isinstance(trace, go.Mesh3d):
+                    trace.update(lighting=DEFAULT_LIGHTING)
+        return traces
     except Exception:
         return _draw_framework_scatter(ase_atoms, stylize=stylize)
-        bond_trace = go.Scatter3d(
-            x=x_vals,
-            y=y_vals,
-            z=z_vals,
-            mode="lines",
-            line=dict(color="lightgray", width=4 if stylize else 2),
-            hoverinfo="text",
-            hovertext=hover,
-            name="Framework bonds",
-            legendgroup="framework",
-        )
-    else:
         bond_trace = go.Scatter3d(x=[], y=[], z=[], mode="lines", name="Framework bonds", visible=False)
 
     return atoms_trace, bond_trace
@@ -840,6 +837,7 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         "plot_cell": True,
         "plot_framework": True,
         "plot_framework_style": "mesh",
+        "plot_framework_show_rings": True,
         "plot_maxima": True,
         "plot_maxima_show_spheres": False,
         "plot_connections": True,
@@ -848,6 +846,8 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         "plot_surface_isovalue": 0.75,
         "plot_surface_opacity": 0.6,
         "plot_surface_pbc_opacity": 0.4,
+        "plot_projection": "perspective",
+        "plot_layout": "dark",
     }
     if options:
         defaults.update({k: v for k, v in options.items() if v is not None})
@@ -856,11 +856,26 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         for key in ("plot_cell", "plot_framework", "plot_maxima", "plot_connections", "plot_surface", "plot_surface_pbc"):
             defaults[key] = False
 
+    projection = str(defaults.get("plot_projection", "perspective")).lower()
+    orthographic = projection == "orthographic"
+    if orthographic:
+        stylize = False
+
     traces: List[go.BaseTraceType] = []
 
     framework_style = defaults.get("plot_framework_style", "mesh")
     if defaults.get("plot_framework", True):
-        traces.extend(plot_framework_as_mesh(mat_atoms, stylize=stylize, style=framework_style))
+        framework_traces = plot_framework_as_mesh(
+            mat_atoms,
+            stylize=stylize,
+            style=framework_style,
+            show_rings=defaults.get("plot_framework_show_rings", True),
+        )
+        if not stylize:
+            for trace in framework_traces:
+                if isinstance(trace, go.Mesh3d):
+                    trace.update(lighting=DEFAULT_LIGHTING)
+        traces.extend(framework_traces)
 
     if defaults.get("plot_cell", True):
         traces.append(plot_cell(mat_atoms))
@@ -881,8 +896,9 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
             region_labels=regions,
             opacity=float(defaults.get("plot_surface_opacity", 0.6)),
             name="Regions Surface",
-            legendgroup="surface",
         )
+        if not stylize or orthographic:
+            surface_trace.update(lighting=DEFAULT_LIGHTING)
         traces.append(surface_trace)
 
     if defaults.get("plot_surface_pbc", True):
@@ -893,8 +909,9 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
             region_labels=regions_pbc,
             opacity=float(defaults.get("plot_surface_pbc_opacity", 0.4)),
             name="Regions Surface (PBC)",
-            legendgroup="surface",
         )
+        if not stylize or orthographic:
+            surface_trace_pbc.update(lighting=DEFAULT_LIGHTING)
         traces.append(surface_trace_pbc)
 
     if defaults.get("plot_connections", True) and connections_trimmed:
@@ -915,10 +932,14 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
             traces.append(maxima_trace)
 
     if not traces:
-        fig = go.Figure(layout=dark_layout)
+        base_layout = white_layout if defaults.get("plot_layout", "dark").lower() == "white" else dark_layout
+        fig = go.Figure(layout=base_layout)
     else:
-        fig = go.Figure(data=traces, layout=dark_layout)
-    fig = make_fig_orthographic(fig)
+        base_layout = white_layout if defaults.get("plot_layout", "dark").lower() == "white" else dark_layout
+        fig = go.Figure(data=traces, layout=base_layout)
+
+    if orthographic:
+        fig = make_fig_orthographic(fig)
     fig.update_layout(title="MGR Analysis")
     return fig
 
