@@ -15,8 +15,15 @@ import plotly.graph_objects as go
 import do_not_commit.mgr as mgr
 from do_not_commit.mgr.helper import estimate_h_from_percolation_history
 
-from .cli import compute_dgrid_rust, python_do_periodic_segmentation_rust
-from .plotting import show_mof, DEFAULT_LIGHTING
+if __package__ is None or __package__ == "":  # pragma: no cover - streamlit entry
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from python_cli.mcli.cli import compute_dgrid_rust, python_do_periodic_segmentation_rust
+    from python_cli.mcli.plotting import show_mof, DEFAULT_LIGHTING
+else:  # pragma: no cover - package import path
+    from .cli import compute_dgrid_rust, python_do_periodic_segmentation_rust
+    from .plotting import show_mof, DEFAULT_LIGHTING
 
 
 ASCII_LOGO = r"""
