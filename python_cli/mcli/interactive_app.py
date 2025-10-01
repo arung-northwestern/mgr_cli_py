@@ -234,6 +234,7 @@ def main() -> None:
                 mask_thickness=mask_thickness,
                 h_value=h_value,
             )
+            results["ase_atoms"] = atoms
         finally:
             status.markdown("<div style='padding:8px;background:#003300;color:#00FF00;text-align:center;'>✓ COMPUTE FINISHED ✓</div>", unsafe_allow_html=True)
 
