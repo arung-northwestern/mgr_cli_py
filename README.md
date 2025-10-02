@@ -118,7 +118,7 @@ cargo --version  # Should show cargo version
 ```bash
 # Clone the repository (replace with actual repository URL)
 git clone https://github.com/your-username/mgr_standalone.git
-cd mgr_standalone/mgr_cli_py
+cd mgr_standalone/mcli_rust
 
 # Install Python dependencies (numpy optional)
 pip install -r requirements.txt
@@ -173,11 +173,11 @@ pip install pyinstaller
 
 # Clone and enter the repository (replace with actual repository URL)
 git clone https://github.com/your-username/mgr_standalone.git
-cd mgr_standalone/mgr_cli_py
+cd mgr_standalone/mcli_rust
 
 # Build standalone executable (28MB, numpy-free)
 pyinstaller --onefile --name mcli \
-    --hidden-import=mgr_cli_py \
+    --hidden-import=mcli_rust \
     python_cli/mcli/cli_standalone.py
 
 # Find your executable in dist/mcli_standalone
@@ -245,7 +245,7 @@ rm -rf build/
 pip install -e .
 ```
 
-**"No module named 'mgr_cli_py'"**
+**"No module named 'mcli_rust'"**
 ```bash
 # The Rust extension didn't build properly
 # Check Rust installation and retry
@@ -466,7 +466,7 @@ Test CIF files are available in the `cifs/` directory:
 
 ### Project Structure
 ```
-mgr_cli_py/
+mcli_rust/
 ├── src/lib.rs              # Rust core algorithms
 ├── python_cli/
 │   ├── mcli/
@@ -586,12 +586,12 @@ pip install pyinstaller
 
 # Build numpy-free executable (28MB)
 pyinstaller --onefile --name mcli \
-    --hidden-import=mgr_cli_py \
+    --hidden-import=mcli_rust \
     python_cli/mcli/cli_standalone.py
 
 # Build numpy-enabled executable (47MB)
 pyinstaller --onefile --name mcli \
-    --hidden-import=mgr_cli_py \
+    --hidden-import=mcli_rust \
     python_cli/mcli/cli_numpy.py
 
 # Test both executables
