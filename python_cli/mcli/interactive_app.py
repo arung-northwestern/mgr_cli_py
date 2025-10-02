@@ -16,8 +16,8 @@ from ase.io import read
 import plotly.graph_objects as go
 import pandas as pd
 
-import do_not_commit.mgr as mgr
-from do_not_commit.mgr.helper import estimate_h_from_percolation_history
+import mgr_visualize.mgr as mgr
+from mgr_visualize.mgr.helper import estimate_h_from_percolation_history
 
 
 def results_data_to_npz(results: Dict[str, Any]) -> bytes:
@@ -79,10 +79,11 @@ if __package__ is None or __package__ == "":  # pragma: no cover - streamlit ent
         STYLIZE_LIGHTING,
         STYLIZE_LIGHTPOSITION,
         dark_layout,
+        white_layout,
         prepare_results_for_plot,
     )
 else:  # pragma: no cover - package import path
-    from .plotting import show_mof, STYLIZE_LIGHTING, STYLIZE_LIGHTPOSITION, dark_layout, prepare_results_for_plot
+    from .plotting import show_mof, STYLIZE_LIGHTING, STYLIZE_LIGHTPOSITION, dark_layout, white_layout, prepare_results_for_plot
 
 
 ASCII_LOGO = r"""

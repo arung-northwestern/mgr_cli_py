@@ -16,8 +16,8 @@ from skimage.measure import marching_cubes
 from scipy.interpolate import RegularGridInterpolator
 from matplotlib.colors import to_rgba
 
-import do_not_commit.mgr.visualize as mgr_visualize
-from do_not_commit.mgr.analyze import update_with_covalent_bonds
+import mgr_visualize.mgr.visualize as mgr_visualize
+from mgr_visualize.mgr.analyze import update_with_covalent_bonds
 
 
 DEFAULT_LIGHTING = dict(
