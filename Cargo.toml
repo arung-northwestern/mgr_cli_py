@@ -25,6 +25,8 @@ hashbrown = "0.14"
 ordered-float = "4.2"
 parking_lot = "0.12"
 nalgebra = { version = "0.32" }
+rand = "0.8"
+rand_pcg = "0.3"
 
 [profile.release]
 # Maximum optimizations for performance

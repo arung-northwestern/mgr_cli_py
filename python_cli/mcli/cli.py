@@ -59,8 +59,8 @@ class MCLI:
         'plot_surface': True,
         'plot_surface_pbc': True,
         'plot_surface_isovalue': 0.75,
-        'plot_surface_opacity': 0.8,
-        'plot_surface_pbc_opacity': 0.6,
+        'plot_surface_opacity': 0.9,
+        'plot_surface_pbc_opacity': 0.9,
     }
 
     # Default configuration values
