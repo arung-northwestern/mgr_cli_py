@@ -5,7 +5,7 @@ This demonstrates how to use the new watershed-optimized PSD calculation.
 """
 
 import numpy as np
-import mgr_rust
+import mcli_rust
 import plotly.graph_objects as go
 # Import required libraries for atomic structure analysis and pore size distribution computation
 from ase.io import read  # For reading atomic structure files
@@ -375,7 +375,7 @@ def plot_pocket_psds(pore_sizes, sample_points_labels, pocket_psds, bins, materi
     return fig
 
 def compute_pore_sizes_pocketwise_rust(dgrid, regions_pbc, ase_atoms, samples_per_region=1000):
-    import mgr_rust
+    import mcli_rust
     from ase.geometry import cellpar_to_cell
     import numpy as np
     cell = cellpar_to_cell(ase_atoms.cell.cellpar()).T
@@ -402,7 +402,7 @@ def compute_psds_pocketwise_rust(dgrid, regions_pbc, ase_atoms, num_samples_per_
         return pocket_psds
 
 def compute_pore_sizes_uniform_rust(dgrid, ase_atoms, num_samples_total=10000):
-    import mgr_rust
+    import mcli_rust
     from ase.geometry import cellpar_to_cell
     import numpy as np
     cell = cellpar_to_cell(ase_atoms.cell.cellpar()).T
