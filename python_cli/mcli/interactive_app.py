@@ -109,7 +109,7 @@ def _auto_parameters(mat_atoms, spacing: float) -> Dict[str, float]:
     dgrid = compute_dgrid_rust(mat_atoms, spacing)
     pore_limiting_radius = mgr.find_pore_limiting_radius(dgrid)
     mask_thickness = float(np.clip(pore_limiting_radius - 0.25, 0.1, 0.5))
-    h_value = float(max(estimate_h_from_percolation_history(dgrid) - 0.1, 0.5))
+    h_value = float(max(estimate_h_from_percolation_history(dgrid) - 0.1, 0.25))
     surface_value = float(min(mask_thickness + 0.5, 2.0))
     return {
         "dgrid": dgrid,
@@ -127,6 +127,7 @@ def _run_segmentation(
     h_value: float,
     min_distance: float = 1.5,
     threshold_abs: float = 1.5,
+    extra_padding: float = 5.0,
 ) -> Dict[str, np.ndarray]:
     segmentation_kwargs = dict(
         dgrid=dgrid,
@@ -139,7 +140,7 @@ def _run_segmentation(
         spacing=spacing,
         minimum_window_separation=None,
         wall_thickness=0.05,
-        extra_padding=5.0,
+        extra_padding=extra_padding,
         compactness=0,
         min_region_size=0.001,
         disable_tqdm=True,
@@ -343,6 +344,34 @@ def main() -> None:
             help="Isosurface value for visualization.",
         )
 
+    # Additional segmentation parameters
+    with st.expander("Advanced Segmentation Parameters", expanded=False):
+        col_adv1, col_adv2, col_adv3 = st.columns(3)
+        with col_adv1:
+            min_distance = st.number_input(
+                "Min distance between maxima (Å)",
+                value=1.5,
+                min_value=0.1,
+                step=0.1,
+                help="Minimum distance required between distinct local maxima.",
+            )
+        with col_adv2:
+            threshold_abs = st.number_input(
+                "Threshold absolute (Å)",
+                value=1.5,
+                min_value=0.1,
+                step=0.1,
+                help="Absolute threshold for maxima detection.",
+            )
+        with col_adv3:
+            extra_padding = st.number_input(
+                "Extra padding (Å)",
+                value=5.0,
+                min_value=0.0,
+                step=0.5,
+                help="Extra padding around the unit cell for periodic boundary conditions.",
+            )
+
     st.markdown("### 🎨 Visualization Options")
     col_vis1, col_vis2 = st.columns(2)
     with col_vis1:
@@ -377,6 +406,9 @@ def main() -> None:
                 spacing=spacing,
                 mask_thickness=mask_thickness,
                 h_value=h_value,
+                min_distance=min_distance,
+                threshold_abs=threshold_abs,
+                extra_padding=extra_padding,
             )
             results["ase_atoms"] = atoms
             results["dgrid"] = results.get("dgrid", current_params["dgrid"])
@@ -484,6 +516,9 @@ def main() -> None:
                 metrics_cols[1].metric("PLD (Å)", f"{analysis['pld']:.2f}")
                 metrics_cols[2].metric("DFSD (Å)", f"{analysis['dfsd']:.2f}")
 
+                # Layout selection for percolation plots
+                percolation_layout_choice = st.selectbox("Background", ["dark", "white"], index=0, key="percolation_layout")
+
                 history = analysis["percolation_history"]
                 if not history:
                     st.warning("No percolating clusters detected for the computed grid.")
@@ -572,7 +607,9 @@ def main() -> None:
                     plot_traces.extend(cluster_traces)
 
                     percolation_fig = go.Figure(data=plot_traces)
-                    percolation_fig.update_layout(**dark_layout)
+                    # Use the selected layout for percolation plot
+                    layout = white_layout if percolation_layout_choice == "white" else dark_layout
+                    percolation_fig.update_layout(**layout)
                     percolation_fig.update_layout(
                         title=f"Percolation clusters at probe radius {selected_radius:.2f} Å"
                     )
