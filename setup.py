@@ -1,10 +1,17 @@
+#!/usr/bin/env python3
 """
 Setup script for MCLI - MOF Analysis CLI Tool with Rust extension
 """
 
 from setuptools import setup, find_packages
-from setuptools_rust import RustExtension, Binding
 import os
+
+# Import setuptools_rust conditionally
+try:
+    from setuptools_rust import RustExtension, Binding
+except ImportError:
+    RustExtension = None
+    Binding = None
 
 # Get the absolute path to the current directory
 current_dir = os.path.abspath(os.path.dirname(__file__))
@@ -20,7 +27,6 @@ setup(
     name="mcli",
     version="0.1.0",
     author="MOF Analysis Team",
-    author_email="",
     description="A command-line interface for analyzing Metal-Organic Frameworks (MOFs)",
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -45,11 +51,8 @@ setup(
     install_requires=[
         "numpy>=1.20.0",
     ],
+    setup_requires=["setuptools-rust"],
     # Conditionally compile the Rust extension
-try:
-    import mcli_rust
-    rust_extensions = []
-except ImportError:
     rust_extensions=[
         RustExtension(
             "mcli_rust",
@@ -59,7 +62,7 @@ except ImportError:
             # Enable additional optimizations for better performance
             rustc_flags=["-C", "target-cpu=native", "-C", "opt-level=3"],
         )
-    ],
+    ] if RustExtension else [],
     entry_points={
         "console_scripts": [
             "mcli=mcli.cli:main",
@@ -67,5 +70,4 @@ except ImportError:
     },
     include_package_data=True,
     zip_safe=False,
-    setup_requires=["setuptools-rust"],
 )
