@@ -25,6 +25,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 from typing import List, Dict, Any, Optional
 
+# Import functions needed for pore diameter and percolation analysis
+import mgr_visualize.mgr as mgr
+
 # Optional numpy import - only needed for numpy-based .npz saving
 try:
     import numpy as np
@@ -33,13 +36,401 @@ except ImportError:
     HAS_NUMPY = False
     np = None
 
-from mgr_visualize.mgr.rust_fun import (
-    dgrid_from_atoms_rust as compute_dgrid_rust,
-    do_periodic_segmentation_rust as python_do_periodic_segmentation_rust,
-)
+def compute_dgrid_rust(mat_atoms, spacing):
+    """Compute distance grid using Rust backend."""
+    try:
+        import mcli_rust
+    except ImportError as e:
+        print("Error: mcli_rust Rust library not found. Please build the project first.")
+        print("Run: maturin build --release && pip install --force-reinstall target/wheels/*.whl")
+        sys.exit(1)
+
+    # Convert ASE atoms to required format
+    fpoints = mat_atoms.get_positions()
+    cell = mat_atoms.get_cell().array.T  # Transpose to match expected format
+    radii = np.array([1.0] * len(fpoints), dtype=np.float64)  # Default radii
+
+    # Get grid dimensions
+    nx, ny, nz = int(np.round(cell[0,0] / spacing)), int(np.round(cell[1,1] / spacing)), int(np.round(cell[2,2] / spacing))
+
+    return mcli_rust.dgrid_from_atoms(fpoints, cell, radii, nx, ny, nz)
+
+def python_do_periodic_segmentation_rust(
+    dgrid,
+    mat_atoms,
+    mask_thickness=0.5,
+    h=0.2,
+    min_distance=1.5,
+    threshold_abs=1.5,
+    return_padded_regions=False,
+    spacing=None,
+    minimum_window_separation=None,
+    wall_thickness=0.05,
+    extra_padding=5,
+    compactness=0,
+    min_region_size=0.001,
+    disable_tqdm=False,
+    compute_connections=True,
+    return_dgrid=False
+):
+    """Perform periodic segmentation using Rust backend."""
+    try:
+        import mcli_rust
+    except ImportError as e:
+        print("Error: mcli_rust Rust library not found. Please build the project first.")
+        print("Run: maturin build --release && pip install --force-reinstall target/wheels/*.whl")
+        sys.exit(1)
+
+    # The Rust function expects a path to structure file, but we have dgrid and mat_atoms
+    # We need to save the structure to a temporary file and call the Rust function
+    import tempfile
+    import os
+    from pathlib import Path
+
+    # Create a temporary file for the structure
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.cif', delete=False) as tmp_file:
+        tmp_path = tmp_file.name
+        # Write the structure to CIF format
+        mat_atoms.write(tmp_path, format='cif')
+
+    try:
+        # Call the Rust function with the file path
+        result = mcli_rust.do_periodic_segmentation_rust(
+            path_to_struct_file=tmp_path,
+            spacing=spacing if spacing is not None else 0.25,
+            mask_thickness=mask_thickness,
+            h=h,
+            min_distance=min_distance,
+            threshold_abs=threshold_abs,
+            return_padded_regions=return_padded_regions,
+            minimum_window_separation=minimum_window_separation,
+            wall_thickness=wall_thickness,
+            extra_padding=extra_padding,
+            compactness=compactness,
+            min_region_size=min_region_size,
+            disable_tqdm=disable_tqdm,
+            compute_connections=compute_connections,
+            return_dgrid=return_dgrid
+        )
+    finally:
+        # Clean up the temporary file
+        os.unlink(tmp_path)
+
+    return result
 
 # Import the Rust library (will be available when built)
 # Note: Import is deferred to avoid immediate failure during CLI help/version commands
+
+
+def compute_pore_diameter_analysis(dgrid, mat_atoms, spacing=None):
+    """Compute pore diameter and percolation analysis.
+
+    This function calculates:
+    - Largest Cavity Diameter (LCD)
+    - Pore Limiting Diameter (PLD)
+    - Distance From Surface Distribution (DFSD)
+    - Percolation history
+
+    Parameters:
+    - dgrid: 3D distance grid
+    - mat_atoms: ASE atoms object
+    - spacing: Grid spacing (estimated if None)
+
+    Returns:
+    - Dictionary with pore diameter and percolation analysis results
+    """
+
+    if spacing is None:
+        # Estimate spacing from dgrid and atoms
+        spacing = np.min(
+            mat_atoms.get_cell_lengths_and_angles()[:3] / (np.array(dgrid.shape) - 1)
+        )
+
+    print("Computing pore diameter and percolation analysis...")
+
+    # Compute LCD, PLD, and DFSD using the morphography function
+    try:
+        lcd, pld, dfsd, _ = mgr.get_pore_dia_mgr(mat_atoms, dgrid=dgrid, kwargs=dict(spacing=spacing))
+        print(f"  LCD: {lcd:.3f} Å")
+        print(f"  PLD: {pld:.3f} Å")
+        print(f"  DFSD: {dfsd:.3f} Å")
+    except Exception as e:
+        print(f"Warning: Pore diameter calculation failed: {e}")
+        lcd, pld, dfsd = 0.0, 0.0, 0.0
+
+    # Compute percolation history
+    try:
+        percolation_history, pld_locations, _, _, _ = mgr.compute_percolation_history(
+            dgrid, mat_atoms
+        )
+        print(f"  Percolation history points: {len(percolation_history)}")
+    except Exception as e:
+        print(f"Warning: Percolation analysis failed: {e}")
+        percolation_history = np.array([])
+        pld_locations = np.array([])
+
+    # Prepare results
+    results = {
+        'lcd': float(lcd),
+        'pld': float(pld),
+        'dfsd': float(dfsd),
+        'percolation_history': percolation_history,
+        'pld_locations': pld_locations,
+    }
+
+    return results
+
+
+def save_pore_diameter_csv(results, output_file):
+    """Save pore diameter and percolation analysis results to CSV.
+
+    Parameters:
+    - results: Dictionary with pore diameter analysis results
+    - output_file: Path to output CSV file
+    """
+    import csv
+
+    if not results:
+        print("No pore diameter results to save.")
+        return
+
+    try:
+        with open(output_file, 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+
+            # Write header
+            writer.writerow(['Metric', 'Value', 'Unit'])
+
+            # Write pore diameter metrics
+            writer.writerow(['LCD', f"{results.get('lcd', 'N/A'):.3f}", 'Å'])
+            writer.writerow(['PLD', f"{results.get('pld', 'N/A'):.3f}", 'Å'])
+            writer.writerow(['DFSD', f"{results.get('dfsd', 'N/A'):.3f}", 'Å'])
+            writer.writerow(['Percolation history points', len(results.get('percolation_history', [])), 'count'])
+
+        print(f"Pore diameter analysis saved to: {output_file}")
+
+    except Exception as e:
+        print(f"Error saving pore diameter CSV: {e}")
+
+
+def compute_auto_parameters(mat_atoms, spacing):
+    """Automatically estimate optimal parameters from structure.
+
+    This function estimates:
+    - mask_thickness based on pore limiting radius
+    - h_value from percolation history
+    - surface_value based on mask_thickness
+
+    Parameters:
+    - mat_atoms: ASE atoms object
+    - spacing: Grid spacing
+
+    Returns:
+    - Dictionary with estimated parameters
+    """
+    try:
+        from mgr_visualize.mgr.helper import estimate_h_from_percolation_history
+    except ImportError as e:
+        print(f"Warning: Could not import helper functions: {e}")
+        return {}
+
+    # Compute distance grid for analysis
+    dgrid = compute_dgrid_rust(mat_atoms, spacing)
+
+    # Estimate mask_thickness from pore limiting radius
+    pore_limiting_radius = mgr.find_pore_limiting_radius(dgrid)
+    mask_thickness = float(np.clip(pore_limiting_radius - 0.25, 0.1, 0.5))
+
+    # Estimate h_value from percolation history
+    h_value = float(max(estimate_h_from_percolation_history(dgrid) - 0.1, 0.25))
+
+    # Estimate surface value
+    surface_value = float(min(mask_thickness + 0.5, 2.0))
+
+    return {
+        'mask_thickness': mask_thickness,
+        'h': h_value,
+        'surface_value': surface_value,
+    }
+
+
+def compute_psd_analysis(dgrid, mat_atoms, regions_pbc=None, spacing=None,
+                        num_samples_total=10000, num_samples_per_region=1000,
+                        uniform_max_diameter=50.0, pocket_max_diameter=50.0,
+                        uniform_num_bins=200, pocket_num_bins=200):
+    """Compute pore size distribution analysis.
+
+    This function calculates:
+    - Global PSD (uniform sampling)
+    - Pocket-wise PSD (region-based sampling)
+
+    Parameters:
+    - dgrid: 3D distance grid
+    - mat_atoms: ASE atoms object
+    - regions_pbc: Region labels from segmentation (optional)
+    - spacing: Grid spacing (estimated if None)
+    - num_samples_total: Total samples for uniform PSD
+    - num_samples_per_region: Samples per region for pocket PSD
+    - uniform_max_diameter: Maximum diameter for uniform PSD
+    - pocket_max_diameter: Maximum diameter for pocket PSD
+    - uniform_num_bins: Number of bins for uniform PSD
+    - pocket_num_bins: Number of bins for pocket PSD
+
+    Returns:
+    - Dictionary with PSD analysis results
+    """
+
+    if spacing is None:
+        # Estimate spacing from dgrid and atoms
+        spacing = np.min(
+            mat_atoms.get_cell_lengths_and_angles()[:3] / (np.array(dgrid.shape) - 1)
+        )
+
+    print("Computing pore size distribution analysis...")
+
+    results = {}
+
+    # Compute uniform PSD
+    try:
+        bins_uniform = np.linspace(0, float(uniform_max_diameter), int(uniform_num_bins) + 1)
+        uniform_result = mgr.compute_psd_uniform_rust(
+            dgrid,
+            mat_atoms,
+            num_samples_total=num_samples_total,
+            bins=bins_uniform,
+            density=False,
+            return_fig=False,
+        )
+        # Handle different return formats
+        if isinstance(uniform_result, tuple):
+            uniform_hist = uniform_result[0]
+        else:
+            uniform_hist = uniform_result
+
+        # Create uniform DataFrame-like structure
+        uniform_data = {
+            'bins': bins_uniform,
+            'histogram': uniform_hist,
+            'bin_centers': 0.5 * (bins_uniform[:-1] + bins_uniform[1:]),
+            'num_samples': num_samples_total
+        }
+
+        results['psd_uniform'] = uniform_data
+        print(f"  Uniform PSD: {num_samples_total} samples, {uniform_num_bins} bins")
+
+    except Exception as e:
+        print(f"Warning: Uniform PSD calculation failed: {e}")
+        results['psd_uniform'] = None
+
+    # Compute pocket-wise PSD (if regions are available)
+    if regions_pbc is not None:
+        try:
+            bins_pocket = np.linspace(0, float(pocket_max_diameter), int(pocket_num_bins) + 1)
+            pocket_result = mgr.compute_psds_pocketwise_rust(
+                dgrid,
+                regions_pbc,
+                mat_atoms,
+                num_samples_per_region=num_samples_per_region,
+                bins=bins_pocket,
+                return_fig=False,
+            )
+            # Handle different return formats
+            if isinstance(pocket_result, tuple):
+                pocket_psds = pocket_result[0]
+            else:
+                pocket_psds = pocket_result
+
+            # Create pocket-wise data structure
+            pocket_data = {
+                'bins': bins_pocket,
+                'bin_centers': 0.5 * (bins_pocket[:-1] + bins_pocket[1:]),
+                'pocket_psds': pocket_psds,
+                'num_samples_per_region': num_samples_per_region,
+                'num_regions': len(pocket_psds) if pocket_psds is not None else 0
+            }
+
+            results['psd_pocket'] = pocket_data
+            print(f"  Pocket PSD: {num_samples_per_region} samples/region, {len(pocket_psds) if pocket_psds is not None else 0} regions")
+
+        except Exception as e:
+            print(f"Warning: Pocket PSD calculation failed: {e}")
+            results['psd_pocket'] = None
+    else:
+        print("  Pocket PSD: Skipped (no segmentation data available)")
+        results['psd_pocket'] = None
+
+    results['spacing'] = float(spacing)
+    return results
+
+
+def save_psd_csv(results, output_file, material_name="material"):
+    """Save pore size distribution analysis results to CSV.
+
+    Parameters:
+    - results: Dictionary with PSD analysis results
+    - output_file: Path to output CSV file
+    - material_name: Name of the material for filename
+    """
+    import csv
+
+    if not results:
+        print("No PSD results to save.")
+        return
+
+    try:
+        # Save uniform PSD CSV
+        uniform_data = results.get('psd_uniform')
+        if uniform_data is not None:
+            uniform_csv_file = output_file.parent / f"{output_file.stem}_psd_uniform.csv"
+
+            with open(uniform_csv_file, 'w', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(['bin_start', 'bin_end', 'bin_center', 'count'])
+
+                bins = uniform_data['bins']
+                hist = uniform_data['histogram']
+
+                for i in range(len(bins) - 1):
+                    writer.writerow([bins[i], bins[i+1], uniform_data['bin_centers'][i], hist[i]])
+
+            print(f"Uniform PSD saved to: {uniform_csv_file}")
+
+        # Save pocket-wise PSD CSV
+        pocket_data = results.get('psd_pocket')
+        if pocket_data is not None and pocket_data['pocket_psds'] is not None:
+            pocket_csv_file = output_file.parent / f"{output_file.stem}_psd_pockets.csv"
+
+            with open(pocket_csv_file, 'w', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(['region_label', 'bin_start', 'bin_end', 'bin_center', 'count'])
+
+                bins = pocket_data['bins']
+                bin_centers = pocket_data['bin_centers']
+
+                pocket_psds = pocket_data['pocket_psds']
+                try:
+                    # Handle different data structures for pocket_psds
+                    if hasattr(pocket_psds, 'items'):  # Dictionary-like
+                        for label, region_data in pocket_psds.items():
+                            # Extract histogram from region_data dictionary
+                            if isinstance(region_data, dict) and 'hist' in region_data:
+                                hist = region_data['hist']
+                            else:
+                                hist = region_data  # Fallback if it's already just the histogram
+
+                            for i in range(len(bins) - 1):
+                                writer.writerow([int(label), bins[i], bins[i+1], bin_centers[i], hist[i]])
+                    else:  # List-like or array-like
+                        for label, hist in enumerate(pocket_psds):
+                            for i in range(len(bins) - 1):
+                                writer.writerow([int(label), bins[i], bins[i+1], bin_centers[i], hist[i]])
+                except Exception as e:
+                    print(f"Warning: Error processing pocket PSD data for CSV: {e}")
+
+            print(f"Pocket PSD saved to: {pocket_csv_file}")
+
+    except Exception as e:
+        print(f"Error saving PSD CSV: {e}")
 
 
 class MCLI:
@@ -213,6 +604,22 @@ Examples:
             '--no-stylize', action='store_true',
             help='Disable stylized framework rendering in plots'
         )
+        flag_group.add_argument(
+            '--pore-dia', action='store_true',
+            help='Compute pore diameter and percolation analysis'
+        )
+        flag_group.add_argument(
+            '--psd', action='store_true',
+            help='Compute pore size distribution analysis'
+        )
+        flag_group.add_argument(
+            '--auto-params', action='store_true',
+            help='Automatically estimate optimal parameters from structure'
+        )
+        flag_group.add_argument(
+            '--theme', choices=['dark', 'white'], default='dark',
+            help='Theme for generated visualizations (default: dark)'
+        )
 
         # Generate-config command
         config_parser = subparsers.add_parser(
@@ -333,6 +740,17 @@ Examples:
 
         print(f"Found {len(cif_files)} CIF file(s) to process")
 
+        # Apply auto-parameters if requested
+        if getattr(args, 'auto_params', False):
+            print("Estimating optimal parameters...")
+            atoms = self._read_atoms(cif_files[0])  # Use first file for parameter estimation
+            auto_params = compute_auto_parameters(atoms, config['spacing'])
+            if auto_params:
+                config.update(auto_params)
+                print(f"  Auto-estimated parameters:")
+                for key, value in auto_params.items():
+                    print(f"    {key}: {value:.3f}")
+
         plot_options = self._get_plot_options(config)
 
         for cif_file in cif_files:
@@ -348,6 +766,35 @@ Examples:
                 # Generate output filename
                 output_file = output_dir / f"{cif_file.stem}_results.npz"
 
+                # Handle pore diameter analysis if requested
+                if getattr(args, 'pore_dia', False):
+                    pore_dia_results = compute_pore_diameter_analysis(
+                        result['dgrid'], atoms, spacing=config['spacing']
+                    )
+                    if pore_dia_results:
+                        # Add to main results
+                        result.update(pore_dia_results)
+
+                        # Save CSV file for pore diameter analysis
+                        pore_dia_csv_file = output_dir / f"{cif_file.stem}_pore_dia.csv"
+                        save_pore_diameter_csv(pore_dia_results, pore_dia_csv_file)
+
+                # Handle PSD analysis if requested
+                if getattr(args, 'psd', False):
+                    # Get regions data for pocket-wise PSD
+                    regions_pbc = result.get('regions_pbc')
+
+                    psd_results = compute_psd_analysis(
+                        result['dgrid'], atoms, regions_pbc=regions_pbc, spacing=config['spacing']
+                    )
+                    if psd_results:
+                        # Add to main results
+                        result.update(psd_results)
+
+                        # Save CSV files for PSD analysis
+                        psd_csv_base_file = output_dir / f"{cif_file.stem}_psd"
+                        save_psd_csv(psd_results, psd_csv_base_file, material_name=cif_file.stem)
+
                 # Save results
                 save_payload = dict(result)
                 save_payload['cif_path'] = str(cif_file)
@@ -355,14 +802,20 @@ Examples:
                 print(f"Results saved to: {output_file}")
 
                 if getattr(args, 'plot_html', False):
-                    from .plotting import prepare_results_for_plot, show_mof
+                    from .plotting import prepare_results_for_plot, show_mof, dark_layout, white_layout
                     plot_ready = prepare_results_for_plot(dict(result), atoms)
                     html_dir = Path(getattr(args, 'html_dir', '') or output_dir)
                     html_dir.mkdir(parents=True, exist_ok=True)
                     html_path = html_dir / f"{cif_file.stem}.html"
+
+                    # Apply theme selection
+                    theme = getattr(args, 'theme', 'dark')
+                    layout = white_layout if theme == 'white' else dark_layout
+
                     fig = show_mof(plot_ready, stylize=not getattr(args, 'no_stylize', False), options=plot_options)
+                    fig.update_layout(**layout)
                     fig.write_html(html_path)
-                    print(f"Plot saved to: {html_path}")
+                    print(f"Plot saved to: {html_path} (theme: {theme})")
 
             except Exception as e:
                 print(f"Error processing {cif_file}: {e}")
