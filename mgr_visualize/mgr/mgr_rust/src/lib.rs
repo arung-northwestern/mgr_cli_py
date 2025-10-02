@@ -12,54 +12,69 @@ use std::sync::Arc;
 use std::collections::{HashSet};
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
-
+// mod maxima_test;
+// use maxima_test::detect_maxima_test;
+//
 // #[pyfunction]
-// #[pyo3(signature = (dgrid, cell, threshold_abs, min_distance=1.5))]
-// // fn find_local_maxima_pbc(
-//     py: Python<'_>,
-//     dgrid: PyReadonlyArray3<'_, f32>,
-//     cell: PyReadonlyArray2<'_, f64>,
-//     threshold_abs: f32,
-//     min_distance: f32,
-// ) -> PyResult<Py<PyArray2<usize>>> {
-//     let h = 0.5; // Default h for maxima detection
-//     let result = detect_maxima_h_morph(
-//         py,
-//         dgrid,
-//         1.0, // spacing (unused)
-//         h,
-//         Some(threshold_abs),
-//         min_distance,
-//         Some(cell),
-//         false,
-//         100,
-//     )?;
-//     Ok(result.0)
+// #[pyo3(signature = (grid, spacing, h))]
+// pub fn detect_maxima_test_py(
+//     py: pyo3::Python<'_>,
+//     grid: numpy::PyReadonlyArray3<'_, f32>,
+//     spacing: f32,
+//     h: f32,
+// ) -> pyo3::PyResult<Py<numpy::PyArray2<usize>>> {
+//     let arr = grid.as_array().to_owned();
+//     let res = detect_maxima_test(&arr, spacing, h);
+//     Ok(numpy::PyArray2::from_owned_array(py, res).to_owned())
 // }
 
-// #[pyfunction]
-// #[pyo3(signature = (dgrid, cell, threshold_abs, min_distance=1.5))]
-// fn find_local_maxima_cart(
-//     py: Python<'_>,
-//     dgrid: PyReadonlyArray3<'_, f32>,
-//     cell: PyReadonlyArray2<'_, f64>,
-//     threshold_abs: f32,
-//     min_distance: f32,
-// ) -> PyResult<Py<PyArray2<usize>>> {
-//     let h = 0.5; // Default h for maxima detection
-//     let result = detect_maxima_h_morph(
-//         py,
-//         dgrid,
-//         1.0, // spacing (unused)
-//         h,
-//         Some(threshold_abs),
-//         min_distance,
-//         Some(cell),
-//         false,
-//         100,
-//     )?;
-//     Ok(result.1)
-// }
+#[pyfunction]
+#[pyo3(signature = (dgrid, cell, threshold_abs, min_distance=1.5))]
+fn find_local_maxima_pbc(
+    py: Python<'_>,
+    dgrid: PyReadonlyArray3<'_, f32>,
+    cell: PyReadonlyArray2<'_, f64>,
+    threshold_abs: f32,
+    min_distance: f32,
+) -> PyResult<Py<PyArray2<usize>>> {
+    let h = 0.5; // Default h for maxima detection
+    let result = detect_maxima_h_morph(
+        py,
+        dgrid,
+        1.0, // spacing (unused)
+        h,
+        Some(threshold_abs),
+        min_distance,
+        Some(cell),
+        false,
+        100,
+    )?;
+    Ok(result.0)
+}
+
+#[pyfunction]
+#[pyo3(signature = (dgrid, cell, threshold_abs, min_distance=1.5))]
+fn find_local_maxima_cart(
+    py: Python<'_>,
+    dgrid: PyReadonlyArray3<'_, f32>,
+    cell: PyReadonlyArray2<'_, f64>,
+    threshold_abs: f32,
+    min_distance: f32,
+) -> PyResult<Py<PyArray2<usize>>> {
+    let h = 0.5; // Default h for maxima detection
+    let result = detect_maxima_h_morph(
+        py,
+        dgrid,
+        1.0, // spacing (unused)
+        h,
+        Some(threshold_abs),
+        min_distance,
+        Some(cell),
+        false,
+        100,
+    )?;
+    Ok(result.1)
+}
 
 #[pyfunction]
 
@@ -101,6 +116,7 @@ fn dgrid_from_atoms(
             let k = idx % nz;
 
             // Fractional coordinates on the uniform grid (inclusive end-points like linspace).
+            // Match Python's linspace(-0.5, 0.5, n) behavior - use (n-1) for proper spacing
             let x_frac = -0.5 + (i as f64) / ((nx - 1) as f64);
             let y_frac = -0.5 + (j as f64) / ((ny - 1) as f64);
             let z_frac = -0.5 + (k as f64) / ((nz - 1) as f64);
@@ -458,7 +474,7 @@ fn window_connections(
     let mut edge_map: HashMap<(u32, u32), Vec<WindowPoint>> = HashMap::new();
 
     // Scan grid for boundary voxels between different regions
-    // Check all 6 neighbors to find region boundaries
+    // Use 26-connectivity like Python's find_touching_region_pairs
     for i in 0..nx {
         for j in 0..ny {
             for k in 0..nz {
@@ -466,19 +482,27 @@ fn window_connections(
                 if label_ijk == 0 {
                     continue;
                 }
-                
+
+                // 26-connectivity neighbors (same as Python)
                 let neighbors = [
-                    (i.wrapping_sub(1), j, k), // -x
-                    (i + 1, j, k),              // +x
-                    (i, j.wrapping_sub(1), k), // -y
-                    (i, j + 1, k),              // +y
-                    (i, j, k.wrapping_sub(1)), // -z
-                    (i, j, k + 1),              // +z
+                    (-1, -1, -1), (-1, -1, 0), (-1, -1, 1),
+                    (-1, 0, -1), (-1, 0, 0), (-1, 0, 1),
+                    (-1, 1, -1), (-1, 1, 0), (-1, 1, 1),
+                    (0, -1, -1), (0, -1, 0), (0, -1, 1),
+                    (0, 0, -1),              (0, 0, 1),
+                    (0, 1, -1), (0, 1, 0), (0, 1, 1),
+                    (1, -1, -1), (1, -1, 0), (1, -1, 1),
+                    (1, 0, -1), (1, 0, 0), (1, 0, 1),
+                    (1, 1, -1), (1, 1, 0), (1, 1, 1),
                 ];
-                
-                for (ni, nj, nk) in neighbors {
-                    if ni < nx && nj < ny && nk < nz {
-                        let neighbor_label = labels[[ni, nj, nk]];
+
+                for (di, dj, dk) in neighbors {
+                    let ni = i as isize + di;
+                    let nj = j as isize + dj;
+                    let nk = k as isize + dk;
+
+                    if ni >= 0 && nj >= 0 && nk >= 0 && ni < nx as isize && nj < ny as isize && nk < nz as isize {
+                        let neighbor_label = labels[[ni as usize, nj as usize, nk as usize]];
                         if neighbor_label != 0 && neighbor_label != label_ijk {
                             // Found boundary between two regions
                             let (reg1, reg2) = if label_ijk < neighbor_label {
@@ -486,14 +510,14 @@ fn window_connections(
                             } else {
                                 (neighbor_label, label_ijk)
                             };
-                            
+
                             let coord = to_cart(i, j, k);
                             let point = WindowPoint {
                                 coord,
                                 region: label_ijk,
                                 distance: dgrid[[i, j, k]],
                             };
-                            
+
                             edge_map.entry((reg1, reg2)).or_default().push(point);
                         }
                     }
@@ -502,7 +526,8 @@ fn window_connections(
         }
     }
 
-    // Process each edge in parallel and build output
+    // Process each edge in parallel and build output - SIMPLIFIED VERSION
+    // The fast version doesn't use complex clustering, just finds direct connections
     let connections: Vec<(u32, u32, Vec<[f64; 3]>, Vec<f64>)> = edge_map
         .into_iter()
         .collect::<Vec<_>>()
@@ -512,48 +537,31 @@ fn window_connections(
                 return None;
             }
 
-            // Cluster boundary points using distance threshold
-            let clusters = cluster_points(&boundary_points, distance_threshold);
-            
-            if clusters.is_empty() {
-                return None;
-            }
+            // Simplified approach: find max distance points directly without clustering
+            let mut max_reg1: Option<&WindowPoint> = None;
+            let mut max_reg2: Option<&WindowPoint> = None;
 
-            let mut window_centers = Vec::new();
-            let mut window_radii = Vec::new();
-
-            for cluster_indices in clusters {
-                if cluster_indices.len() < 2 {
-                    continue; // Need points from both regions
-                }
-
-                // Separate points by region within this cluster
-                let mut reg1_points = Vec::new();
-                let mut reg2_points = Vec::new();
-                
-                for &idx in &cluster_indices {
-                    let point = &boundary_points[idx];
-                    if point.region == reg1 {
-                        reg1_points.push(point);
-                    } else if point.region == reg2 {
-                        reg2_points.push(point);
+            for point in &boundary_points {
+                if point.region == reg1 {
+                    if let Some(current_max) = max_reg1 {
+                        if point.distance > current_max.distance {
+                            max_reg1 = Some(point);
+                        }
+                    } else {
+                        max_reg1 = Some(point);
+                    }
+                } else if point.region == reg2 {
+                    if let Some(current_max) = max_reg2 {
+                        if point.distance > current_max.distance {
+                            max_reg2 = Some(point);
+                        }
+                    } else {
+                        max_reg2 = Some(point);
                     }
                 }
+            }
 
-                if reg1_points.is_empty() || reg2_points.is_empty() {
-                    continue; // Need points from both regions
-                }
-
-                // Find point with maximum distance value in each region
-                let max_reg1 = reg1_points
-                    .iter()
-                    .max_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap())
-                    .unwrap();
-                let max_reg2 = reg2_points
-                    .iter()
-                    .max_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap())
-                    .unwrap();
-
+            if let (Some(max_reg1), Some(max_reg2)) = (max_reg1, max_reg2) {
                 // Calculate window center as midpoint of the two maxima
                 let center = [
                     0.5 * (max_reg1.coord[0] + max_reg2.coord[0]),
@@ -564,14 +572,9 @@ fn window_connections(
                 // Use average of the two maximum distance values as radius
                 let radius = 0.5 * (max_reg1.distance + max_reg2.distance) as f64;
 
-                window_centers.push(center);
-                window_radii.push(radius);
-            }
-
-            if window_centers.is_empty() {
-                None
+                Some((reg1, reg2, vec![center], vec![radius]))
             } else {
-                Some((reg1, reg2, window_centers, window_radii))
+                None
             }
         })
         .collect();
@@ -609,6 +612,314 @@ fn window_connections(
 }
 
 const BUCKETS: usize = 65536;
+/// Compute pore sizes by sampling uniformly across the unit cell
+/// This is a simplified version that samples uniformly without region constraints
+#[pyfunction]
+#[pyo3(text_signature = "(dgrid, cell, num_samples_total=10000)")]
+fn compute_pore_sizes_uniform(
+    py: Python<'_>,
+    dgrid: PyReadonlyArray3<'_, f32>,
+    cell: PyReadonlyArray2<'_, f64>,
+    num_samples_total: Option<usize>,
+) -> PyResult<PyObject> {
+    use ndarray::{Array1, Array2};
+
+    let dgrid_arr = dgrid.as_array();
+    let cell_arr = cell.as_array();
+    let (nx, ny, nz) = dgrid_arr.dim();
+
+    let n_samples = num_samples_total.unwrap_or(10000);
+
+    let c00 = cell_arr[[0, 0]];
+    let c01 = cell_arr[[0, 1]];
+    let c02 = cell_arr[[0, 2]];
+    let c10 = cell_arr[[1, 0]];
+    let c11 = cell_arr[[1, 1]];
+    let c12 = cell_arr[[1, 2]];
+    let c20 = cell_arr[[2, 0]];
+    let c21 = cell_arr[[2, 1]];
+    let c22 = cell_arr[[2, 2]];
+
+    let mut sorted_voxels: Vec<(f32, [usize; 3])> = Vec::new();
+    for i in 0..nx {
+        for j in 0..ny {
+            for k in 0..nz {
+                let dgrid_val = dgrid_arr[[i, j, k]];
+                if dgrid_val > 0.0 {
+                    sorted_voxels.push((dgrid_val, [i, j, k]));
+                }
+            }
+        }
+    }
+    sorted_voxels.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let sample_data: Vec<(f64, f64, f64, f32)> = (0..n_samples)
+        .into_par_iter()
+        .map(|_| {
+            let mut local_rng = Pcg64::from_entropy();
+            let voxel_idx = local_rng.gen_range(0..sorted_voxels.len());
+            let (_, grid_coords) = sorted_voxels[voxel_idx];
+
+            let frac_coords = [
+                grid_coords[0] as f64 / (nx - 1) as f64,
+                grid_coords[1] as f64 / (ny - 1) as f64,
+                grid_coords[2] as f64 / (nz - 1) as f64,
+            ];
+
+            let pore_size = find_largest_including_sphere_uniform(
+                &dgrid_arr,
+                &cell_arr,
+                &frac_coords,
+                &sorted_voxels,
+            );
+
+            let cart_x = c00 * frac_coords[0] + c01 * frac_coords[1] + c02 * frac_coords[2];
+            let cart_y = c10 * frac_coords[0] + c11 * frac_coords[1] + c12 * frac_coords[2];
+            let cart_z = c20 * frac_coords[0] + c21 * frac_coords[1] + c22 * frac_coords[2];
+
+            (cart_x, cart_y, cart_z, pore_size)
+        })
+        .collect();
+
+    let mut sample_points_cart = Vec::with_capacity(n_samples);
+    let mut pore_sizes = Vec::with_capacity(n_samples);
+    for (cart_x, cart_y, cart_z, pore_size) in sample_data {
+        sample_points_cart.push([cart_x, cart_y, cart_z]);
+        pore_sizes.push(pore_size);
+    }
+
+    let py_sample_points = PyArray2::from_owned_array(
+        py,
+        Array2::from_shape_vec(
+            (n_samples, 3),
+            sample_points_cart.into_iter().flatten().collect(),
+        )
+        .unwrap(),
+    );
+    let py_pore_sizes = PyArray1::from_vec(py, pore_sizes);
+    let result_tuple = (py_sample_points, py_pore_sizes);
+    Ok(result_tuple.into_py(py))
+}
+
+fn find_largest_including_sphere_uniform(
+    dgrid: &ndarray::ArrayView3<'_, f32>,
+    cell: &ndarray::ArrayView2<'_, f64>,
+    sample_point: &[f64; 3],
+    sorted_voxels: &Vec<(f32, [usize; 3])>,
+) -> f32 {
+    let c00 = cell[[0, 0]];
+    let c01 = cell[[0, 1]];
+    let c02 = cell[[0, 2]];
+    let c10 = cell[[1, 0]];
+    let c11 = cell[[1, 1]];
+    let c12 = cell[[1, 2]];
+    let c20 = cell[[2, 0]];
+    let c21 = cell[[2, 1]];
+    let c22 = cell[[2, 2]];
+
+    for (dgrid_val, grid_coords) in sorted_voxels {
+        let c_frac = [
+            grid_coords[0] as f64 / (dgrid.dim().0 - 1) as f64,
+            grid_coords[1] as f64 / (dgrid.dim().1 - 1) as f64,
+            grid_coords[2] as f64 / (dgrid.dim().2 - 1) as f64,
+        ];
+
+        let mut dx = sample_point[0] - c_frac[0];
+        let mut dy = sample_point[1] - c_frac[1];
+        let mut dz = sample_point[2] - c_frac[2];
+
+        dx -= dx.round();
+        dy -= dy.round();
+        dz -= dz.round();
+
+        let cart_x = c00 * dx + c01 * dy + c02 * dz;
+        let cart_y = c10 * dx + c11 * dy + c12 * dz;
+        let cart_z = c20 * dx + c21 * dy + c22 * dz;
+
+        let distance = (cart_x * cart_x + cart_y * cart_y + cart_z * cart_z).sqrt() as f32;
+        if distance <= *dgrid_val {
+            return *dgrid_val;
+        }
+    }
+
+    0.0
+}
+
+/// Sample points within each watershed region and compute pore sizes for pocket level psd
+#[pyfunction]
+#[pyo3(text_signature = "(dgrid, regions_pbc, cell, samples_per_region=5000)")]
+fn compute_pore_sizes_for_psd_pocketwise(
+    py: Python<'_>,
+    dgrid: PyReadonlyArray3<'_, f32>,
+    regions_pbc: PyReadonlyArray3<'_, u32>,
+    cell: PyReadonlyArray2<'_, f64>,
+    samples_per_region: Option<usize>,
+) -> PyResult<PyObject> {
+    use ndarray::{Array1, Array2};
+
+    let dgrid_arr = dgrid.as_array();
+    let regions_arr = regions_pbc.as_array();
+    let cell_arr = cell.as_array();
+    let (nx, ny, nz) = dgrid_arr.dim();
+
+    let n_samples_per_region = samples_per_region.unwrap_or(5000);
+
+    let c00 = cell_arr[[0, 0]];
+    let c01 = cell_arr[[0, 1]];
+    let c02 = cell_arr[[0, 2]];
+    let c10 = cell_arr[[1, 0]];
+    let c11 = cell_arr[[1, 1]];
+    let c12 = cell_arr[[1, 2]];
+    let c20 = cell_arr[[2, 0]];
+    let c21 = cell_arr[[2, 1]];
+    let c22 = cell_arr[[2, 2]];
+
+    let mut unique_regions = HashSet::new();
+    for &region_id in regions_arr.iter() {
+        if region_id > 0 {
+            unique_regions.insert(region_id);
+        }
+    }
+    let unique_regions: Vec<u32> = unique_regions.into_iter().collect();
+
+    let mut region_voxels: HashMap<u32, Vec<[usize; 3]>> = HashMap::new();
+    let mut sorted_voxels_by_region: HashMap<u32, Vec<(f32, [usize; 3])>> = HashMap::new();
+
+    for i in 0..nx {
+        for j in 0..ny {
+            for k in 0..nz {
+                let region_id = regions_arr[[i, j, k]];
+                if region_id > 0 {
+                    let dgrid_val = dgrid_arr[[i, j, k]];
+                    region_voxels.entry(region_id)
+                        .or_insert_with(Vec::new)
+                        .push([i, j, k]);
+                    sorted_voxels_by_region.entry(region_id)
+                        .or_insert_with(Vec::new)
+                        .push((dgrid_val, [i, j, k]));
+                }
+            }
+        }
+    }
+
+    for voxels in sorted_voxels_by_region.values_mut() {
+        voxels.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    }
+
+    let total_samples = unique_regions.len() * n_samples_per_region;
+    let mut sample_points_cart = Vec::with_capacity(total_samples);
+    let mut pore_sizes = Vec::with_capacity(total_samples);
+    let mut region_labels = Vec::with_capacity(total_samples);
+
+    let region_results: Vec<_> = unique_regions
+        .into_par_iter()
+        .map(|region_id| {
+            let voxels = &region_voxels[&region_id];
+            let sorted_voxels = &sorted_voxels_by_region[&region_id];
+            let mut local_sample_points = Vec::with_capacity(n_samples_per_region);
+            let mut local_pore_sizes = Vec::with_capacity(n_samples_per_region);
+            let mut local_region_labels = Vec::with_capacity(n_samples_per_region);
+            let mut local_rng = Pcg64::from_entropy();
+
+            for _ in 0..n_samples_per_region {
+                let voxel_idx = local_rng.gen_range(0..voxels.len());
+                let [i, j, k] = voxels[voxel_idx];
+
+                if dgrid_arr[[i, j, k]] <= 0.0 {
+                    continue;
+                }
+
+                let frac_coords = [
+                    i as f64 / (nx - 1) as f64,
+                    j as f64 / (ny - 1) as f64,
+                    k as f64 / (nz - 1) as f64,
+                ];
+
+                let pore_size = find_largest_including_sphere(
+                    &dgrid_arr,
+                    &cell_arr,
+                    &frac_coords,
+                    sorted_voxels,
+                );
+
+                let cart_x = c00 * frac_coords[0] + c01 * frac_coords[1] + c02 * frac_coords[2];
+                let cart_y = c10 * frac_coords[0] + c11 * frac_coords[1] + c12 * frac_coords[2];
+                let cart_z = c20 * frac_coords[0] + c21 * frac_coords[1] + c22 * frac_coords[2];
+
+                local_sample_points.push([cart_x, cart_y, cart_z]);
+                local_pore_sizes.push(pore_size);
+                local_region_labels.push(region_id);
+            }
+
+            (local_sample_points, local_pore_sizes, local_region_labels)
+        })
+        .collect();
+
+    for (points, sizes, labels) in region_results {
+        sample_points_cart.extend(points);
+        pore_sizes.extend(sizes);
+        region_labels.extend(labels);
+    }
+
+    let total_points = sample_points_cart.len();
+    let py_sample_points = PyArray2::from_owned_array(
+        py,
+        Array2::from_shape_vec(
+            (total_points, 3),
+            sample_points_cart.into_iter().flatten().collect(),
+        )
+        .unwrap(),
+    );
+    let py_pore_sizes = PyArray1::from_vec(py, pore_sizes);
+    let py_region_labels = PyArray1::from_vec(py, region_labels);
+    let result_tuple = (py_sample_points, py_pore_sizes, py_region_labels);
+    Ok(result_tuple.into_py(py))
+}
+
+fn find_largest_including_sphere(
+    dgrid: &ndarray::ArrayView3<'_, f32>,
+    cell: &ndarray::ArrayView2<'_, f64>,
+    sample_point: &[f64; 3],
+    sorted_voxels: &[(f32, [usize; 3])],
+) -> f32 {
+    let c00 = cell[[0, 0]];
+    let c01 = cell[[0, 1]];
+    let c02 = cell[[0, 2]];
+    let c10 = cell[[1, 0]];
+    let c11 = cell[[1, 1]];
+    let c12 = cell[[1, 2]];
+    let c20 = cell[[2, 0]];
+    let c21 = cell[[2, 1]];
+    let c22 = cell[[2, 2]];
+
+    for (dgrid_val, grid_coords) in sorted_voxels {
+        let c_frac = [
+            grid_coords[0] as f64 / (dgrid.dim().0 - 1) as f64,
+            grid_coords[1] as f64 / (dgrid.dim().1 - 1) as f64,
+            grid_coords[2] as f64 / (dgrid.dim().2 - 1) as f64,
+        ];
+
+        let mut dx = sample_point[0] - c_frac[0];
+        let mut dy = sample_point[1] - c_frac[1];
+        let mut dz = sample_point[2] - c_frac[2];
+
+        dx -= dx.round();
+        dy -= dy.round();
+        dz -= dz.round();
+
+        let cart_x = c00 * dx + c01 * dy + c02 * dz;
+        let cart_y = c10 * dx + c11 * dy + c12 * dz;
+        let cart_z = c20 * dx + c21 * dy + c22 * dz;
+
+        let distance = (cart_x * cart_x + cart_y * cart_y + cart_z * cart_z).sqrt() as f32;
+        if distance <= *dgrid_val {
+            return *dgrid_val;
+        }
+    }
+
+    0.0
+}
+
 
 #[pyfunction]
 #[pyo3(text_signature = "(image, seeds, mask=None, n_threads=None)")]
@@ -1316,18 +1627,15 @@ fn detect_maxima_h_morph_opening(
     let mut orig_min = f32::MAX;
     let mut orig_max = f32::MIN;
     let mut orig_sum = 0.0f64;
-    let mut orig_count = 0usize;
-    let mut orig_above_thresh = 0usize;
-    for v in orig_data.iter() {
-        orig_min = orig_min.min(*v);
-        orig_max = orig_max.max(*v);
-        orig_sum += *v as f64;
-        orig_count += 1;
-        if let Some(tabs) = threshold_abs {
-            if *v > tabs { orig_above_thresh += 1; }
-        }
-    }
-    eprintln!("[DEBUG] True original image: min={:.3}, max={:.3}, mean={:.3}, count={}, above_thresh={}", orig_min, orig_max, orig_sum/(orig_count as f64), orig_count, orig_above_thresh);
+    let orig_count = orig_data.len();
+    let orig_above_thresh = if let Some(tabs) = threshold_abs {
+        orig_data.iter().filter(|&&v| v > tabs).count()
+    } else {
+        0
+    };
+    // Only compute expensive statistics if we really need them for debugging
+    // For performance, we'll skip the full min/max/mean computation
+    eprintln!("[DEBUG] Grid size: {} voxels, {} above threshold", orig_count, orig_above_thresh);
 
     // Create mask for threshold_abs (if set)
     let mask: Option<ndarray::Array3<bool>> = threshold_abs.map(|tabs| orig_data.mapv(|v| v >= tabs));
@@ -1401,25 +1709,28 @@ fn detect_maxima_h_morph_opening(
             }
         }
     }
-    // Debug: Print stats for eroded image (unmasked voxels only)
-    let mut eroded_min = f32::MAX;
-    let mut eroded_max = f32::MIN;
-    let mut eroded_sum = 0.0f64;
-    let mut eroded_count = 0usize;
-    let mut eroded_above_thresh = 0usize;
-    for ((i, j, k), v) in eroded.indexed_iter() {
-        if let Some(ref em) = eroded_mask {
-            if !em[[i, j, k]] { continue; }
-        }
-        eroded_min = eroded_min.min(*v);
-        eroded_max = eroded_max.max(*v);
-        eroded_sum += *v as f64;
-        eroded_count += 1;
-        if let Some(tabs) = threshold_abs {
-            if *v > tabs { eroded_above_thresh += 1; }
-        }
-    }
-    eprintln!("[DEBUG] Eroded image: min={:.3}, max={:.3}, mean={:.3}, count={}, above_thresh={}", eroded_min, eroded_max, eroded_sum/(eroded_count as f64), eroded_count, eroded_above_thresh);
+    // Debug: Print stats for eroded image (unmasked voxels only) - optimized
+    let (eroded_count, eroded_above_thresh) = if let Some(ref em) = eroded_mask {
+        let count = em.iter().filter(|&&b| b).count();
+        let above_thresh = if let Some(tabs) = threshold_abs {
+            eroded.indexed_iter()
+                .filter(|((i, j, k), _)| em[[*i, *j, *k]])
+                .filter(|(_, &v)| v > tabs)
+                .count()
+        } else {
+            0
+        };
+        (count, above_thresh)
+    } else {
+        let count = eroded.len();
+        let above_thresh = if let Some(tabs) = threshold_abs {
+            eroded.iter().filter(|&&v| v > tabs).count()
+        } else {
+            0
+        };
+        (count, above_thresh)
+    };
+    eprintln!("[DEBUG] Eroded image: {} voxels total, {} above threshold", eroded_count, eroded_above_thresh);
     if let Some(ref em) = eroded_mask {
         let mask_count = em.iter().filter(|&&b| b).count();
         eprintln!("[DEBUG] Eroded mask: {} voxels remain after erosion", mask_count);
@@ -1474,25 +1785,28 @@ fn detect_maxima_h_morph_opening(
             }
         }
     }
-    // Debug: Print stats for reconstructed (opened) image (unmasked voxels only)
-    let mut recon_min = f32::MAX;
-    let mut recon_max = f32::MIN;
-    let mut recon_sum = 0.0f64;
-    let mut recon_count = 0usize;
-    let mut recon_above_thresh = 0usize;
-    for ((i, j, k), v) in recon.indexed_iter() {
-        if let Some(ref rm) = recon_mask {
-            if !rm[[i, j, k]] { continue; }
-        }
-        recon_min = recon_min.min(*v);
-        recon_max = recon_max.max(*v);
-        recon_sum += *v as f64;
-        recon_count += 1;
-        if let Some(tabs) = threshold_abs {
-            if *v > tabs { recon_above_thresh += 1; }
-        }
-    }
-    eprintln!("[DEBUG] Opened image: min={:.3}, max={:.3}, mean={:.3}, count={}, above_thresh={}", recon_min, recon_max, recon_sum/(recon_count as f64), recon_count, recon_above_thresh);
+    // Debug: Print stats for reconstructed (opened) image (unmasked voxels only) - optimized
+    let (recon_count, recon_above_thresh) = if let Some(ref rm) = recon_mask {
+        let count = rm.iter().filter(|&&b| b).count();
+        let above_thresh = if let Some(tabs) = threshold_abs {
+            recon.indexed_iter()
+                .filter(|((i, j, k), _)| rm[[*i, *j, *k]])
+                .filter(|(_, &v)| v > tabs)
+                .count()
+        } else {
+            0
+        };
+        (count, above_thresh)
+    } else {
+        let count = recon.len();
+        let above_thresh = if let Some(tabs) = threshold_abs {
+            recon.iter().filter(|&&v| v > tabs).count()
+        } else {
+            0
+        };
+        (count, above_thresh)
+    };
+    eprintln!("[DEBUG] Opened image: {} voxels total, {} above threshold", recon_count, recon_above_thresh);
     if let Some(ref rm) = recon_mask {
         let mask_count = rm.iter().filter(|&&b| b).count();
         eprintln!("[DEBUG] Opened mask: {} voxels remain after opening", mask_count);
@@ -1773,17 +2087,162 @@ fn merge_maxima_optimized(
 
 /// Move maxima to exact peak locations using gradient ascent
 /// This refines the peak locations found by h-maxima detection
+/// Implements the exact same algorithm as Python's move_maximum_to_peak function
+// Helper function for binary dilation (same as scipy.ndimage.binary_dilation)
+fn binary_dilation(mask: &ndarray::Array3<bool>, iterations: usize) -> ndarray::Array3<bool> {
+    let (nx, ny, nz) = mask.dim();
+    let mut result = mask.clone();
+
+    for _ in 0..iterations {
+        let mut new_result = Array3::<bool>::from_elem((nx, ny, nz), false);
+
+        for i in 0..nx {
+            for j in 0..ny {
+                for k in 0..nz {
+                    if result[[i, j, k]] {
+                        // Set all 26 neighbors to true
+                        for di in -1..=1 {
+                            for dj in -1..=1 {
+                                for dk in -1..=1 {
+                                    let ni = i as isize + di;
+                                    let nj = j as isize + dj;
+                                    let nk = k as isize + dk;
+
+                                    if ni >= 0 && ni < nx as isize &&
+                                       nj >= 0 && nj < ny as isize &&
+                                       nk >= 0 && nk < nz as isize {
+                                        new_result[[ni as usize, nj as usize, nk as usize]] = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        result = new_result;
+    }
+
+    result
+}
+
 #[pyfunction]
-#[pyo3(signature = (grid, starts, max_steps=100))]
+#[pyo3(signature = (regions_pbc, regions_nonpbc, size_ratio=0.3))]
+fn find_end_channel_pairs(
+    py: Python<'_>,
+    regions_pbc: PyReadonlyArray3<'_, u32>,
+    regions_nonpbc: PyReadonlyArray3<'_, u32>,
+    size_ratio: f64,
+) -> PyResult<PyObject> {
+    use ndarray::Array3;
+
+    let regions_pbc = regions_pbc.as_array();
+    let regions_nonpbc = regions_nonpbc.as_array();
+
+    let (nx, ny, nz) = regions_nonpbc.dim();
+
+    // Create wall mask - same logic as Python version
+    let mut wall_mask = Array3::<bool>::from_elem((nx, ny, nz), false);
+    wall_mask.slice_mut(ndarray::s![0, .., ..]).fill(true);      // bottom
+    wall_mask.slice_mut(ndarray::s![nx-1, .., ..]).fill(true);   // top
+    wall_mask.slice_mut(ndarray::s![.., 0, ..]).fill(true);   // front
+    wall_mask.slice_mut(ndarray::s![.., ny-1, ..]).fill(true); // back
+    wall_mask.slice_mut(ndarray::s![.., .., 0]).fill(true);     // left
+    wall_mask.slice_mut(ndarray::s![.., .., nz-1]).fill(true);  // right
+
+    // Find wall labels (unique non-zero labels on walls)
+    let mut wall_labels = std::collections::HashSet::new();
+    for ((i, j, k), &label) in regions_nonpbc.indexed_iter() {
+        if wall_mask[[i, j, k]] && label != 0 {
+            wall_labels.insert(label);
+        }
+    }
+
+    let mut pairs = Vec::new();
+
+    for &label_id in &wall_labels {
+        let mask = regions_nonpbc.mapv(|x| x == label_id);
+
+        // Find corresponding PBC label
+        let pbc_labels: std::collections::HashSet<u32> = regions_pbc
+            .indexed_iter()
+            .filter_map(|(idx, &pbc_val)| {
+                if mask[idx] && pbc_val != 0 {
+                    Some(pbc_val)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if pbc_labels.len() != 1 {
+            continue; // ambiguous, skip
+        }
+
+        let pbc_label = *pbc_labels.iter().next().unwrap();
+
+        // Find all other regions on the same wall with the same pbc label
+        let same_wall_mask = regions_pbc.mapv(|x| x == pbc_label) & &wall_mask;
+        let other_labels: Vec<u32> = regions_nonpbc
+            .indexed_iter()
+            .filter_map(|(idx, &nonpbc_val)| {
+                if same_wall_mask[idx] && nonpbc_val != label_id && nonpbc_val != 0 {
+                    Some(nonpbc_val)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if other_labels.is_empty() {
+            continue; // No other regions of this PBC group on the wall
+        }
+
+        // Calculate sizes for current and neighbor regions
+        let current_size = mask.iter().filter(|&&x| x).count() as f64;
+
+        for &neighbor_label in &other_labels {
+            let neighbor_mask = regions_nonpbc.mapv(|x| x == neighbor_label);
+            let neighbor_size = neighbor_mask.iter().filter(|&&x| x).count() as f64;
+
+            // Check adjacency using binary dilation (same as Python)
+            let dilated = binary_dilation(&mask, 1);
+            let is_adjacent = dilated
+                .indexed_iter()
+                .any(|(idx, &dilated_val)| dilated_val && neighbor_mask[idx]);
+
+            if is_adjacent {
+                // Apply size ratio test (same as Python)
+                if current_size < size_ratio * neighbor_size {
+                    pairs.push((label_id, neighbor_label));
+                }
+                break; // Only consider the first touching neighbor
+            }
+        }
+    }
+
+    // Convert to Python list of tuples
+    let py_list = PyList::empty(py);
+    for (small, large) in pairs {
+        let tuple = PyTuple::new(py, &[small.into_py(py), large.into_py(py)]);
+        py_list.append(tuple)?;
+    }
+
+    Ok(py_list.into())
+}
+
+#[pyfunction]
+#[pyo3(signature = (grid, starts, max_steps=100, step_size=0.1))]
 fn move_maxima_to_peaks(
     py: Python<'_>,
     grid: PyReadonlyArray3<'_, f32>,
     starts: PyReadonlyArray2<'_, usize>, // (n,3)
     max_steps: Option<usize>,
+    step_size: Option<f64>,
 ) -> PyResult<(Py<PyArray2<usize>>, Py<PyArray1<f32>>)> {
     use ndarray::{Array1, Array2};
     use rayon::prelude::*;
-    
+
     // Clone into owned ndarrays so the underlying data is independent of the
     // PyArray and therefore `Sync`/`Send`.
     let g = grid.as_array().to_owned();
@@ -1792,53 +2251,82 @@ fn move_maxima_to_peaks(
     let (nx, ny, nz) = g.dim();
     let n = starts_owned.dim().0;
     let ms = max_steps.unwrap_or(100);
-
-    // 27-connectivity neighbors (including center)
-    let neigh_offsets: [(isize, isize, isize); 27] = [
-        (-1, -1, -1), (-1, -1, 0), (-1, -1, 1),
-        (-1, 0, -1), (-1, 0, 0), (-1, 0, 1),
-        (-1, 1, -1), (-1, 1, 0), (-1, 1, 1),
-        (0, -1, -1), (0, -1, 0), (0, -1, 1),
-        (0, 0, -1), (0, 0, 0), (0, 0, 1),
-        (0, 1, -1), (0, 1, 0), (0, 1, 1),
-        (1, -1, -1), (1, -1, 0), (1, -1, 1),
-        (1, 0, -1), (1, 0, 0), (1, 0, 1),
-        (1, 1, -1), (1, 1, 0), (1, 1, 1),
-    ];
+    let step = step_size.unwrap_or(0.1);
 
     let peaks: Vec<([usize; 3], f32)> = (0..n)
         .into_par_iter()
         .map(|idx| {
             let s_row = starts_owned.row(idx);
-            let mut pos = [s_row[0], s_row[1], s_row[2]];
-            let mut val = g[[pos[0], pos[1], pos[2]]];
-            
+            let mut current_pos = [s_row[0] as f64, s_row[1] as f64, s_row[2] as f64];
+            let mut current_value = g[[s_row[0], s_row[1], s_row[2]]];
+
             for _ in 0..ms {
-                let mut best = pos;
-                let mut best_val = val;
-                
-                // Check all 27 neighbors (including center for plateau detection)
-                for &(dx, dy, dz) in &neigh_offsets {
-                    // Use periodic wrapping for gradient ascent
-                    let ni = ((pos[0] as isize + dx).rem_euclid(nx as isize)) as usize;
-                    let nj = ((pos[1] as isize + dy).rem_euclid(ny as isize)) as usize;
-                    let nk = ((pos[2] as isize + dz).rem_euclid(nz as isize)) as usize;
-                    let v = g[[ni, nj, nk]];
-                    
-                    if v > best_val {
-                        best_val = v;
-                        best = [ni, nj, nk];
+                // Calculate gradient using central differences (like Python)
+                let mut gradients = [0.0f64; 3];
+                for dim in 0..3 {
+                    let mut pos_plus = current_pos.clone();
+                    let mut pos_minus = current_pos.clone();
+
+                    // Ensure we stay within bounds when calculating gradients (like Python)
+                    pos_plus[dim] = (pos_plus[dim] + 1.0).min((nx - 1) as f64);
+                    pos_minus[dim] = (pos_minus[dim] - 1.0).max(0.0);
+
+                    // Ensure indices are within bounds
+                    let plus_idx = [
+                        pos_plus[0] as usize,
+                        pos_plus[1] as usize,
+                        pos_plus[2] as usize
+                    ];
+                    let minus_idx = [
+                        pos_minus[0] as usize,
+                        pos_minus[1] as usize,
+                        pos_minus[2] as usize
+                    ];
+
+                    // Double-check bounds
+                    if plus_idx[0] >= nx || plus_idx[1] >= ny || plus_idx[2] >= nz ||
+                       minus_idx[0] >= nx || minus_idx[1] >= ny || minus_idx[2] >= nz {
+                        gradients[dim] = 0.0; // Set gradient to 0 if out of bounds
+                    } else {
+                        let val_plus = g[[plus_idx[0], plus_idx[1], plus_idx[2]]];
+                        let val_minus = g[[minus_idx[0], minus_idx[1], minus_idx[2]]];
+                        gradients[dim] = (val_plus - val_minus) as f64 / 2.0;
                     }
                 }
-                
-                // Stop if we've reached a plateau or local maximum
-                if best_val <= val {
+
+                let gradient_magnitude = (gradients[0] * gradients[0] + gradients[1] * gradients[1] + gradients[2] * gradients[2]).sqrt();
+
+                // Stop if gradient is too small (like Python)
+                if gradient_magnitude < 1e-6 {
                     break;
                 }
-                pos = best;
-                val = best_val;
+
+                // Update position with bounds checking (like Python)
+                let mut new_pos = [
+                    current_pos[0] + step * gradients[0] / gradient_magnitude,
+                    current_pos[1] + step * gradients[1] / gradient_magnitude,
+                    current_pos[2] + step * gradients[2] / gradient_magnitude,
+                ];
+
+                // Clip to grid boundaries (like Python)
+                new_pos[0] = new_pos[0].max(0.0).min((nx - 1) as f64);
+                new_pos[1] = new_pos[1].max(0.0).min((ny - 1) as f64);
+                new_pos[2] = new_pos[2].max(0.0).min((nz - 1) as f64);
+
+                // Get value at new position
+                let new_value = g[[new_pos[0] as usize, new_pos[1] as usize, new_pos[2] as usize]];
+
+                // Stop if we're not improving (like Python)
+                if new_value <= current_value {
+                    break;
+                }
+
+                current_pos = new_pos;
+                current_value = new_value;
             }
-            (pos, val)
+
+            let final_pos = [current_pos[0] as usize, current_pos[1] as usize, current_pos[2] as usize];
+            (final_pos, current_value)
         })
         .collect();
 
@@ -1851,7 +2339,7 @@ fn move_maxima_to_peaks(
     }
     let coords_arr = Array2::from_shape_vec((n, 3), coords_vec).expect("shape error");
     let vals_arr = Array1::from_vec(vals_vec);
-    
+
     Ok((
         PyArray2::from_owned_array(py, coords_arr).to_owned(),
         PyArray1::from_owned_array(py, vals_arr).to_owned(),
@@ -3165,260 +3653,6 @@ fn detect_maxima_selective_smoothing_parallel(
     ))
 }
 
-/// Selective smoothing with nested parallelization (Strategy 2)
-/// Parallelizes both grid points AND individual Gaussian kernel computations
-#[pyfunction]
-#[pyo3(signature = (grid, preserve_threshold=3.0, smooth_threshold=6.0, max_smooth_radius=2.0, h=0.2, cell=None, min_distance=1.5, mask_thickness=None, threshold_abs=None))]
-fn detect_maxima_selective_smoothing_parallel2(
-    py: Python<'_>,
-    grid: PyReadonlyArray3<'_, f32>,
-    preserve_threshold: f32,   // Preserve features smaller than this (default 3.0 Å)
-    smooth_threshold: f32,     // Smooth features larger than this (default 6.0 Å)
-    max_smooth_radius: f32,    // Maximum smoothing radius in grid units (default 2.0)
-    h: f32,                    // Single h parameter after smoothing (default 0.2)
-    cell: Option<PyReadonlyArray2<'_, f64>>,
-    min_distance: f32,         // Distance merging threshold (default 1.5 Å)
-    mask_thickness: Option<f32>,
-    threshold_abs: Option<f32>, // Absolute threshold (default 1.5 Å)
-) -> PyResult<(
-    Py<PyArray2<usize>>,
-    Py<PyArray2<usize>>,
-    Py<PyArray2<usize>>,
-)> {
-    use ndarray::{Array3, Array2};
-    
-    let dgrid = grid.as_array();
-    let (nx, ny, nz) = dgrid.dim();
-    let total_points = nx * ny * nz;
-    
-    // Step 1: Create smoothing radius field (parallelized)
-    let smooth_radii_data: Vec<f32> = (0..total_points)
-        .into_par_iter()
-        .map(|flat_idx| {
-            // Unravel flat index into 3D coordinates
-            let i = flat_idx / (ny * nz);
-            let j = (flat_idx / nz) % ny;
-            let k = flat_idx % nz;
-            
-            let local_pore_size = dgrid[[i, j, k]];
-            
-            if local_pore_size < preserve_threshold {
-                // Small pockets - minimal smoothing (preserve features)
-                0.0
-            } else if local_pore_size > smooth_threshold {
-                // Large channels - maximum smoothing (remove roughness)
-                max_smooth_radius
-            } else {
-                // Intermediate - linear interpolation
-                let fraction = (local_pore_size - preserve_threshold) / (smooth_threshold - preserve_threshold);
-                fraction * max_smooth_radius
-            }
-        })
-        .collect();
-    
-    let smooth_radii = Array3::from_shape_vec((nx, ny, nz), smooth_radii_data)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Shape error: {}", e)))?;
-    
-    // Step 2: Apply spatially-varying Gaussian smoothing with NESTED PARALLELIZATION
-    let smoothed_data: Vec<f32> = (0..total_points)
-        .into_par_iter()
-        .map(|flat_idx| {
-            // Unravel flat index into 3D coordinates
-            let i = flat_idx / (ny * nz);
-            let j = (flat_idx / nz) % ny;
-            let k = flat_idx % nz;
-            
-            let smooth_radius = smooth_radii[[i, j, k]];
-            
-            if smooth_radius > 0.1 { // Only smooth if radius is significant
-                let kernel_size = (smooth_radius * 3.0).ceil() as i32; // 3-sigma kernel
-                
-                // STRATEGY 2: Parallelize the Gaussian kernel computation more conservatively
-                let sigma_sq = smooth_radius * smooth_radius;
-                
-                let weighted_sum: f64 = (-kernel_size..=kernel_size)
-                    .into_par_iter()
-                    .map(|di| {
-                        (-kernel_size..=kernel_size)
-                            .map(|dj| {
-                                (-kernel_size..=kernel_size)
-                                    .map(|dk| {
-                                        let ni = (i as i32 + di).rem_euclid(nx as i32) as usize;
-                                        let nj = (j as i32 + dj).rem_euclid(ny as i32) as usize;
-                                        let nk = (k as i32 + dk).rem_euclid(nz as i32) as usize;
-                                        
-                                        let dist_sq = (di * di + dj * dj + dk * dk) as f64;
-                                        let weight = (-0.5 * dist_sq / (sigma_sq as f64)).exp();
-                                        
-                                        weight * dgrid[[ni, nj, nk]] as f64
-                                    })
-                                    .sum::<f64>()
-                            })
-                            .sum::<f64>()
-                    })
-                    .sum::<f64>();
-                
-                let total_weight: f64 = (-kernel_size..=kernel_size)
-                    .into_par_iter()
-                    .map(|di| {
-                        (-kernel_size..=kernel_size)
-                            .map(|dj| {
-                                (-kernel_size..=kernel_size)
-                                    .map(|dk| {
-                                        let dist_sq = (di * di + dj * dj + dk * dk) as f64;
-                                        (-0.5 * dist_sq / (sigma_sq as f64)).exp()
-                                    })
-                                    .sum::<f64>()
-                            })
-                            .sum::<f64>()
-                    })
-                    .sum::<f64>();
-                
-                if total_weight > 0.0 {
-                    (weighted_sum / total_weight) as f32
-                } else {
-                    dgrid[[i, j, k]]
-                }
-            } else {
-                dgrid[[i, j, k]] // No smoothing
-            }
-        })
-        .collect();
-    
-    let smoothed_grid = Array3::from_shape_vec((nx, ny, nz), smoothed_data)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Shape error: {}", e)))?;
-    
-    // Step 3: Apply h-maxima detection (same as original)
-    let mut img = smoothed_grid.clone();
-    
-    // Apply mask_thickness if provided
-    if let Some(mt) = mask_thickness {
-        for ((i, j, k), val) in img.indexed_iter_mut() {
-            if dgrid[[i, j, k]] <= mt {
-                *val = -1e6; // Large negative value to exclude
-            }
-        }
-    }
-    
-    // Morphological reconstruction for h-maxima
-    let mut marker = img.clone();
-    for val in marker.iter_mut() {
-        *val -= h;
-    }
-    
-    // Simple iterative reconstruction
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for i in 0..nx {
-            for j in 0..ny {
-                for k in 0..nz {
-                    let old_val = marker[[i, j, k]];
-                    let img_val = img[[i, j, k]];
-                    marker[[i, j, k]] = marker[[i, j, k]].min(img_val);
-                    
-                    // Check 6-connected neighbors with periodic boundaries
-                    let neighbors = [
-                        ((i + nx - 1) % nx, j, k),
-                        ((i + 1) % nx, j, k),
-                        (i, (j + ny - 1) % ny, k),
-                        (i, (j + 1) % ny, k),
-                        (i, j, (k + nz - 1) % nz),
-                        (i, j, (k + 1) % nz),
-                    ];
-                    
-                    for (ni, nj, nk) in neighbors {
-                        let neighbor_val = marker[[ni, nj, nk]];
-                        let new_val = neighbor_val.min(img_val);
-                        if new_val > marker[[i, j, k]] {
-                            marker[[i, j, k]] = new_val;
-                            if marker[[i, j, k]] != old_val {
-                                changed = true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    // Compute h-dome
-    let mut h_dome = Array3::<f32>::zeros((nx, ny, nz));
-    for i in 0..nx {
-        for j in 0..ny {
-            for k in 0..nz {
-                h_dome[[i, j, k]] = img[[i, j, k]] - marker[[i, j, k]];
-            }
-        }
-    }
-    
-    let threshold = h * 0.9; // Slightly looser threshold
-    let mut maxima_coords = Vec::new();
-    
-    for i in 0..nx {
-        for j in 0..ny {
-            for k in 0..nz {
-                if img[[i, j, k]] > -1e5 && h_dome[[i, j, k]] >= threshold {
-                    maxima_coords.push([i, j, k]);
-                }
-            }
-        }
-    }
-    
-    // Apply absolute threshold filter
-    let mut maxima_coords_filtered = Vec::new();
-    for coord in &maxima_coords {
-        let val = dgrid[[coord[0], coord[1], coord[2]]]; // Use original dgrid value
-        if let Some(tabs) = threshold_abs {
-            if val < tabs { continue; }
-        }
-        maxima_coords_filtered.push(*coord);
-    }
-    
-    // Merge with distance-based clustering
-    let cell_ref = cell.as_ref().map(|c| c.as_array());
-    let maxima_vals: Vec<f32> = maxima_coords_filtered.iter().map(|c| dgrid[[c[0], c[1], c[2]]]).collect();
-    
-    // Apply merging only if min_distance > 0
-    let merged_pbc_coords = if min_distance > 0.0 {
-        merge_maxima_simple(
-            &maxima_coords_filtered,
-            &maxima_vals,
-            min_distance,
-            cell_ref.as_ref(),
-            (nx, ny, nz),
-            true, // periodic
-        )
-    } else {
-        maxima_coords_filtered.clone() // No merging
-    };
-    
-    let merged_cart_coords = if min_distance > 0.0 {
-        merge_maxima_simple(
-            &maxima_coords_filtered,
-            &maxima_vals,
-            min_distance,
-            cell_ref.as_ref(),
-            (nx, ny, nz),
-            false, // non-periodic
-        )
-    } else {
-        maxima_coords_filtered.clone() // No merging  
-    };
-    
-    // Convert to NumPy arrays
-    let n_raw = maxima_coords_filtered.len();
-    let raw_arr = Array2::<usize>::from_shape_vec((n_raw, 3), maxima_coords_filtered.iter().flat_map(|c| c.iter()).cloned().collect()).unwrap();
-    let merged_pbc_arr = Array2::<usize>::from_shape_vec((merged_pbc_coords.len(), 3), merged_pbc_coords.iter().flat_map(|c| c.iter()).cloned().collect()).unwrap();
-    let merged_cart_arr = Array2::<usize>::from_shape_vec((merged_cart_coords.len(), 3), merged_cart_coords.iter().flat_map(|c| c.iter()).cloned().collect()).unwrap();
-    
-    Ok((
-        PyArray2::from_owned_array(py, merged_pbc_arr).to_owned(),
-        PyArray2::from_owned_array(py, merged_cart_arr).to_owned(),
-        PyArray2::from_owned_array(py, raw_arr).to_owned(),
-    ))
-}
-
 /// Percolation-guided maxima detection with geometric intelligence.
 /// Uses connectivity analysis at multiple scales to understand local pore geometry,
 /// then applies geometry-aware processing:
@@ -3550,7 +3784,8 @@ fn analyze_local_geometry(
         let component_labels = connected_components_3d_periodic(&padded_grid);
         
         // Remove padding
-        let labels = component_labels.slice(ndarray::s![1..-1, 1..-1, 1..-1]).to_owned();
+        let (dx, dy, dz) = component_labels.dim();
+        let labels = component_labels.slice(ndarray::s![1..dx-1, 1..dy-1, 1..dz-1]).to_owned();
         
         // Find percolating components
         let percolating_labels = find_percolating_components_3d(&labels);
@@ -4717,8 +4952,8 @@ fn detect_maxima_multiscale_log(
 
                         // Convert to magnitude of negative curvature (positive numbers)
                         let curv = [(-fxx).max(0.0), (-fyy).max(0.0), (-fzz).max(0.0)];
-                        let max_c = curv.iter().cloned().fold(0.0/0.0, f64::max);
-                        let min_c = curv.iter().cloned().fold(0.0/0.0, f64::min);
+                        let max_c = curv.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                        let min_c = curv.iter().cloned().fold(f64::INFINITY, f64::min);
 
                         if max_c == 0.0 || min_c == 0.0 || (min_c / max_c) < anisotropy_ratio as f64 {
                             continue; // too anisotropic – likely channel ridge
@@ -5016,513 +5251,7 @@ fn detect_maxima_adaptive_h(
         PyArray2::from_owned_array(py, raw_arr).to_owned(),
     ))
 }
-/// Compute pore sizes by sampling uniformly across the unit cell
-/// This is a simplified version that samples uniformly without region constraints
-#[pyfunction]
-#[pyo3(text_signature = "(dgrid, cell, num_samples_total=10000)")]
-fn compute_pore_sizes_uniform(
-    py: Python<'_>,
-    dgrid: PyReadonlyArray3<'_, f32>,
-    cell: PyReadonlyArray2<'_, f64>,
-    num_samples_total: Option<usize>,
-) -> PyResult<PyObject> {
-    use ndarray::{Array1, Array2};
-    use std::collections::HashMap;
-    use rand::prelude::*;
 
-    let dgrid_arr = dgrid.as_array();
-    let cell_arr = cell.as_array();
-    let (nx, ny, nz) = dgrid_arr.dim();
-
-    let n_samples = num_samples_total.unwrap_or(10000);
-
-    // Initialize RNG for reproducible sampling
-    let mut rng = Pcg64::from_entropy();
-
-    // Pre-compute cell components for fast PBC calculations
-    let c00 = cell_arr[[0, 0]];
-    let c01 = cell_arr[[0, 1]];
-    let c02 = cell_arr[[0, 2]];
-    let c10 = cell_arr[[1, 0]];
-    let c11 = cell_arr[[1, 1]];
-    let c12 = cell_arr[[1, 2]];
-    let c20 = cell_arr[[2, 0]];
-    let c21 = cell_arr[[2, 1]];
-    let c22 = cell_arr[[2, 2]];
-
-    // Pre-compute sorted dgrid values for the entire grid (no region filtering)
-    let mut sorted_voxels: Vec<(f32, [usize; 3])> = Vec::new();
-
-    for i in 0..nx {
-        for j in 0..ny {
-            for k in 0..nz {
-                let dgrid_val = dgrid_arr[[i, j, k]];
-                if dgrid_val > 0.00 {  // Only include pore space with meaningful d values
-                    sorted_voxels.push((dgrid_val, [i, j, k]));
-                }
-            }
-        }
-    }
-
-    // Sort by dgrid value in descending order
-    sorted_voxels.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-
-    // Pre-allocate result vectors
-    let mut sample_points_cart = Vec::with_capacity(n_samples);
-    let mut pore_sizes = Vec::with_capacity(n_samples);
-
-    // Sample from known pore voxels in parallel
-    // This ensures we never sample from framework regions while maximizing performance
-    let sample_data: Vec<(f64, f64, f64, f32)> = (0..n_samples)
-        .into_par_iter()
-        .map(|_| {
-            // Create thread-local RNG for safe parallel sampling
-            let mut local_rng = Pcg64::from_entropy();
-
-            // Randomly select a pore voxel from our pre-filtered list
-            let voxel_idx = local_rng.gen_range(0..sorted_voxels.len());
-            let (_, grid_coords) = sorted_voxels[voxel_idx];
-
-            // Convert grid coordinates to fractional coordinates
-            let frac_coords = [
-                grid_coords[0] as f64 / (nx - 1) as f64,
-                grid_coords[1] as f64 / (ny - 1) as f64,
-                grid_coords[2] as f64 / (nz - 1) as f64,
-            ];
-
-            // Compute pore size at this guaranteed pore point
-            let pore_size = find_largest_including_sphere_uniform(
-                &dgrid_arr,
-                &cell_arr,
-                &frac_coords,
-                &sorted_voxels,
-            );
-
-            // Convert fractional to Cartesian coordinates
-            let cart_x = c00 * frac_coords[0] + c01 * frac_coords[1] + c02 * frac_coords[2];
-            let cart_y = c10 * frac_coords[0] + c11 * frac_coords[1] + c12 * frac_coords[2];
-            let cart_z = c20 * frac_coords[0] + c21 * frac_coords[1] + c22 * frac_coords[2];
-
-            (cart_x, cart_y, cart_z, pore_size)
-        })
-        .collect();
-
-    // Unpack the parallel results
-    for (cart_x, cart_y, cart_z, pore_size) in sample_data {
-        sample_points_cart.push([cart_x, cart_y, cart_z]);
-        pore_sizes.push(pore_size);
-    }
-
-    // Convert to numpy arrays
-    let py_sample_points = PyArray2::from_owned_array(py,
-        Array2::from_shape_vec((n_samples, 3),
-            sample_points_cart.into_iter().flatten().collect()).unwrap());
-
-    let py_pore_sizes = PyArray1::from_vec(py, pore_sizes);
-
-    // Create Python tuple manually to avoid type inference issues
-    let result_tuple = (py_sample_points, py_pore_sizes);
-    Ok(result_tuple.into_py(py))
-}
-
-/// Find the largest sphere that includes a sample point using uniform search
-/// This is a simplified version that searches all voxels (no region filtering)
-/// Note: Sample points are guaranteed to be in pore space (dgrid > 0.01)
-fn find_largest_including_sphere_uniform(
-    dgrid: &ndarray::ArrayView3<'_, f32>,
-    cell: &ndarray::ArrayView2<'_, f64>,
-    sample_point: &[f64; 3],
-    sorted_voxels: &Vec<(f32, [usize; 3])>,
-) -> f32 {
-    // Pre-compute cell components for fast PBC calculations
-    let c00 = cell[[0, 0]];
-    let c01 = cell[[0, 1]];
-    let c02 = cell[[0, 2]];
-    let c10 = cell[[1, 0]];
-    let c11 = cell[[1, 1]];
-    let c12 = cell[[1, 2]];
-    let c20 = cell[[2, 0]];
-    let c21 = cell[[2, 1]];
-    let c22 = cell[[2, 2]];
-
-    // Search through sorted voxels (highest dgrid first)
-    for (dgrid_val, grid_coords) in sorted_voxels {
-        // Convert grid coordinates to fractional coordinates
-        let c_frac = [
-            grid_coords[0] as f64 / (dgrid.dim().0 - 1) as f64,
-            grid_coords[1] as f64 / (dgrid.dim().1 - 1) as f64,
-            grid_coords[2] as f64 / (dgrid.dim().2 - 1) as f64,
-        ];
-
-        // Calculate PBC-aware fractional distance
-        let mut dx = sample_point[0] - c_frac[0];
-        let mut dy = sample_point[1] - c_frac[1];
-        let mut dz = sample_point[2] - c_frac[2];
-
-        // Apply minimum image convention
-        dx -= dx.round();
-        dy -= dy.round();
-        dz -= dz.round();
-
-        // Convert to Cartesian distance
-        let cart_x = c00 * dx + c01 * dy + c02 * dz;
-        let cart_y = c10 * dx + c11 * dy + c12 * dz;
-        let cart_z = c20 * dx + c21 * dy + c22 * dz;
-
-        let distance = (cart_x * cart_x + cart_y * cart_y + cart_z * cart_z).sqrt() as f32;
-
-        // Check if sample point is inside the sphere centered at C with radius dgrid[C]
-        if distance <= *dgrid_val {
-            return *dgrid_val;  // Early termination - found the largest sphere
-        }
-    }
-
-    // If no sphere includes the point, return 0
-    0.0
-}
-
-#[pyfunction]
-#[pyo3(text_signature = "()")]
-fn rayon_num_threads() -> PyResult<usize> {
-    let n = rayon::current_num_threads();
-    eprintln!("[RAYON] current_num_threads = {}", n);
-    Ok(n)
-}
-
-
-/// Sample points within each watershed region and compute pore sizes for pocket level psd
-#[pyfunction]
-#[pyo3(text_signature = "(dgrid, regions_pbc, cell, samples_per_region=5000)")]
-fn compute_pore_sizes_for_psd_pocketwise(
-    py: Python<'_>,
-    dgrid: PyReadonlyArray3<'_, f32>,
-    regions_pbc: PyReadonlyArray3<'_, u32>,
-    cell: PyReadonlyArray2<'_, f64>,
-    samples_per_region: Option<usize>,
-) -> PyResult<PyObject> {
-    use ndarray::{Array1, Array2};
-    use std::collections::HashMap;
-    use rand::prelude::*;
-
-    let dgrid_arr = dgrid.as_array();
-    let regions_arr = regions_pbc.as_array();
-    let cell_arr = cell.as_array();
-    let (nx, ny, nz) = dgrid_arr.dim();
-
-    let n_samples_per_region = samples_per_region.unwrap_or(5000);
-
-    // Initialize RNG for reproducible sampling
-    let mut rng = Pcg64::from_entropy();
-
-    // Pre-compute cell components for fast PBC calculations
-    let c00 = cell_arr[[0, 0]];
-    let c01 = cell_arr[[0, 1]];
-    let c02 = cell_arr[[0, 2]];
-    let c10 = cell_arr[[1, 0]];
-    let c11 = cell_arr[[1, 1]];
-    let c12 = cell_arr[[1, 2]];
-    let c20 = cell_arr[[2, 0]];
-    let c21 = cell_arr[[2, 1]];
-    let c22 = cell_arr[[2, 2]];
-
-    // Find unique regions (excluding 0)
-    let mut unique_regions = std::collections::HashSet::new();
-    for &region_id in regions_arr.iter() {
-        if region_id > 0 {
-            unique_regions.insert(region_id);
-        }
-    }
-    let unique_regions: Vec<u32> = unique_regions.into_iter().collect();
-
-    // Pre-compute voxel lists for each region for fast sampling
-    let mut region_voxels: HashMap<u32, Vec<[usize; 3]>> = HashMap::new();
-    // Pre-sort voxels by dgrid value (descending) for efficient sphere finding
-    let mut sorted_voxels_by_region: HashMap<u32, Vec<(f32, [usize; 3])>> = HashMap::new();
-
-    for i in 0..nx {
-        for j in 0..ny {
-            for k in 0..nz {
-                let region_id = regions_arr[[i, j, k]];
-                if region_id > 0 {
-                    let dgrid_val = dgrid_arr[[i, j, k]];
-                    region_voxels.entry(region_id)
-                        .or_insert_with(Vec::new)
-                        .push([i, j, k]);
-                    sorted_voxels_by_region.entry(region_id)
-                        .or_insert_with(Vec::new)
-                        .push((dgrid_val, [i, j, k]));
-                }
-            }
-        }
-    }
-
-    // Sort voxels by dgrid value in descending order for each region
-    for voxels in sorted_voxels_by_region.values_mut() {
-        voxels.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    }
-
-    // Calculate total number of samples
-    let total_samples = unique_regions.len() * n_samples_per_region;
-
-    // Pre-allocate result vectors
-    let mut sample_points_cart = Vec::with_capacity(total_samples);
-    let mut pore_sizes = Vec::with_capacity(total_samples);
-    let mut region_labels = Vec::with_capacity(total_samples);
-
-    // Process each region in parallel
-    let region_results: Vec<_> = unique_regions
-        .into_par_iter()
-        .map(|region_id| {
-            let voxels = &region_voxels[&region_id];
-            let mut local_sample_points = Vec::new();
-            let mut local_pore_sizes = Vec::new();
-            let mut local_region_labels = Vec::new();
-
-            // Create thread-local RNG for safe parallel sampling
-            let mut local_rng = Pcg64::from_entropy();
-
-            // Sample points within this region
-            for _ in 0..n_samples_per_region {
-                // Randomly select a voxel from this region
-                let voxel_idx = local_rng.gen_range(0..voxels.len());
-                let [i, j, k] = voxels[voxel_idx];
-
-                // Only sample if this voxel is in pore space (dgrid > 0)
-                if dgrid_arr[[i, j, k]] > 0.0 {
-                    // Convert to fractional coordinates (0 to 1)
-                    let frac_coords = [
-                        i as f64 / (nx - 1) as f64,
-                        j as f64 / (ny - 1) as f64,
-                        k as f64 / (nz - 1) as f64,
-                    ];
-
-                    // Compute pore size at this point using sorted search
-                    let pore_size = find_largest_including_sphere(
-                        &dgrid_arr,
-                        &cell_arr,
-                        &frac_coords,
-                        region_id,
-                        &sorted_voxels_by_region,
-                    );
-
-                    // Convert fractional to Cartesian coordinates
-                    let cart_x = c00 * frac_coords[0] + c01 * frac_coords[1] + c02 * frac_coords[2];
-                    let cart_y = c10 * frac_coords[0] + c11 * frac_coords[1] + c12 * frac_coords[2];
-                    let cart_z = c20 * frac_coords[0] + c21 * frac_coords[1] + c22 * frac_coords[2];
-
-                    local_sample_points.push([cart_x, cart_y, cart_z]);
-                    local_pore_sizes.push(pore_size);
-                    local_region_labels.push(region_id);
-                }
-            }
-
-            (local_sample_points, local_pore_sizes, local_region_labels)
-        })
-        .collect();
-
-    // Collect results from all regions
-    for (points, sizes, labels) in region_results {
-        sample_points_cart.extend(points);
-        pore_sizes.extend(sizes);
-        region_labels.extend(labels);
-    }
-
-    // Convert to numpy arrays
-    let n_samples = sample_points_cart.len();
-    let py_sample_points = PyArray2::from_owned_array(py,
-        Array2::from_shape_vec((n_samples, 3),
-            sample_points_cart.into_iter().flatten().collect()).unwrap());
-
-    let py_pore_sizes = PyArray1::from_vec(py, pore_sizes);
-    let py_region_labels = PyArray1::from_vec(py, region_labels);
-
-    // Create Python tuple manually to avoid type inference issues
-    let result_tuple = (py_sample_points, py_pore_sizes, py_region_labels);
-    Ok(result_tuple.into_py(py))
-}
-
-/// Find the largest sphere (by dgrid value) that includes the sample point
-/// Searches through pre-sorted dgrid values in the same region to find the maximum
-/// dgrid[C] where PBC-aware distance from sample_point to C <= dgrid[C]
-fn find_largest_including_sphere(
-    dgrid: &ndarray::ArrayView3<'_, f32>,
-    cell: &ndarray::ArrayView2<'_, f64>,
-    sample_point: &[f64; 3],
-    region_id: u32,
-    sorted_voxels_by_region: &std::collections::HashMap<u32, Vec<(f32, [usize; 3])>>,
-) -> f32 {
-    // Get pre-sorted voxels for this region (sorted by decreasing dgrid value)
-    if let Some(sorted_voxels) = sorted_voxels_by_region.get(&region_id) {
-        // Pre-compute cell components for fast PBC calculations
-        let c00 = cell[[0, 0]];
-        let c01 = cell[[0, 1]];
-        let c02 = cell[[0, 2]];
-        let c10 = cell[[1, 0]];
-        let c11 = cell[[1, 1]];
-        let c12 = cell[[1, 2]];
-        let c20 = cell[[2, 0]];
-        let c21 = cell[[2, 1]];
-        let c22 = cell[[2, 2]];
-
-        // Search through sorted voxels (highest dgrid first)
-        for (dgrid_val, grid_coords) in sorted_voxels {
-            // Convert grid coordinates to fractional coordinates
-            let c_frac = [
-                grid_coords[0] as f64 / (dgrid.dim().0 - 1) as f64,
-                grid_coords[1] as f64 / (dgrid.dim().1 - 1) as f64,
-                grid_coords[2] as f64 / (dgrid.dim().2 - 1) as f64,
-            ];
-
-            // Calculate PBC-aware fractional distance
-            let mut dx = sample_point[0] - c_frac[0];
-            let mut dy = sample_point[1] - c_frac[1];
-            let mut dz = sample_point[2] - c_frac[2];
-
-            // Apply minimum image convention
-            dx -= dx.round();
-            dy -= dy.round();
-            dz -= dz.round();
-
-            // Convert to Cartesian distance
-            let cart_x = c00 * dx + c01 * dy + c02 * dz;
-            let cart_y = c10 * dx + c11 * dy + c12 * dz;
-            let cart_z = c20 * dx + c21 * dy + c22 * dz;
-
-            let distance = (cart_x * cart_x + cart_y * cart_y + cart_z * cart_z).sqrt() as f32;
-
-            // Check if sample point is inside the sphere centered at C with radius dgrid[C]
-            if distance <= *dgrid_val {
-                return *dgrid_val;
-            }
-        }
-    }
-
-    // If no sphere includes the point, return 0
-    0.0
-}
-
-
-#[pymodule]
-fn mgr_rust(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
-    // Enable better error reporting when the module is imported from Python.
-    pyo3_log::init();
-
-    m.add_function(wrap_pyfunction!(dgrid_from_atoms, m)?)?;
-    m.add_function(wrap_pyfunction!(egrid_from_atoms, m)?)?;
-    m.add_function(wrap_pyfunction!(window_connections, m)?)?;
-    m.add_function(wrap_pyfunction!(periodic_gaussian_filter, m)?)?;
-    m.add_function(wrap_pyfunction!(seeded_watershed_bucket, m)?)?;
-    m.add_function(wrap_pyfunction!(seeded_watershed, m)?)?;
-    m.add_function(wrap_pyfunction!(seeded_watershed_masked, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_h_morph, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_h_morph_opening, m)?)?;
-    m.add_function(wrap_pyfunction!(move_maxima_to_peaks, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_h_morph2, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_h_morph_simple, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_h_morph_no_spacing, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_adaptive_geometry, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_selective_smoothing, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_selective_smoothing_parallel, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_selective_smoothing_parallel2, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_percolation_guided, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_voronoi_based, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_multiscale_log, m)?)?;
-    m.add_function(wrap_pyfunction!(compute_pore_sizes_for_psd_pocketwise, m)?)?;
-    m.add_function(wrap_pyfunction!(compute_pore_sizes_uniform, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_adaptive_h, m)?)?;
-    // Helper to inspect Rayon thread pool
-    m.add_function(wrap_pyfunction!(rayon_num_threads, m)?)?;
-    // m.add_function(wrap_pyfunction!(find_local_maxima_pbc, m)?)?;
-    // m.add_function(wrap_pyfunction!(find_local_maxima_cart, m)?)?;
-    m.add_function(wrap_pyfunction!(find_pore_limiting_radius, m)?)?;
-    m.add("__all__", ["dgrid_from_atoms", "egrid_from_atoms", "window_connections", "periodic_gaussian_filter", "seeded_watershed_bucket", "seeded_watershed", "seeded_watershed_masked", "compute_pore_sizes_for_psd_pocketwise","compute_pore_sizes_for_psd_pocketwise",  "detect_maxima_h_morph", "detect_maxima_h_morph_opening", "move_maxima_to_peaks", "detect_maxima_h_morph2", "detect_maxima_h_morph_simple", "detect_maxima_h_morph_no_spacing", "detect_maxima_adaptive_geometry", "detect_maxima_selective_smoothing", "detect_maxima_selective_smoothing_parallel", "detect_maxima_selective_smoothing_parallel2", "detect_maxima_percolation_guided", "detect_maxima_voronoi_based", "detect_maxima_multiscale_log", "detect_maxima_adaptive_h", "find_pore_limiting_radius", "rayon_num_threads"])?;
-
-    // By returning Ok(()), the module initialization is successful.
-    Ok(())
-}
-
-// ============================================================================
-// Pore Limiting Radius (PLD) calculation functions
-// ============================================================================
-
-/// Pad array with periodic boundaries (wrap mode)
-fn pad_periodic_3d(arr: &Array3<f32>) -> Array3<f32> {
-    let (nx, ny, nz) = arr.dim();
-    let mut padded = Array3::<f32>::zeros((nx + 2, ny + 2, nz + 2));
-    
-    // Copy central region
-    for i in 0..nx {
-        for j in 0..ny {
-            for k in 0..nz {
-                padded[[i + 1, j + 1, k + 1]] = arr[[i, j, k]];
-            }
-        }
-    }
-    
-    // Wrap edges, faces, and corners
-    // X-direction wrapping
-    for j in 0..ny {
-        for k in 0..nz {
-            padded[[0, j + 1, k + 1]] = arr[[nx - 1, j, k]];
-            padded[[nx + 1, j + 1, k + 1]] = arr[[0, j, k]];
-        }
-    }
-    
-    // Y-direction wrapping
-    for i in 0..nx {
-        for k in 0..nz {
-            padded[[i + 1, 0, k + 1]] = arr[[i, ny - 1, k]];
-            padded[[i + 1, ny + 1, k + 1]] = arr[[i, 0, k]];
-        }
-    }
-    
-    // Z-direction wrapping
-    for i in 0..nx {
-        for j in 0..ny {
-            padded[[i + 1, j + 1, 0]] = arr[[i, j, nz - 1]];
-            padded[[i + 1, j + 1, nz + 1]] = arr[[i, j, 0]];
-        }
-    }
-    
-    // Corner wrapping (8 corners)
-    // X-Y edges
-    for k in 0..nz {
-        padded[[0, 0, k + 1]] = arr[[nx - 1, ny - 1, k]];
-        padded[[0, ny + 1, k + 1]] = arr[[nx - 1, 0, k]];
-        padded[[nx + 1, 0, k + 1]] = arr[[0, ny - 1, k]];
-        padded[[nx + 1, ny + 1, k + 1]] = arr[[0, 0, k]];
-    }
-    
-    // X-Z edges  
-    for j in 0..ny {
-        padded[[0, j + 1, 0]] = arr[[nx - 1, j, nz - 1]];
-        padded[[0, j + 1, nz + 1]] = arr[[nx - 1, j, 0]];
-        padded[[nx + 1, j + 1, 0]] = arr[[0, j, nz - 1]];
-        padded[[nx + 1, j + 1, nz + 1]] = arr[[0, j, 0]];
-    }
-    
-    // Y-Z edges
-    for i in 0..nx {
-        padded[[i + 1, 0, 0]] = arr[[i, ny - 1, nz - 1]];
-        padded[[i + 1, 0, nz + 1]] = arr[[i, ny - 1, 0]];
-        padded[[i + 1, ny + 1, 0]] = arr[[i, 0, nz - 1]];
-        padded[[i + 1, ny + 1, nz + 1]] = arr[[i, 0, 0]];
-    }
-    
-    // 8 corner vertices
-    padded[[0, 0, 0]] = arr[[nx - 1, ny - 1, nz - 1]];
-    padded[[0, 0, nz + 1]] = arr[[nx - 1, ny - 1, 0]];
-    padded[[0, ny + 1, 0]] = arr[[nx - 1, 0, nz - 1]];
-    padded[[0, ny + 1, nz + 1]] = arr[[nx - 1, 0, 0]];
-    padded[[nx + 1, 0, 0]] = arr[[0, ny - 1, nz - 1]];
-    padded[[nx + 1, 0, nz + 1]] = arr[[0, ny - 1, 0]];
-    padded[[nx + 1, ny + 1, 0]] = arr[[0, 0, nz - 1]];
-    padded[[nx + 1, ny + 1, nz + 1]] = arr[[0, 0, 0]];
-    
-    padded
-}
-
-/// Check if percolation exists at a given threshold with periodic boundary conditions
 fn check_percolation_periodic(distance_grid: &Array3<f32>, threshold: f32) -> bool {
     // Create binary grid where true represents void space
     let binary_grid = distance_grid.mapv(|v| if v > threshold { 1u8 } else { 0u8 });
@@ -5710,6 +5439,1249 @@ fn flood_fill_label(
     }
 }
 
+// ============================================================================================
+// New: Minimal CIF reader and end-to-end periodic segmentation entrypoint
+// ============================================================================================
+
+/// Build 3x3 cell matrix (vectors as columns) from cell parameters.
+fn cellpar_to_cell_matrix(a: f64, b: f64, c: f64, alpha_deg: f64, beta_deg: f64, gamma_deg: f64) -> [[f64; 3]; 3] {
+    let alpha = alpha_deg.to_radians();
+    let beta = beta_deg.to_radians();
+    let gamma = gamma_deg.to_radians();
+
+    let a_vec = [a, 0.0, 0.0];
+    let b_vec = [b * gamma.cos(), b * gamma.sin(), 0.0];
+    let c_x = c * beta.cos();
+    let c_y = c * (alpha.cos() - beta.cos() * gamma.cos()) / gamma.sin();
+    let c_z_sq = c * c - c_x * c_x - c_y * c_y;
+    let c_z = if c_z_sq > 0.0 { c_z_sq.sqrt() } else { 0.0 };
+    let c_vec = [c_x, c_y, c_z];
+
+    // Return as columns: [a b c]
+    [
+        [a_vec[0], b_vec[0], c_vec[0]],
+        [a_vec[1], b_vec[1], c_vec[1]],
+        [a_vec[2], b_vec[2], c_vec[2]],
+    ]
+}
+
+/// Very small, permissive CIF parser for common MOF CIFs.
+/// Extracts cell params and fractional atomic positions with element symbols.
+fn parse_cif_minimal(contents: &str) -> PyResult<(
+    (f64, f64, f64, f64, f64, f64), // a,b,c,alpha,beta,gamma
+    Vec<([f64; 3], String)>,        // fractional coords, element symbol
+)> {
+    use std::str::FromStr;
+
+    let mut a = None; let mut b = None; let mut c = None;
+    let mut alpha = None; let mut beta = None; let mut gamma = None;
+
+    // Helper to normalize element symbol strings (e.g., "C1" -> "C", "Zr1" -> "ZR")
+    fn normalize_element_symbol(raw: &str) -> String {
+        let letters: String = raw.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+        if letters.is_empty() { return "X".to_string(); }
+        letters.to_ascii_uppercase()
+    }
+
+    for line in contents.lines() {
+        let l = line.trim();
+        if l.starts_with("_cell_length_a") {
+            a = l.split_whitespace().nth(1).and_then(|v| f64::from_str(v).ok());
+        } else if l.starts_with("_cell_length_b") {
+            b = l.split_whitespace().nth(1).and_then(|v| f64::from_str(v).ok());
+        } else if l.starts_with("_cell_length_c") {
+            c = l.split_whitespace().nth(1).and_then(|v| f64::from_str(v).ok());
+        } else if l.starts_with("_cell_angle_alpha") {
+            alpha = l.split_whitespace().nth(1).and_then(|v| f64::from_str(v).ok());
+        } else if l.starts_with("_cell_angle_beta") {
+            beta = l.split_whitespace().nth(1).and_then(|v| f64::from_str(v).ok());
+        } else if l.starts_with("_cell_angle_gamma") {
+            gamma = l.split_whitespace().nth(1).and_then(|v| f64::from_str(v).ok());
+        }
+    }
+
+    let (a, b, c, alpha, beta, gamma) = match (a, b, c, alpha, beta, gamma) {
+        (Some(a), Some(b), Some(c), Some(alpha), Some(beta), Some(gamma)) => (a, b, c, alpha, beta, gamma),
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Failed to parse CIF cell parameters (_cell_length_* and _cell_angle_*)",
+            ));
+        }
+    };
+
+    // Parse atom_site loop
+    let mut atoms: Vec<([f64; 3], String)> = Vec::new();
+    let mut in_loop = false;
+    let mut headers: Vec<String> = Vec::new();
+    let mut x_idx = None; let mut y_idx = None; let mut z_idx = None; let mut sym_idx = None;
+
+    for line in contents.lines() {
+        let l = line.trim();
+        if l.is_empty() { continue; }
+        if l.starts_with("loop_") {
+            in_loop = true; headers.clear();
+            x_idx = None; y_idx = None; z_idx = None; sym_idx = None;
+            continue;
+        }
+        if in_loop && l.starts_with('_') {
+            headers.push(l.to_string());
+            continue;
+        }
+        if in_loop && !l.starts_with('_') {
+            // Determine indices once we hit first data row
+            if x_idx.is_none() {
+                for (i, h) in headers.iter().enumerate() {
+                    let h_low = h.to_ascii_lowercase();
+                    if h_low.contains("_atom_site_fract_x") { x_idx = Some(i); }
+                    if h_low.contains("_atom_site_fract_y") { y_idx = Some(i); }
+                    if h_low.contains("_atom_site_fract_z") { z_idx = Some(i); }
+                    if h_low.contains("_atom_site_type_symbol") || h_low.contains("_atom_site_label") {
+                        if sym_idx.is_none() { sym_idx = Some(i); }
+                    }
+                }
+            }
+            let parts: Vec<&str> = l.split_whitespace().collect();
+            if let (Some(ix), Some(iy), Some(iz)) = (x_idx, y_idx, z_idx) {
+                if ix < parts.len() && iy < parts.len() && iz < parts.len() {
+                    let fx = parts[ix].trim_matches('\'').parse::<f64>().unwrap_or(0.0);
+                    let fy = parts[iy].trim_matches('\'').parse::<f64>().unwrap_or(0.0);
+                    let fz = parts[iz].trim_matches('\'').parse::<f64>().unwrap_or(0.0);
+                    let raw_sym = sym_idx.and_then(|is| parts.get(is).map(|s| s.to_string())).unwrap_or_else(|| "X".to_string());
+                    let sym = normalize_element_symbol(&raw_sym);
+                    atoms.push(([fx, fy, fz], sym));
+                }
+            }
+        }
+    }
+
+    if atoms.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err("No atom_site loop with positions found in CIF"));
+    }
+
+    Ok(((a, b, c, alpha, beta, gamma), atoms))
+}
+
+/// Simple VdW radius lookup by element symbol. Fallback to 1.5 Å.
+fn vdw_radius(symbol: &str) -> f64 {
+    match symbol.to_ascii_uppercase().as_str() {
+        "H" => 1.20,
+        "C" => 1.70,
+        "N" => 1.55,
+        "O" => 1.52,
+        "F" => 1.47,
+        "P" => 1.80,
+        "S" => 1.80,
+        "CL" => 1.75,
+        "CU" => 1.40,
+        "ZN" => 1.39,
+        "ZR" => 2.27,
+        "AL" => 1.84,
+        "SI" => 2.10,
+        _ => 1.50,
+    }
+}
+
+/// Wrap-pad a 3D array by padding_thickness cells on each side.
+fn pad_wrap_f32(src: &ndarray::ArrayView3<'_, f32>, pad: usize) -> ndarray::Array3<f32> {
+    let (nx, ny, nz) = src.dim();
+    let (px, py, pz) = (nx + 2 * pad, ny + 2 * pad, nz + 2 * pad);
+    let mut out = Array3::<f32>::zeros((px, py, pz));
+    for i in 0..px { for j in 0..py { for k in 0..pz {
+        let si = ((i as isize - pad as isize).rem_euclid(nx as isize)) as usize;
+        let sj = ((j as isize - pad as isize).rem_euclid(ny as isize)) as usize;
+        let sk = ((k as isize - pad as isize).rem_euclid(nz as isize)) as usize;
+        out[[i, j, k]] = src[[si, sj, sk]];
+    }}}
+    out
+}
+
+fn pad_wrap_u32(src: &ndarray::ArrayView3<'_, u32>, pad: usize) -> ndarray::Array3<u32> {
+    let (nx, ny, nz) = src.dim();
+    let (px, py, pz) = (nx + 2 * pad, ny + 2 * pad, nz + 2 * pad);
+    let mut out = Array3::<u32>::zeros((px, py, pz));
+    for i in 0..px { for j in 0..py { for k in 0..pz {
+        let si = ((i as isize - pad as isize).rem_euclid(nx as isize)) as usize;
+        let sj = ((j as isize - pad as isize).rem_euclid(ny as isize)) as usize;
+        let sk = ((k as isize - pad as isize).rem_euclid(nz as isize)) as usize;
+        out[[i, j, k]] = src[[si, sj, sk]];
+    }}}
+    out
+}
+
+fn pad_wrap_u8(src: &ndarray::ArrayView3<'_, u8>, pad: usize) -> ndarray::Array3<u8> {
+    let (nx, ny, nz) = src.dim();
+    let (px, py, pz) = (nx + 2 * pad, ny + 2 * pad, nz + 2 * pad);
+    let mut out = Array3::<u8>::zeros((px, py, pz));
+    for i in 0..px { for j in 0..py { for k in 0..pz {
+        let si = ((i as isize - pad as isize).rem_euclid(nx as isize)) as usize;
+        let sj = ((j as isize - pad as isize).rem_euclid(ny as isize)) as usize;
+        let sk = ((k as isize - pad as isize).rem_euclid(nz as isize)) as usize;
+        out[[i, j, k]] = src[[si, sj, sk]];
+    }}}
+    out
+}
+
+/// Compute wall cell counts given cell and spacing (replicates Python compute_wall_cells).
+fn compute_wall_cells_rs(cell: &[[f64; 3]; 3], spacing: f64, wall_thickness: f64) -> [usize; 3] {
+    use nalgebra::Matrix3;
+    let a = [cell[0][0], cell[1][0], cell[2][0]];
+    let b = [cell[0][1], cell[1][1], cell[2][1]];
+    let c = [cell[0][2], cell[1][2], cell[2][2]];
+
+    let cross = |u: [f64; 3], v: [f64; 3]| -> [f64; 3] {
+        [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ]
+    };
+    let norm = |u: [f64; 3]| -> f64 { (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt() };
+
+    let mat = Matrix3::new(
+        cell[0][0], cell[0][1], cell[0][2],
+        cell[1][0], cell[1][1], cell[1][2],
+        cell[2][0], cell[2][1], cell[2][2],
+    );
+    let vol = mat.determinant().abs();
+
+    let la_perp = vol / norm(cross(b, c));
+    let lb_perp = vol / norm(cross(c, a));
+    let lc_perp = vol / norm(cross(a, b));
+
+    let wall = [
+        (wall_thickness * la_perp / spacing).ceil() as usize,
+        (wall_thickness * lb_perp / spacing).ceil() as usize,
+        (wall_thickness * lc_perp / spacing).ceil() as usize,
+    ];
+    wall
+}
+
+/// Calculate padding thickness as in Python version.
+fn calculate_padding_thickness_rs(dgrid: &ndarray::Array3<f32>, cell: &[[f64; 3]; 3], spacing: f64, extra_padding: f64) -> usize {
+    use nalgebra::Matrix3;
+    let (nx, ny, nz) = dgrid.dim();
+    let mat = Matrix3::new(
+        cell[0][0], cell[0][1], cell[0][2],
+        cell[1][0], cell[1][1], cell[1][2],
+        cell[2][0], cell[2][1], cell[2][2],
+    );
+    let vol = mat.determinant().abs();
+    let voxel_volume = vol / (nx * ny * nz) as f64;
+
+    // Angles via dot products
+    let a = [cell[0][0], cell[1][0], cell[2][0]];
+    let b = [cell[0][1], cell[1][1], cell[2][1]];
+    let c_vec = [cell[0][2], cell[1][2], cell[2][2]];
+    let len = |u: [f64; 3]| -> f64 { (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt() };
+    let dot = |u: [f64; 3], v: [f64; 3]| -> f64 { u[0] * v[0] + u[1] * v[1] + u[2] * v[2] };
+    let la = len(a); let lb = len(b); let lc = len(c_vec);
+    let alpha = (dot(b, c_vec) / (lb * lc)).acos();
+    let beta = (dot(a, c_vec) / (la * lc)).acos();
+    let gamma = (dot(a, b) / (la * lb)).acos();
+
+    // Voxel basis vectors analogous to Python
+    let eA = [spacing, 0.0, 0.0];
+    let eB = [spacing * gamma.cos(), spacing * gamma.sin(), 0.0];
+    let eC = [
+        spacing * beta.cos(),
+        spacing * (alpha.cos() - beta.cos() * gamma.cos()) / gamma.sin(),
+        voxel_volume / (spacing * spacing * gamma.sin()),
+    ];
+    let cross = |u: [f64; 3], v: [f64; 3]| -> [f64; 3] {
+        [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ]
+    };
+    let norm = |u: [f64; 3]| -> f64 { (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt() };
+    let lx_vox = voxel_volume / norm(cross(eB, eC));
+    let ly_vox = voxel_volume / norm(cross(eC, eA));
+    let lz_vox = voxel_volume / norm(cross(eA, eB));
+    let min_perp = lx_vox.min(ly_vox).min(lz_vox);
+
+    let dgrid_max = dgrid.iter().cloned().fold(f32::MIN, f32::max) as f64;
+    let base = (dgrid_max / min_perp).ceil() as usize;
+    // Formula: dgrid_max/min_perp_length + 5/spacing + extra_padding/spacing
+    base + (5.0 / spacing).ceil() as usize + (extra_padding / spacing).ceil() as usize
+}
+
+
+
+/// Merge tiny regions (< min_size_ratio of central box) by assigning to the most frequent neighbor label.
+fn merge_small_regions_rs(regions: &ndarray::Array3<u32>, min_size: usize) -> ndarray::Array3<u32> {
+    use std::collections::HashMap;
+    let (nx, ny, nz) = regions.dim();
+
+    // First, identify small regions using the same approach as Python
+    let mut region_sizes: HashMap<u32, usize> = HashMap::new();
+    for &v in regions.iter() {
+        if v != 0 {
+            *region_sizes.entry(v).or_insert(0) += 1;
+        }
+    }
+
+    // Find small regions (like Python's regionprops with area < min_size)
+    let small_labels: Vec<u32> = region_sizes.iter()
+        .filter(|(_, &size)| size < min_size)
+        .map(|(&label, _)| label)
+        .collect();
+
+    eprintln!("merge_small_regions_rs: Found {} small regions to merge", small_labels.len());
+
+    // Use in-place modification to avoid full array clone
+    let mut out = regions.to_owned();
+    let (nx, ny, nz) = regions.dim();
+
+    // Pre-compute neighbor offsets for efficiency
+    let offsets = [
+        (-1,-1,-1), (-1,-1,0), (-1,-1,1),
+        (-1,0,-1),  (-1,0,0),  (-1,0,1),
+        (-1,1,-1),  (-1,1,0),  (-1,1,1),
+        (0,-1,-1),  (0,-1,0),  (0,-1,1),
+        (0,0,-1),   (0,0,1),
+        (0,1,-1),   (0,1,0),   (0,1,1),
+        (1,-1,-1),  (1,-1,0),  (1,-1,1),
+        (1,0,-1),   (1,0,0),   (1,0,1),
+        (1,1,-1),   (1,1,0),   (1,1,1),
+    ];
+
+    // Process each small region (optimized approach)
+    for &small_label in &small_labels {
+        // Find all voxels belonging to this small region (single scan)
+        let mut region_voxels = Vec::new();
+        for ((i, j, k), &val) in regions.indexed_iter() {
+            if val == small_label {
+                region_voxels.push((i, j, k));
+            }
+        }
+
+        // If region is empty, skip
+        if region_voxels.is_empty() {
+            continue;
+        }
+
+        // Find all neighboring regions by checking neighbors of each voxel
+        let mut neighbor_labels = std::collections::HashSet::new();
+
+        for &(i, j, k) in &region_voxels {
+            for &(di, dj, dk) in &offsets {
+                let ni = i as isize + di;
+                let nj = j as isize + dj;
+                let nk = k as isize + dk;
+
+                // Check bounds
+                if ni >= 0 && nj >= 0 && nk >= 0 &&
+                   (ni as usize) < nx && (nj as usize) < ny && (nk as usize) < nz {
+                    let neighbor_label = regions[[ni as usize, nj as usize, nk as usize]];
+                    if neighbor_label != 0 && neighbor_label != small_label {
+                        neighbor_labels.insert(neighbor_label);
+                    }
+                }
+            }
+        }
+
+        if neighbor_labels.is_empty() {
+            continue; // No neighbors found, skip
+        }
+
+        // Find the neighbor with the largest shared boundary (optimized)
+        let mut boundary_counts = HashMap::new();
+        for &neighbor_label in &neighbor_labels {
+            let mut count = 0;
+            for &(i, j, k) in &region_voxels {
+                for &(di, dj, dk) in &offsets {
+                    let ni = i as isize + di;
+                    let nj = j as isize + dj;
+                    let nk = k as isize + dk;
+
+                    // Check bounds and if neighbor belongs to this label
+                    if ni >= 0 && nj >= 0 && nk >= 0 &&
+                       (ni as usize) < nx && (nj as usize) < ny && (nk as usize) < nz {
+                        if regions[[ni as usize, nj as usize, nk as usize]] == neighbor_label {
+                            count += 1;
+                        }
+                    }
+                }
+            }
+            boundary_counts.insert(neighbor_label, count);
+        }
+
+        // Choose the neighbor with the largest boundary
+        let best_neighbor = boundary_counts.iter()
+            .max_by_key(|(_, &count)| count)
+            .map(|(&label, _)| label);
+
+        if let Some(best_label) = best_neighbor {
+            // Replace all voxels of small region with best neighbor
+            for &(i, j, k) in &region_voxels {
+                out[[i, j, k]] = best_label;
+            }
+        }
+    }
+
+    out
+}
+
+/// Classify indices as inside/close_outside/far_outside
+fn classify_locations(indices: &[[usize;3]], shape: (usize,usize,usize), tol: [usize;3]) -> Vec<&'static str> {
+    let (d,h,w) = shape; let (zz,yy,xx) = (tol[0], tol[1], tol[2]);
+    indices.iter().map(|&[z,y,x]| {
+        // Check if the point is inside the box
+        if z < d && y < h && x < w { 
+            "inside" 
+        }
+        // Check if it's close outside (within tolerance) - match Python logic exactly
+        else if (z as isize >= -(zz as isize) && z < d + zz) &&
+                 (y as isize >= -(yy as isize) && y < h + yy) &&
+                 (x as isize >= -(xx as isize) && x < w + xx) {
+            "close_outside"
+        } else { 
+            "far_outside" 
+        }
+    }).collect()
+}
+
+/// Group unmerged regions by maxima indices (like Python get_pbc_groups)
+fn build_pbc_groups(unmerged_regions: &ndarray::Array3<u32>, maxima_info: &ndarray::Array2<i64>) -> Vec<std::collections::HashSet<u32>> {
+    use std::collections::{HashMap, HashSet};
+    let mut groups: HashMap<(i64,i64,i64), HashSet<u32>> = HashMap::new();
+    for row in maxima_info.rows() {
+        let label = row[0] as u32;
+        let key = (row[1], row[2], row[3]);
+        groups.entry(key).or_default().insert(label);
+    }
+    groups.into_values().collect()
+}
+
+// Helper function to remove a row from a 2D array  
+fn remove_row_f64(arr: &ndarray::Array2<f64>, row_idx: usize) -> ndarray::Array2<f64> {
+    let (nrows, ncols) = arr.dim();
+    if row_idx >= nrows {
+        return arr.clone();
+    }
+    
+    let mut new_data = Vec::with_capacity((nrows - 1) * ncols);
+    for i in 0..nrows {
+        if i != row_idx {
+            for j in 0..ncols {
+                new_data.push(arr[[i, j]]);
+            }
+        }
+    }
+    ndarray::Array2::from_shape_vec((nrows - 1, ncols), new_data).unwrap()
+}
+
+// Helper function to remove a row from a 2D usize array
+fn remove_row_usize(arr: &ndarray::Array2<usize>, row_idx: usize) -> ndarray::Array2<usize> {
+    let (nrows, ncols) = arr.dim();
+    if row_idx >= nrows {
+        return arr.clone();
+    }
+    
+    let mut new_data = Vec::with_capacity((nrows - 1) * ncols);
+    for i in 0..nrows {
+        if i != row_idx {
+            for j in 0..ncols {
+                new_data.push(arr[[i, j]]);
+            }
+        }
+    }
+    ndarray::Array2::from_shape_vec((nrows - 1, ncols), new_data).unwrap()
+}
+
+#[pyfunction]
+#[pyo3(signature = (
+    path_to_struct_file,
+    spacing = 0.5,
+    mask_thickness = 0.5,
+    h = 0.2,
+    min_distance = 1.5,
+    threshold_abs = 1.5,
+    return_padded_regions = false,
+    minimum_window_separation = None,
+    wall_thickness = 0.05,
+    extra_padding = 5.0,
+    compactness = 0,
+    min_region_size = 0.001,
+    disable_tqdm = false,
+    compute_connections = true,
+    return_dgrid = false,
+))]
+fn do_periodic_segmentation_rust(
+    py: Python<'_>,
+    path_to_struct_file: &str,
+    spacing: f64,
+    mask_thickness: f32,
+    h: f32,
+    min_distance: f32,
+    threshold_abs: f32,
+    return_padded_regions: bool,
+    minimum_window_separation: Option<f64>,
+    wall_thickness: f64,
+    extra_padding: f64,
+    compactness: u32,
+    min_region_size: f64,
+    disable_tqdm: bool,
+    compute_connections: bool,
+    return_dgrid: bool,
+) -> PyResult<PyObject> {
+    use ndarray::{Array1, Array2, Array3};
+    use pyo3::types::PyDict;
+    use std::time::Instant;
+
+    // Initialize timing
+    let start_time = Instant::now();
+    let mut timing_results = std::collections::HashMap::new();
+
+    // Set default for minimum_window_separation if None
+    let minimum_window_separation = minimum_window_separation.unwrap_or(spacing * 3.0);
+
+    // 1) Read CIF
+    let cif_start = Instant::now();
+    let cif_text = std::fs::read_to_string(path_to_struct_file)
+        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("Failed reading CIF: {}", e)))?;
+    let ((a,b,c,alpha,beta,gamma), atoms) = parse_cif_minimal(&cif_text)?;
+    timing_results.insert("cif_parsing", cif_start.elapsed());
+    let cell = cellpar_to_cell_matrix(a,b,c,alpha,beta,gamma);
+
+    // 2) Prepare inputs for dgrid_from_atoms
+    let n_atoms = atoms.len();
+    let mut fpoints: Vec<f64> = Vec::with_capacity(n_atoms * 3);
+    let mut radii: Vec<f64> = Vec::with_capacity(n_atoms);
+    for (frac, sym) in &atoms {
+        // Shift by -0.5 like Python version
+        fpoints.extend_from_slice(&[frac[0] - 0.5, frac[1] - 0.5, frac[2] - 0.5]);
+        let radius = vdw_radius(sym);
+        radii.push(radius);
+        // Debug: print first few atoms and their radii
+        if atoms.len() < 10 {
+            println!("Atom {}: symbol='{}', radius={}", atoms.len(), sym, radius);
+        }
+    }
+    // Two conventions required by different functions:
+    // - dgrid_from_atoms expects CELL VECTORS AS ROWS (to match Python usage)
+    // - maxima/connection functions expect CELL VECTORS AS COLUMNS
+    // Our `cell` above has vectors as columns; build both forms.
+    let cell_cols = [
+        [cell[0][0], cell[0][1], cell[0][2]],
+        [cell[1][0], cell[1][1], cell[1][2]],
+        [cell[2][0], cell[2][1], cell[2][2]],
+    ];
+    let cell_rows = [
+        [cell[0][0], cell[1][0], cell[2][0]],
+        [cell[0][1], cell[1][1], cell[2][1]],
+        [cell[0][2], cell[1][2], cell[2][2]],
+    ];
+    let cell_cols_flat: Vec<f64> = vec![
+        cell_cols[0][0], cell_cols[0][1], cell_cols[0][2],
+        cell_cols[1][0], cell_cols[1][1], cell_cols[1][2],
+        cell_cols[2][0], cell_cols[2][1], cell_cols[2][2],
+    ];
+    let cell_rows_flat: Vec<f64> = vec![
+        cell_rows[0][0], cell_rows[0][1], cell_rows[0][2],
+        cell_rows[1][0], cell_rows[1][1], cell_rows[1][2],
+        cell_rows[2][0], cell_rows[2][1], cell_rows[2][2],
+    ];
+    let fpoints_nd = ndarray::Array2::<f64>::from_shape_vec((n_atoms, 3), fpoints.clone()).unwrap();
+    let cell_cols_nd = ndarray::Array2::<f64>::from_shape_vec((3, 3), cell_cols_flat.clone()).unwrap();
+    let cell_rows_nd = ndarray::Array2::<f64>::from_shape_vec((3, 3), cell_rows_flat.clone()).unwrap();
+
+    // Grid shape from lengths / spacing (+1 like Python) - use same calculation as Python
+    let nx = (a / spacing) as usize + 1;
+    let ny = (b / spacing) as usize + 1;
+    let nz = (c / spacing) as usize + 1;
+
+    // Call existing Rust dgrid_from_atoms
+    let dgrid_start = Instant::now();
+    let dgrid_py = dgrid_from_atoms(
+        py,
+        PyArray2::from_owned_array(py, fpoints_nd).readonly(),
+        PyArray2::from_owned_array(py, cell_cols_nd.clone()).readonly(),
+        PyArray1::from_vec(py, radii).readonly(),
+        nx, ny, nz,
+    )?;
+    let mut dgrid = unsafe { dgrid_py.as_ref(py).as_array().to_owned() };
+    timing_results.insert("dgrid_computation", dgrid_start.elapsed());
+
+    // 3) Find pore-limiting radius
+    let plr_opt = find_pore_limiting_radius(dgrid_py.as_ref(py).readonly())?;
+    let _plr = plr_opt.unwrap_or(mask_thickness as f32);
+
+    // 4) Detect maxima (selective smoothing) - match Python exactly
+    let maxima_start = Instant::now();
+    eprintln!("DEBUG: About to call detect_maxima_selective_smoothing_parallel");
+    let maxima = match detect_maxima_selective_smoothing_parallel(
+        py,
+        dgrid_py.as_ref(py).readonly(),
+        3.0, // preserve_threshold (matches Python)
+        6.0, // smooth_threshold (matches Python)
+        2.0, // max_smooth_radius (matches Python)
+        h,
+        Some(PyArray2::from_owned_array(py, cell_cols_nd.clone()).readonly()),
+        min_distance,
+        None, // mask_thickness (not provided in Python call)
+        Some(threshold_abs as f32),
+    ) {
+        Ok(result) => {
+            eprintln!("DEBUG: detect_maxima_selective_smoothing_parallel succeeded");
+            result
+        }
+        Err(e) => {
+            eprintln!("DEBUG: detect_maxima_selective_smoothing_parallel failed: {:?}", e);
+            eprintln!("DEBUG: Falling back to detect_maxima_selective_smoothing");
+            detect_maxima_selective_smoothing(
+                py,
+                dgrid_py.as_ref(py).readonly(),
+                3.0, // preserve_threshold (matches Python)
+                6.0, // smooth_threshold (matches Python)
+                2.0, // max_smooth_radius (matches Python)
+                h,
+                Some(PyArray2::from_owned_array(py, cell_cols_nd.clone()).readonly()),
+                min_distance,
+                None, // mask_thickness (not provided in Python call)
+                Some(threshold_abs as f32),
+            )?
+        }
+    };
+    let merged_pbc = unsafe { maxima.0.as_ref(py).as_array().to_owned() }; // (m,3)
+    let raw_maxima = unsafe { maxima.2.as_ref(py).as_array().to_owned() };
+    timing_results.insert("maxima_detection", maxima_start.elapsed());
+
+    // 5) Refine maxima to peaks
+    let (opt_pos_py, _opt_val_py) = move_maxima_to_peaks(
+        py,
+        dgrid_py.as_ref(py).readonly(),
+        PyArray2::from_owned_array(py, merged_pbc.clone()).readonly(),
+        Some(100),
+        Some(0.1)
+    )?;
+    let merged_maxima = unsafe { opt_pos_py.as_ref(py).as_array().to_owned() };
+
+    // 6) Markers and padding
+    let mut markers = Array3::<u32>::zeros(dgrid.dim());
+    if merged_maxima.len() > 0 {
+        for (idx, coord) in merged_maxima.outer_iter().enumerate() {
+            let i = coord[0]; let j = coord[1]; let k = coord[2];
+            markers[[i,j,k]] = (idx + 1) as u32;
+        }
+    }
+    let void_mask = dgrid.mapv(|v| if v > mask_thickness { 1u8 } else { 0u8 });
+
+    let pad_th = calculate_padding_thickness_rs(&dgrid, &cell, spacing, extra_padding);
+    let padded_grid = pad_wrap_f32(&dgrid.view(), pad_th);
+    let padded_markers = pad_wrap_u32(&markers.view(), pad_th);
+    let padded_void = pad_wrap_u8(&void_mask.view(), pad_th);
+
+    // 7) Seeded watershed (pbc)
+    let watershed_start = Instant::now();
+    let regions_padded_py = seeded_watershed_bucket(
+        py,
+        PyArray3::from_owned_array(py, padded_grid.clone()).readonly(),
+        PyArray3::from_owned_array(py, padded_markers.clone()).readonly(),
+        Some(PyArray3::from_owned_array(py, padded_void.clone()).readonly()),
+        None,
+    )?;
+    let mut regions_padded = unsafe { regions_padded_py.as_ref(py).as_array().to_owned() };
+    timing_results.insert("watershed_segmentation", watershed_start.elapsed());
+
+    // 8) Clean very small regions in the central box and remove corresponding maxima like Python
+    // ENABLE this step to match Python behavior - small regions need to be merged before unpadding
+    let original_central = regions_padded.slice(ndarray::s![pad_th..(pad_th+nx), pad_th..(pad_th+ny), pad_th..(pad_th+nz)]).to_owned();
+    let min_vox = ((original_central.len() as f64) * min_region_size).ceil() as usize;
+    let central_clean = merge_small_regions_rs(&original_central, min_vox);
+
+    // Put back the cleaned central region
+    regions_padded.slice_mut(ndarray::s![pad_th..(pad_th+nx), pad_th..(pad_th+ny), pad_th..(pad_th+nz)]).assign(&central_clean);
+
+    // 8.5) Filter out maxima corresponding to removed regions (like Python does)
+    let mut merged_maxima_filtered = merged_maxima.clone();
+    if merged_maxima_filtered.len() > 0 {
+
+        // Find unique regions before and after merging
+        let mut unique_original = std::collections::HashSet::new();
+        for &val in original_central.iter() {
+            if val != 0 {
+                unique_original.insert(val);
+            }
+        }
+
+        let mut unique_cleaned = std::collections::HashSet::new();
+        for &val in central_clean.iter() {
+            if val != 0 {
+                unique_cleaned.insert(val);
+            }
+        }
+
+        // Find removed labels (like Python's ~np.isin)
+        let mut removed_labels: Vec<u32> = unique_original.difference(&unique_cleaned).cloned().collect();
+        let num_rows = merged_maxima_filtered.nrows();
+        removed_labels.retain(|&label| label >= 1 && label <= num_rows as u32);
+
+        // Remove those rows from merged_maxima (like Python's np.delete)
+        if !removed_labels.is_empty() {
+            let num_rows = merged_maxima_filtered.nrows();
+            let mut indices_to_keep: Vec<usize> = (0..num_rows)
+                .filter(|&idx| {
+                    let label = (idx + 1) as u32;
+                    !removed_labels.contains(&label)
+                })
+                .collect();
+
+            if indices_to_keep.len() < num_rows {
+                // Create new array with filtered maxima
+                let mut new_data = Vec::with_capacity(indices_to_keep.len() * 3);
+                for &idx in &indices_to_keep {
+                    let row = merged_maxima_filtered.row(idx);
+                    new_data.push(row[0]);
+                    new_data.push(row[1]);
+                    new_data.push(row[2]);
+                }
+                merged_maxima_filtered = ndarray::Array2::<usize>::from_shape_vec(
+                    (indices_to_keep.len(), 3),
+                    new_data
+                ).unwrap();
+            }
+        }
+    }
+
+    let merged_maxima = merged_maxima_filtered;
+
+    // 9) Extract regions_pbc
+    let regions_pbc = regions_padded.slice(ndarray::s![pad_th..(pad_th+nx), pad_th..(pad_th+ny), pad_th..(pad_th+nz)]).to_owned();
+
+    // 10) Build maxima_info (like Python)
+    let maxima_info_start = Instant::now();
+    let padded_shape = [padded_grid.dim().0 as i64, padded_grid.dim().1 as i64, padded_grid.dim().2 as i64];
+    let original_shape = [nx as i64, ny as i64, nz as i64];
+    let mut maxima_info_vec: Vec<i64> = Vec::new();
+    let mut counter: i64 = 1;
+    for m in merged_maxima.outer_iter() {
+        let m_pad = [m[0] as i64 + pad_th as i64, m[1] as i64 + pad_th as i64, m[2] as i64 + pad_th as i64];
+        // Use Python-style floor division for offset ranges to exactly match Python behavior
+        let off_ranges = [
+            -(((padded_shape[0]-1) as f64 / original_shape[0] as f64).floor() as i64)..=(((padded_shape[0]-1) as f64 / original_shape[0] as f64).floor() as i64),
+            -(((padded_shape[1]-1) as f64 / original_shape[1] as f64).floor() as i64)..=(((padded_shape[1]-1) as f64 / original_shape[1] as f64).floor() as i64),
+            -(((padded_shape[2]-1) as f64 / original_shape[2] as f64).floor() as i64)..=(((padded_shape[2]-1) as f64 / original_shape[2] as f64).floor() as i64),
+        ];
+        for ox in off_ranges[0].clone() { for oy in off_ranges[1].clone() { for oz in off_ranges[2].clone() {
+            let candidate = [m_pad[0] + ox*original_shape[0], m_pad[1] + oy*original_shape[1], m_pad[2] + oz*original_shape[2]];
+            if candidate[0] >= 0 && candidate[1] >= 0 && candidate[2] >= 0 &&
+               candidate[0] < padded_shape[0] && candidate[1] < padded_shape[1] && candidate[2] < padded_shape[2] {
+                let candidate_unpadded = [candidate[0] - pad_th as i64, candidate[1] - pad_th as i64, candidate[2] - pad_th as i64];
+                // Use Python-style floor division and modulo (// and %) for exact compatibility
+                let offset = [
+                    if candidate_unpadded[0] >= 0 { candidate_unpadded[0] / original_shape[0] } else { (candidate_unpadded[0] - original_shape[0] + 1) / original_shape[0] },
+                    if candidate_unpadded[1] >= 0 { candidate_unpadded[1] / original_shape[1] } else { (candidate_unpadded[1] - original_shape[1] + 1) / original_shape[1] },
+                    if candidate_unpadded[2] >= 0 { candidate_unpadded[2] / original_shape[2] } else { (candidate_unpadded[2] - original_shape[2] + 1) / original_shape[2] }
+                ];
+                let image = [
+                    candidate_unpadded[0] - offset[0] * original_shape[0],
+                    candidate_unpadded[1] - offset[1] * original_shape[1], 
+                    candidate_unpadded[2] - offset[2] * original_shape[2]
+                ];
+                maxima_info_vec.extend_from_slice(&[counter, image[0], image[1], image[2], offset[0], offset[1], offset[2]]);
+                counter += 1;
+            }
+        }}}
+    }
+    let rows = (maxima_info_vec.len()/7) as usize;
+    let maxima_info: Array2<i64> = Array2::from_shape_vec((rows,7), maxima_info_vec).unwrap();
+    timing_results.insert("maxima_info_building", maxima_info_start.elapsed());
+
+    // 11) Build unmerged markers from maxima_info and segment unmerged regions
+    let mut unmerged_markers = Array3::<u32>::zeros(padded_grid.dim());
+    for row in maxima_info.rows() {
+        let label = row[0] as u32;
+        let pos = [
+            (row[1] + pad_th as i64 + row[4]*original_shape[0]) as usize,
+            (row[2] + pad_th as i64 + row[5]*original_shape[1]) as usize,
+            (row[3] + pad_th as i64 + row[6]*original_shape[2]) as usize,
+        ];
+        if pos[0] < padded_grid.dim().0 && pos[1] < padded_grid.dim().1 && pos[2] < padded_grid.dim().2 {
+            unmerged_markers[[pos[0], pos[1], pos[2]]] = label;
+        }
+    }
+    let unmerged_padded_py = seeded_watershed_bucket(
+        py,
+        PyArray3::from_owned_array(py, padded_grid.clone()).readonly(),
+        PyArray3::from_owned_array(py, unmerged_markers.clone()).readonly(),
+        Some(PyArray3::from_owned_array(py, padded_void.clone()).readonly()),
+        None,
+    )?;
+    let unmerged_padded = unsafe { unmerged_padded_py.as_ref(py).as_array().to_owned() };
+    let mut regions = unmerged_padded.slice(ndarray::s![pad_th..(pad_th+nx), pad_th..(pad_th+ny), pad_th..(pad_th+nz)]).to_owned();
+
+    // 12) End channel pairs cleanup - find and merge overflow regions across periodic boundaries
+    let endchannel_pairs = find_end_channel_pairs_rs(&regions_pbc, &regions, 0.3);
+    for (from_label, to_label) in endchannel_pairs {
+        // Replace all occurrences of from_label with to_label
+        for region_val in regions.iter_mut() {
+            if *region_val == from_label {
+                *region_val = to_label;
+            }
+        }
+    }
+
+    // 13) Basic outputs assembly
+    let maxima_pbc_dict = {
+        use std::collections::HashMap;
+        let mut map: HashMap<(usize,usize,usize), usize> = HashMap::new();
+        for (i, m) in merged_maxima.outer_iter().enumerate() {
+            map.insert((m[0], m[1], m[2]), i+1);
+        }
+        map
+    };
+
+    let wall_cells = compute_wall_cells_rs(&cell, spacing, wall_thickness);
+    
+    // Classify maxima locations using proper boundary checking like Python
+    let dgrid_shape = [dgrid.dim().0 as i64, dgrid.dim().1 as i64, dgrid.dim().2 as i64];
+    let global_maxima_coords: Vec<[i64;3]> = maxima_info.rows().into_iter().map(|r| {
+        [r[1] + r[4]*dgrid_shape[0], r[2] + r[5]*dgrid_shape[1], r[3] + r[6]*dgrid_shape[2]]
+    }).collect();
+    
+    // Classify each maxima location using the proper boundary logic
+    let mut locs = Vec::new();
+    for coords in &global_maxima_coords {
+        let [z, y, x] = *coords;
+        let depth = dgrid_shape[0];
+        let height = dgrid_shape[1]; 
+        let width = dgrid_shape[2];
+        let zz = wall_cells[0] as i64;
+        let yy = wall_cells[1] as i64;
+        let xx = wall_cells[2] as i64;
+        
+        // Check if inside the box
+        if (0 <= z && z < depth) && (0 <= y && y < height) && (0 <= x && x < width) {
+            locs.push("inside");
+        }
+        // Check if close outside (within tolerance)
+        else if (-zz <= z && z < depth + zz) && (-yy <= y && y < height + yy) && (-xx <= x && x < width + xx) {
+            locs.push("close_outside");
+        }
+        // Otherwise far outside
+        else {
+            locs.push("far_outside");
+        }
+    }
+    
+    let close_or_inside_mask: Vec<bool> = locs.iter().map(|&s| s=="inside" || s=="close_outside").collect();
+    let close_or_inside_indices: Vec<[i64;3]> = global_maxima_coords.iter().enumerate()
+        .filter(|(i,_)| close_or_inside_mask[*i])
+        .map(|(_,idx)| [idx[0], idx[1], idx[2]]).collect();
+    let close_or_inside_ids: Vec<u32> = close_or_inside_mask.iter().enumerate().filter_map(|(i, ok)| if *ok { Some((i+1) as u32) } else { None }).collect();
+
+    // Reindexing exactly following Python implementation
+    let reindexing_start = Instant::now();
+    // First identify valid_maxima_ids (close or inside) - keep this in broader scope for connection marking
+    // NOTE: Python uses ALL close/inside maxima, not just those present in regions
+    // Python calculates this as: valid_maxima_ids = np.where(valid_maxima_mask)[0] + 1
+    let mut valid_maxima_ids: Vec<u32> = Vec::with_capacity(close_or_inside_mask.len());
+    for (i, &is_valid) in close_or_inside_mask.iter().enumerate() {
+        if is_valid {
+            valid_maxima_ids.push((i + 1) as u32);
+        }
+    }
+
+    // Debug: Print valid_maxima_ids to verify correctness
+    // println!("Rust valid_maxima_ids: {:?}", valid_maxima_ids);
+    // println!("Rust close_or_inside_ids: {:?}", close_or_inside_ids);
+
+    // Create remap dictionary following exact Python algorithm
+    // Pre-allocate with estimated capacity to reduce reallocations
+    let estimated_capacity = maxima_info.len_of(ndarray::Axis(0)) + regions.iter().filter(|&&v| v != 0).count();
+    let mut remap_dict: std::collections::HashMap<u32, u32> = std::collections::HashMap::with_capacity(estimated_capacity);
+    let mut used_indices: std::collections::HashSet<u32> = std::collections::HashSet::with_capacity(estimated_capacity);
+
+    // Stage 1: assign indices to periodic maxima (maxima_pbc)
+    let mut merged_maxima_indices: std::collections::HashMap<(i64, i64, i64), u32> = std::collections::HashMap::with_capacity(merged_maxima.len_of(ndarray::Axis(0)));
+    for (i, m) in merged_maxima.outer_iter().enumerate() {
+        merged_maxima_indices.insert((m[0] as i64, m[1] as i64, m[2] as i64), (i + 1) as u32);
+    }
+
+    // Optimize the loop by avoiding repeated hashmap lookups
+    for row in maxima_info.rows() {
+        let original_maxima = (row[1], row[2], row[3]);
+        let offset = (row[4], row[5], row[6]);
+        if offset == (0, 0, 0) {
+            if let Some(&target_index) = merged_maxima_indices.get(&original_maxima) {
+                if used_indices.insert(target_index) { // insert returns true if the value was not already present
+                    remap_dict.insert(row[0] as u32, target_index);
+                }
+            }
+        }
+    }
+
+    // Stage 2: assign indices to valid maxima (close_by_maxima)
+    let mut next_index = if !used_indices.is_empty() {
+        *used_indices.iter().max().unwrap() + 1
+    } else {
+        1
+    };
+
+    for &vid in &valid_maxima_ids {
+        if !remap_dict.contains_key(&vid) {
+            remap_dict.insert(vid, next_index);
+            used_indices.insert(next_index);
+            next_index += 1;
+        }
+    }
+
+    // Stage 3: assign indices to remaining unique regions in unmerged_regions
+    // Use a more efficient approach with a HashSet for uniqueness
+    let unique_unmerged_regions: std::collections::HashSet<u32> = regions.iter().cloned().filter(|&v| v != 0).collect();
+    let mut unique_unmerged_regions_vec: Vec<u32> = unique_unmerged_regions.into_iter().collect();
+    unique_unmerged_regions_vec.sort_unstable();
+
+    next_index = if !used_indices.is_empty() {
+        *used_indices.iter().max().unwrap() + 1
+    } else {
+        1
+    };
+
+    for &r in &unique_unmerged_regions_vec {
+        if !remap_dict.contains_key(&r) {
+            remap_dict.insert(r, next_index);
+            used_indices.insert(next_index);
+            next_index += 1;
+        }
+    }
+
+    // Stage 4: assign indices to remaining unique regions in unmerged_padded_regions
+    let unique_unmerged_padded_regions_set: std::collections::HashSet<u32> = unmerged_padded.iter().cloned().filter(|&v| v != 0).collect();
+    let mut unique_unmerged_padded_regions_vec: Vec<u32> = unique_unmerged_padded_regions_set.into_iter().collect();
+    unique_unmerged_padded_regions_vec.sort_unstable();
+
+    next_index = if !used_indices.is_empty() {
+        used_indices.iter().max().unwrap() + 1
+    } else {
+        1
+    };
+
+    // Track where padding indices start (for second phase reindexing)
+    let padding_indices_start_here = next_index;
+
+    for &r in &unique_unmerged_padded_regions_vec {
+        if !remap_dict.contains_key(&r) {
+            remap_dict.insert(r, next_index);
+            used_indices.insert(next_index);
+            next_index += 1;
+        }
+    }
+    
+    // Apply remapping to maxima_info (update column 0 with new labels)
+    let mut remapped_maxima_info = maxima_info.clone();
+    for mut row in remapped_maxima_info.rows_mut() {
+        let original_label = row[0] as u32;
+        if let Some(&new_label) = remap_dict.get(&original_label) {
+            row[0] = new_label as i64;
+        }
+    }
+    
+    // Apply remapping to regions and unmerged_padded
+    // Use more efficient iteration patterns
+    let mut remapped_regions = regions.clone();
+    for ((i, j, k), value) in remapped_regions.indexed_iter_mut() {
+        if *value != 0 {
+            if let Some(&new_value) = remap_dict.get(value) {
+                *value = new_value;
+            }
+        }
+    }
+
+    let mut remapped_unmerged_padded = unmerged_padded.clone();
+    for ((i, j, k), value) in remapped_unmerged_padded.indexed_iter_mut() {
+        if *value != 0 {
+            if let Some(&new_value) = remap_dict.get(value) {
+                *value = new_value;
+            }
+        }
+    }
+    
+    // Sort maxima_info by first column (like Python does)
+    let mut maxima_info_rows: Vec<Vec<i64>> = Vec::new();
+    for row in remapped_maxima_info.rows() {
+        let row_vec: Vec<i64> = row.to_vec();
+        maxima_info_rows.push(row_vec);
+    }
+    maxima_info_rows.sort_by(|a, b| a[0].cmp(&b[0]));
+    let maxima_info_data: Vec<i64> = maxima_info_rows.into_iter().flatten().collect();
+    let maxima_info = Array2::from_shape_vec((maxima_info_data.len()/7, 7), maxima_info_data).unwrap();
+    
+    let regions = remapped_regions;
+    let unmerged_padded = remapped_unmerged_padded;
+    timing_results.insert("first_reindexing", reindexing_start.elapsed());
+
+    let pbc_groups = build_pbc_groups(&regions, &maxima_info);
+
+    let unique_regions: Vec<u32> = regions.iter().cloned().filter(|&v| v!=0).collect::<Vec<_>>();
+    let mut unique_regions_set: std::collections::HashSet<u32> = unique_regions.into_iter().collect();
+    let mut unique_regions_vec: Vec<u32> = unique_regions_set.drain().collect();
+    unique_regions_vec.sort_unstable();
+
+    // Optional connections and second phase reindexing
+    let mut py_connections: Option<PyObject> = None;
+    let mut final_maxima_info = maxima_info.clone();
+    let mut final_regions_padded = unmerged_padded.clone();
+
+    if compute_connections {
+        let connections_start = Instant::now();
+        let conn = window_connections(
+            py,
+            PyArray3::from_owned_array(py, unmerged_padded.clone()).readonly(),
+            PyArray3::from_owned_array(py, padded_grid.clone()).readonly(),
+            pad_th,
+            PyArray2::from_owned_array(py, cell_cols_nd.clone()).readonly(),
+            1.5,
+        )?;
+        timing_results.insert("window_connections", connections_start.elapsed());
+
+        // Extract connections list from Python object
+        let mut connections_list = conn.extract::<Vec<(Vec<u32>, bool, String, Vec<Vec<f64>>, Vec<f64>)>>(py)?;
+
+        // Mark connections as periodic if any maxima is far from the box (like Python does)
+        // Use the reindexed valid region IDs (after first reindexing) to match the connection indices
+        let reindexed_valid_region_ids: std::collections::HashSet<u32> = close_or_inside_ids.iter()
+            .filter_map(|&original_id| remap_dict.get(&original_id).copied())
+            .collect();
+
+        for conn in &mut connections_list {
+            let has_far_maxima = conn.0.iter().any(|&idx| !reindexed_valid_region_ids.contains(&idx));
+            if has_far_maxima {
+                conn.2 = "periodic".to_string();
+            }
+        }
+
+        // Second phase reindexing (connected nodes getting priority)
+        let second_reindexing_start = Instant::now();
+        // Build remap_dict2 following Python algorithm
+        let mut remap_dict2: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        let unique_regions_padded_set: std::collections::HashSet<u32> = unmerged_padded.iter().cloned().filter(|&v| v != 0).collect();
+
+        let mut next_index = padding_indices_start_here;
+
+        // Get unique connected indices
+        let mut unique_connected_indices: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for conn in &connections_list {
+            for &idx in &conn.0 {
+                unique_connected_indices.insert(idx);
+            }
+        }
+
+        // Priority to connected nodes that are in padded regions (>= padding_indices_start_here)
+        for &c in &unique_connected_indices {
+            if c >= padding_indices_start_here {
+                remap_dict2.insert(c, next_index);
+                next_index += 1;
+            }
+        }
+
+        // Remaining padded regions
+        let mut unique_regions_padded_vec: Vec<u32> = unique_regions_padded_set.into_iter().collect();
+        unique_regions_padded_vec.sort_unstable();
+
+        for &r in &unique_regions_padded_vec {
+            if !remap_dict2.contains_key(&r) && r >= padding_indices_start_here {
+                remap_dict2.insert(r, next_index);
+                next_index += 1;
+            }
+        }
+
+        // Apply remapping to regions_padded
+        let mut remapped_regions_padded = unmerged_padded.clone();
+        for ((i, j, k), &value) in unmerged_padded.indexed_iter() {
+            if value != 0 {
+                if let Some(&new_value) = remap_dict2.get(&value) {
+                    remapped_regions_padded[[i, j, k]] = new_value;
+                }
+            }
+        }
+        final_regions_padded = remapped_regions_padded;
+
+        // Apply remapping to connections
+        let mut remapped_connections = connections_list.clone();
+        for conn in &mut remapped_connections {
+            for idx in &mut conn.0 {
+                if let Some(&new_idx) = remap_dict2.get(idx) {
+                    *idx = new_idx;
+                }
+            }
+        }
+
+        // Apply remapping to maxima_info
+        let mut remapped_maxima_info_2 = maxima_info.clone();
+        for mut row in remapped_maxima_info_2.rows_mut() {
+            let original_label = row[0] as u32;
+            if let Some(&new_label) = remap_dict2.get(&original_label) {
+                row[0] = new_label as i64;
+            }
+        }
+
+        // Sort maxima_info by first column again
+        let mut maxima_info_rows: Vec<Vec<i64>> = Vec::new();
+        for row in remapped_maxima_info_2.rows() {
+            maxima_info_rows.push(row.to_vec());
+        }
+        maxima_info_rows.sort_by(|a, b| a[0].cmp(&b[0]));
+        let maxima_info_data: Vec<i64> = maxima_info_rows.into_iter().flatten().collect();
+        final_maxima_info = Array2::from_shape_vec((maxima_info_data.len()/7, 7), maxima_info_data).unwrap();
+
+        // Convert remapped connections back to Python format
+        let py_conn_list = PyList::empty(py);
+        for conn in remapped_connections {
+            let regs_arr = PyArray1::<u32>::from_vec(py, conn.0);
+            let centers_vec: Vec<Vec<f64>> = conn.3;
+            let centers_arr = PyArray2::<f64>::from_vec2(py, &centers_vec)?;
+            let radii_arr = PyArray1::<f64>::from_vec(py, conn.4);
+
+            let tup = PyTuple::new(
+                py,
+                &[
+                    regs_arr.into_py(py),
+                    conn.1.into_py(py),
+                    conn.2.into_py(py),
+                    centers_arr.into_py(py),
+                    radii_arr.into_py(py),
+                ],
+            );
+            py_conn_list.append(tup)?;
+        }
+        py_connections = Some(py_conn_list.into());
+        timing_results.insert("second_reindexing", second_reindexing_start.elapsed());
+        timing_results.insert("total_connections", connections_start.elapsed());
+    }
+
+    // Debug: Add some diagnostic information
+    // let unique_regions_before: std::collections::HashSet<u32> = regions.iter().cloned().filter(|&v| v != 0).collect();
+    // let mut unique_before_vec: Vec<u32> = unique_regions_before.into_iter().collect();
+    // unique_before_vec.sort_unstable();
+    // println!("Unique regions before reindexing: {:?}", unique_before_vec);
+    // 
+    // let mut remap_vec: Vec<(u32, u32)> = remap_dict.iter().map(|(&k, &v)| (k, v)).collect();
+    // remap_vec.sort_by_key(|&(k, _)| k);
+    // println!("Remap dict: {:?}", remap_vec);
+    // 
+    // let unique_regions_after: std::collections::HashSet<u32> = regions.iter().cloned().filter(|&v| v != 0).collect();
+    // let mut unique_after_vec: Vec<u32> = unique_regions_after.into_iter().collect();
+    // unique_after_vec.sort_unstable();
+    // println!("Unique regions after reindexing: {:?}", unique_after_vec);
+
+    // Second phase reindexing: recalculate close_or_inside using final_maxima_info (like Python does)
+    // Recalculate maxima indices using the reindexed final_maxima_info
+    let final_maxima_coords: Vec<[i64;3]> = final_maxima_info.rows().into_iter().map(|r| {
+        [r[1] + r[4]*dgrid_shape[0], r[2] + r[5]*dgrid_shape[1], r[3] + r[6]*dgrid_shape[2]]
+    }).collect();
+    
+    // Recalculate location classifications for the reindexed maxima using same logic as original
+    let mut final_locs = Vec::new();
+    for coords in &final_maxima_coords {
+        let [z, y, x] = *coords;
+        let depth = dgrid_shape[0];
+        let height = dgrid_shape[1]; 
+        let width = dgrid_shape[2];
+        let zz = wall_cells[0] as i64;
+        let yy = wall_cells[1] as i64;
+        let xx = wall_cells[2] as i64;
+        
+        // Check if inside the box
+        if (0 <= z && z < depth) && (0 <= y && y < height) && (0 <= x && x < width) {
+            final_locs.push("inside");
+        }
+        // Check if close outside (within tolerance)
+        else if (-zz <= z && z < depth + zz) && (-yy <= y && y < height + yy) && (-xx <= x && x < width + xx) {
+            final_locs.push("close_outside");
+        }
+        // Otherwise far outside
+        else {
+            final_locs.push("far_outside");
+        }
+    }
+    
+    // Create new close_or_inside masks and indices based on reindexed data
+    let final_close_or_inside_mask: Vec<bool> = final_locs.iter().map(|&s| s=="inside" || s=="close_outside").collect();
+    let final_close_or_inside_indices: Vec<[i64;3]> = final_maxima_coords.iter().enumerate()
+        .filter(|(i,_)| final_close_or_inside_mask[*i])
+        .map(|(_,idx)| [idx[0], idx[1], idx[2]]).collect();
+    let final_close_or_inside_ids: Vec<u32> = final_close_or_inside_mask.iter().enumerate().filter_map(|(i, ok)| if *ok { Some((i+1) as u32) } else { None }).collect();
+
+    // Build Python dict with final results (using reindexed data like Python does)
+    let output_assembly_start = Instant::now();
+    let out = PyDict::new(py);
+    out.set_item("maxima_pbc", PyArray2::from_owned_array(py, merged_maxima).to_owned())?;
+    out.set_item("regions_pbc", PyArray3::from_owned_array(py, regions_pbc).to_owned())?;
+    out.set_item("maxima_info", PyArray2::from_owned_array(py, final_maxima_info.clone()).to_owned())?;
+    out.set_item("regions", PyArray3::from_owned_array(py, regions).to_owned())?;
+    {
+        let list = PyList::empty(py);
+        for g in &pbc_groups {
+            let pyset = pyo3::types::PySet::empty(py)?;
+            for lbl in g { pyset.add(*lbl)?; }
+            list.append(pyset)?;
+        }
+        out.set_item("pbc_groups", list)?;
+    }
+    out.set_item("close_or_inside_maxima", PyArray2::from_vec2(py, &final_close_or_inside_indices.iter().map(|v| vec![v[0],v[1],v[2]]).collect::<Vec<_>>())?)?;
+    out.set_item("close_or_inside_regions", PyArray1::from_vec(py, final_close_or_inside_ids))?;
+    out.set_item("unique_regions", PyArray1::from_vec(py, unique_regions_vec))?;
+    // maxima_pbc_dict as dictionary
+    {
+        let dict = PyDict::new(py);
+        for ((i,j,k), lbl) in maxima_pbc_dict.iter() {
+            dict.set_item((i,j,k), *lbl as u32)?;
+        }
+        out.set_item("maxima_pbc_dict", dict)?;
+    }
+    let all_maxima_coords: Vec<[i64;3]> = final_maxima_info.rows().into_iter().map(|r| {
+        [r[1] + r[4]*dgrid_shape[0], r[2] + r[5]*dgrid_shape[1], r[3] + r[6]*dgrid_shape[2]]
+    }).collect();
+    let all_maxima_arr: Array2<i64> = Array2::from_shape_vec((all_maxima_coords.len(),3), all_maxima_coords.iter().flat_map(|c| vec![c[0], c[1], c[2]]).collect()).unwrap();
+    out.set_item("all_maxima", PyArray2::from_owned_array(py, all_maxima_arr).to_owned())?;
+    out.set_item("maxima_relative_locations", PyList::new(py, final_locs))?;
+    if let Some(conn) = py_connections { out.set_item("connections", conn)?; }
+    if return_padded_regions { out.set_item("regions_padded", PyArray3::from_owned_array(py, final_regions_padded).to_owned())?; }
+    // input_params
+    let params = PyDict::new(py);
+    params.set_item("mask_thickness", mask_thickness)?;
+    params.set_item("h", h)?;
+    params.set_item("min_distance", min_distance)?;
+    params.set_item("threshold_abs", threshold_abs)?;
+    params.set_item("spacing", spacing)?;
+    params.set_item("minimum_window_separation", minimum_window_separation)?;
+    params.set_item("compactness", compactness)?;
+    params.set_item("wall_thickness", wall_thickness)?;
+    params.set_item("extra_padding", extra_padding)?;
+    params.set_item("padding_thickness", pad_th)?;
+    params.set_item("min_region_size", min_region_size)?;
+    out.set_item("input_params", params)?;
+    if return_dgrid { out.set_item("dgrid", PyArray3::from_owned_array(py, dgrid).to_owned())?; }
+    timing_results.insert("output_assembly", output_assembly_start.elapsed());
+    timing_results.insert("total_time", start_time.elapsed());
+
+    // Add timing results to output
+    {
+        let timing_dict = PyDict::new(py);
+        for (key, duration) in &timing_results {
+            timing_dict.set_item(key, duration.as_secs_f64())?;
+        }
+        out.set_item("timing_results", timing_dict)?;
+
+        // Debug: Print timing results to stderr (sorted for consistency)
+        eprintln!("=== RUST TIMING RESULTS ===");
+        let mut sorted_keys: Vec<&str> = timing_results.keys().cloned().collect();
+        sorted_keys.sort();
+        for key in sorted_keys {
+            if let Some(duration) = timing_results.get(key) {
+                eprintln!("{}: {:.4}", key, duration.as_secs_f64());
+            }
+        }
+        eprintln!("=== END RUST TIMING ===");
+    }
+
+    Ok(out.into())
+}
+
+
 /// Find the pore limiting radius using binary search and percolation analysis
 #[pyfunction]
 #[pyo3(text_signature = "(distance_grid)")]
@@ -5755,4 +6727,214 @@ fn find_pore_limiting_radius(
     } else {
         Ok(None)
     }
+}
+
+/// Simple binary dilation for 3D arrays (26-connectivity)
+fn binary_dilation_3d(mask: &ndarray::Array3<bool>) -> ndarray::Array3<bool> {
+    let (nx, ny, nz) = mask.dim();
+    let mut dilated = mask.clone();
+    
+    // 26-connectivity offsets
+    let offsets = [
+        (-1,-1,-1), (-1,-1,0), (-1,-1,1),
+        (-1,0,-1),  (-1,0,0),  (-1,0,1),
+        (-1,1,-1),  (-1,1,0),  (-1,1,1),
+        (0,-1,-1),  (0,-1,0),  (0,-1,1),
+        (0,0,-1),   (0,0,1),
+        (0,1,-1),   (0,1,0),   (0,1,1),
+        (1,-1,-1),  (1,-1,0),  (1,-1,1),
+        (1,0,-1),   (1,0,0),   (1,0,1),
+        (1,1,-1),   (1,1,0),   (1,1,1),
+    ];
+    
+    for ((i, j, k), &value) in mask.indexed_iter() {
+        if value {
+            for &(di, dj, dk) in &offsets {
+                let ni = i as i32 + di;
+                let nj = j as i32 + dj;
+                let nk = k as i32 + dk;
+                
+                if ni >= 0 && nj >= 0 && nk >= 0 &&
+                   (ni as usize) < nx && (nj as usize) < ny && (nk as usize) < nz {
+                    dilated[[ni as usize, nj as usize, nk as usize]] = true;
+                }
+            }
+        }
+    }
+    
+    dilated
+}
+
+/// Find end channel pairs that need to be merged due to periodic boundary overflow
+/// 
+/// This function identifies small regions on the walls of the unit cell that should be
+/// merged with larger regions they are connected to, based on the Python implementation.
+fn find_end_channel_pairs_rs(
+    regions_pbc: &ndarray::Array3<u32>,
+    regions_nonpbc: &ndarray::Array3<u32>,
+    size_ratio: f64,
+) -> Vec<(u32, u32)> {
+    let box_shape = regions_nonpbc.dim();
+    let (nx, ny, nz) = box_shape;
+    
+    // Create wall mask - mark the 6 faces of the box
+    let mut wall_mask = ndarray::Array3::<bool>::default(box_shape);
+    
+    // Top and bottom faces (z-direction)
+    wall_mask.slice_mut(ndarray::s![0, .., ..]).fill(true);
+    wall_mask.slice_mut(ndarray::s![nx-1, .., ..]).fill(true);
+    
+    // Front and back faces (y-direction)
+    wall_mask.slice_mut(ndarray::s![.., 0, ..]).fill(true);
+    wall_mask.slice_mut(ndarray::s![.., ny-1, ..]).fill(true);
+    
+    // Left and right faces (x-direction)
+    wall_mask.slice_mut(ndarray::s![.., .., 0]).fill(true);
+    wall_mask.slice_mut(ndarray::s![.., .., nz-1]).fill(true);
+    
+    // Find unique labels on the walls (excluding background = 0)
+    let mut wall_labels = std::collections::HashSet::new();
+    for ((i, j, k), &is_wall) in wall_mask.indexed_iter() {
+        if is_wall {
+            let label = regions_nonpbc[[i, j, k]];
+            if label != 0 {
+                wall_labels.insert(label);
+            }
+        }
+    }
+    
+    let mut pairs = Vec::new();
+    
+    for &label_id in &wall_labels {
+        // Create mask for current label
+        let mask = regions_nonpbc.mapv(|v| v == label_id);
+        
+        // Find corresponding PBC labels for this region
+        let mut pbc_labels = std::collections::HashSet::new();
+        for ((i, j, k), &is_current) in mask.indexed_iter() {
+            if is_current {
+                let pbc_label = regions_pbc[[i, j, k]];
+                if pbc_label != 0 {
+                    pbc_labels.insert(pbc_label);
+                }
+            }
+        }
+        
+        // Skip if ambiguous (should have exactly one PBC label)
+        if pbc_labels.len() != 1 {
+            continue;
+        }
+        
+        let pbc_label = *pbc_labels.iter().next().unwrap();
+        
+        // Find all other regions on the same wall with the same PBC label
+        let same_wall_mask = regions_pbc.indexed_iter()
+            .zip(wall_mask.indexed_iter())
+            .map(|(((i, j, k), &pbc_val), (_, &is_wall))| {
+                is_wall && pbc_val == pbc_label
+            })
+            .collect::<Vec<bool>>();
+            
+        let mut same_wall_mask_array = ndarray::Array3::<bool>::default(box_shape);
+        for (idx, &val) in same_wall_mask.iter().enumerate() {
+            let k = idx % nz;
+            let j = (idx / nz) % ny;
+            let i = idx / (ny * nz);
+            same_wall_mask_array[[i, j, k]] = val;
+        }
+        
+        // Get other labels on the same wall
+        let mut other_labels = std::collections::HashSet::new();
+        for ((i, j, k), &is_same_wall) in same_wall_mask_array.indexed_iter() {
+            if is_same_wall {
+                let other_label = regions_nonpbc[[i, j, k]];
+                if other_label != 0 && other_label != label_id {
+                    other_labels.insert(other_label);
+                }
+            }
+        }
+        
+        if other_labels.is_empty() {
+            continue; // No other regions of this PBC group on the wall
+        }
+        
+        // Check for adjacency with each potential neighbor
+        for &neighbor_label in &other_labels {
+            let neighbor_mask = regions_nonpbc.mapv(|v| v == neighbor_label);
+            let neighbor_wall_mask = neighbor_mask.indexed_iter()
+                .zip(wall_mask.indexed_iter())
+                .map(|(((i, j, k), &is_neighbor), (_, &is_wall))| {
+                    is_neighbor && is_wall
+                })
+                .collect::<Vec<bool>>();
+                
+            let mut neighbor_wall_mask_array = ndarray::Array3::<bool>::default(box_shape);
+            for (idx, &val) in neighbor_wall_mask.iter().enumerate() {
+                let k = idx % nz;
+                let j = (idx / nz) % ny;
+                let i = idx / (ny * nz);
+                neighbor_wall_mask_array[[i, j, k]] = val;
+            }
+            
+            // Check adjacency using binary dilation
+            let dilated_mask = binary_dilation_3d(&mask);
+            let is_adjacent = dilated_mask.indexed_iter()
+                .zip(neighbor_wall_mask_array.indexed_iter())
+                .any(|(((i, j, k), &dilated), (_, &neighbor_wall))| {
+                    dilated && neighbor_wall
+                });
+            
+            if is_adjacent {
+                // Calculate sizes
+                let size_current = mask.iter().filter(|&&v| v).count();
+                let size_neighbor = neighbor_mask.iter().filter(|&&v| v).count();
+                
+                // Apply size ratio criterion
+                if (size_current as f64) < size_ratio * (size_neighbor as f64) {
+                    pairs.push((label_id, neighbor_label));
+                }
+                break; // Only consider the first touching neighbor
+            }
+        }
+    }
+    
+    pairs
+}
+
+#[pymodule]
+fn mcli_rust(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
+    // Enable better error reporting when the module is imported from Python.
+    pyo3_log::init();
+
+    m.add_function(wrap_pyfunction!(dgrid_from_atoms, m)?)?;
+    m.add_function(wrap_pyfunction!(egrid_from_atoms, m)?)?;
+    m.add_function(wrap_pyfunction!(window_connections, m)?)?;
+    m.add_function(wrap_pyfunction!(periodic_gaussian_filter, m)?)?;
+    m.add_function(wrap_pyfunction!(seeded_watershed_bucket, m)?)?;
+    m.add_function(wrap_pyfunction!(seeded_watershed, m)?)?;
+    m.add_function(wrap_pyfunction!(seeded_watershed_masked, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_h_morph, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_h_morph_opening, m)?)?;
+    m.add_function(wrap_pyfunction!(move_maxima_to_peaks, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_h_morph2, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_h_morph_simple, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_h_morph_no_spacing, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_adaptive_geometry, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_selective_smoothing, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_selective_smoothing_parallel, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_percolation_guided, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_voronoi_based, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_multiscale_log, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_adaptive_h, m)?)?;
+    m.add_function(wrap_pyfunction!(do_periodic_segmentation_rust, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_pore_sizes_uniform, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_pore_sizes_for_psd_pocketwise, m)?)?;
+    m.add_function(wrap_pyfunction!(find_local_maxima_pbc, m)?)?;
+    m.add_function(wrap_pyfunction!(find_local_maxima_cart, m)?)?;
+    m.add_function(wrap_pyfunction!(find_pore_limiting_radius, m)?)?;
+    m.add_function(wrap_pyfunction!(find_end_channel_pairs, m)?)?;
+    m.add("__all__", ["dgrid_from_atoms", "egrid_from_atoms", "window_connections", "periodic_gaussian_filter", "seeded_watershed_bucket", "seeded_watershed", "seeded_watershed_masked", "detect_maxima_h_morph", "detect_maxima_h_morph_opening", "move_maxima_to_peaks", "detect_maxima_h_morph2", "detect_maxima_h_morph_simple", "detect_maxima_h_morph_no_spacing", "detect_maxima_adaptive_geometry", "detect_maxima_selective_smoothing", "detect_maxima_selective_smoothing_parallel", "detect_maxima_percolation_guided", "detect_maxima_voronoi_based", "detect_maxima_multiscale_log", "detect_maxima_adaptive_h", "do_periodic_segmentation_rust", "compute_pore_sizes_uniform", "compute_pore_sizes_for_psd_pocketwise", "find_local_maxima_pbc", "find_local_maxima_cart", "find_pore_limiting_radius", "find_end_channel_pairs" ])?;
+
+    // By returning Ok(()), the module initialization is successful.
+    Ok(())
 }

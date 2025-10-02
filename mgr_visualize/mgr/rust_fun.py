@@ -21,9 +21,9 @@ def dgrid_from_atoms_rust(ase_atoms, spacing, radii=None):
     :return: 3D distance grid where values represent distances to atom surfaces
     :rtype: numpy.ndarray
     """
-    import mgr_rust
+    import mcli_rust
 
-    logger.info(f"Using {mgr_rust.rayon_num_threads()} threads for parallel processing")
+    logger.info(f"Using {mcli_rust.rayon_num_threads()} threads for parallel processing")
     from ase.geometry import cellpar_to_cell
     from ase.data import vdw_radii
 
@@ -32,7 +32,7 @@ def dgrid_from_atoms_rust(ase_atoms, spacing, radii=None):
     fpoints = ase_atoms.get_scaled_positions() - 0.5
     cell = cellpar_to_cell(ase_atoms.cell.cellpar())
     nx, ny, nz = (ase_atoms.cell.cellpar()[:3] / spacing).astype(int) + 1
-    dgrid = mgr_rust.dgrid_from_atoms(fpoints, cell, radii, int(nx), int(ny), int(nz))
+    dgrid = mcli_rust.dgrid_from_atoms(fpoints, cell, radii, int(nx), int(ny), int(nz))
     return dgrid
 
 
@@ -58,11 +58,11 @@ def egrid_from_atoms_rust(
     :return: 3D energy grid where values represent interaction energies
     :rtype: numpy.ndarray
     """
-    import mgr_rust
+    import mcli_rust
     import mofography as mgr
     from ase.geometry import cellpar_to_cell
     from .compute import get_repetitions_to_meet_cutoff
-    logger.info(f"Using {mgr_rust.rayon_num_threads()} threads for parallel processing")
+    logger.info(f"Using {mcli_rust.rayon_num_threads()} threads for parallel processing")
     if forcefield_mixed is None:
         forcefield_mixed = mgr.mix_lorentz_berthelot(
             ase_atoms, probe_symbol=probe_symbol
@@ -82,7 +82,7 @@ def egrid_from_atoms_rust(
     nx, ny, nz = nx_unit * nx_cells, ny_unit * ny_cells, nz_unit * nz_cells # grid points for supercell
     # compute supercell egrid using rust. this is easier for parallelization in rust since we don
     # 't have a cell list
-    egrid_super = mgr_rust.egrid_from_atoms(frac, cell, eps, sig, nx, ny, nz, cutoff=cutoff)
+    egrid_super = mcli_rust.egrid_from_atoms(frac, cell, eps, sig, nx, ny, nz, cutoff=cutoff)
     egrid = egrid_super[:nx_unit, :ny_unit, :nz_unit] # grab just one unit cell that's all we need
 
     if return_ncells:
@@ -149,9 +149,9 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     from time import time
 
     # from tqdm import tqdm
-    import mgr_rust
+    import mcli_rust
 
-    logger.info(f"Using {mgr_rust.rayon_num_threads()} threads for parallel processing")
+    logger.info(f"Using {mcli_rust.rayon_num_threads()} threads for parallel processing")
     start_time = time()
     from mofography import (
         compute_wall_cells,
@@ -217,9 +217,9 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     # )
 
     cell = cellpar_to_cell(mat_atoms.cell.cellpar()).T
-    # merged_maxima, unmerged_maxima, raw_maxima = mgr_rust.detect_maxima_h_morph(dgrid, spacing=spacing, h=h, threshold_abs=threshold_abs, min_distance=min_distance, sigma_smooth=1.0, cell=cell)
+    # merged_maxima, unmerged_maxima, raw_maxima = mcli_rust.detect_maxima_h_morph(dgrid, spacing=spacing, h=h, threshold_abs=threshold_abs, min_distance=min_distance, sigma_smooth=1.0, cell=cell)
     merged_maxima, unmerged_maxima, raw_maxima = (
-        mgr_rust.detect_maxima_selective_smoothing_parallel(
+        mcli_rust.detect_maxima_selective_smoothing_parallel(
             dgrid,
             preserve_threshold=3.0,
             smooth_threshold=6.0,
@@ -268,7 +268,7 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     # optimized_positions.shape
     # use the rust functions instead
     # * optimize the maxima positions (unused)
-    optimized_positions, optimized_values = mgr_rust.move_maxima_to_peaks(
+    optimized_positions, optimized_values = mcli_rust.move_maxima_to_peaks(
         dt.astype(np.float32), merged_maxima.astype(np.uintp)
     )
     optimized_positions = np.asarray(optimized_positions)
@@ -307,7 +307,7 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     # )
 
     # run the watershed segmentation using the merged markers.
-    padded_regions = mgr_rust.seeded_watershed_bucket(
+    padded_regions = mcli_rust.seeded_watershed_bucket(
         padded_grid.astype(np.float32),
         padded_markers.astype(np.uint32),
         mask=padded_void.astype(np.uint8),
@@ -378,7 +378,7 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
         padded_void = np.pad(void_mask, padding_thickness, mode="wrap")
 
         # run the watershed segmentation using the merged markers.
-        padded_regions = mgr_rust.seeded_watershed_bucket(
+        padded_regions = mcli_rust.seeded_watershed_bucket(
             padded_grid.astype(np.float32),
             padded_markers.astype(np.uint32),
             mask=padded_void.astype(np.uint8),
@@ -460,7 +460,7 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     #     )
 
     # compute unmerged regions
-    unmerged_padded_regions = mgr_rust.seeded_watershed_bucket(
+    unmerged_padded_regions = mcli_rust.seeded_watershed_bucket(
         padded_grid.astype(np.float32),
         seeds=unmerged_markers.astype(np.uint32),
         mask=padded_void.astype(np.uint8),
@@ -766,7 +766,7 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
             } Adjusting for periodic connections\n"
         )
 
-        connections_list = mgr_rust.window_connections(
+        connections_list = mcli_rust.window_connections(
             regions_padded.astype(np.uint32),
             padded_grid.astype(np.float32),
             padding_thickness,
@@ -924,12 +924,12 @@ def compute_pore_sizes_uniform_rust(dgrid, ase_atoms, num_samples_total=10000):
     :return: Tuple of (sample_points, pore_sizes) where sample_points are the sampled coordinates and pore_sizes are the corresponding pore diameters
     :rtype: tuple[numpy.ndarray, numpy.ndarray]
     """
-    import mgr_rust
+    import mcli_rust
     from ase.geometry import cellpar_to_cell
     import numpy as np
 
     cell = cellpar_to_cell(ase_atoms.cell.cellpar()).T
-    sample_points, pore_sizes = mgr_rust.compute_pore_sizes_uniform(
+    sample_points, pore_sizes = mcli_rust.compute_pore_sizes_uniform(
         dgrid, cell, num_samples_total=num_samples_total
     )
     return sample_points, pore_sizes
@@ -1025,13 +1025,13 @@ def compute_pore_sizes_pocketwise_rust(
     :return: Tuple of (sample_points, pore_sizes, region_labels)
     :rtype: tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray]
     """
-    import mgr_rust
+    import mcli_rust
     from ase.geometry import cellpar_to_cell
     import numpy as np
 
     cell = cellpar_to_cell(ase_atoms.cell.cellpar()).T
     sample_points, pore_sizes, region_labels = (
-        mgr_rust.compute_pore_sizes_for_psd_pocketwise(
+        mcli_rust.compute_pore_sizes_for_psd_pocketwise(
             dgrid,
             regions_pbc,
             cell,
