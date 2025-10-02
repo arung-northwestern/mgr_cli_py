@@ -7,8 +7,8 @@ import time
 import mcli
 
 # Import the Rust library directly
-import mgr_cli_py
-rust_lib = mgr_cli_py
+import mcli_rust
+rust_lib = mcli_rust
 
 def test_direct_python():
     """Test calling the Rust function directly from Python"""

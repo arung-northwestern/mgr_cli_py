@@ -6902,7 +6902,7 @@ fn find_end_channel_pairs_rs(
 }
 
 #[pymodule]
-fn mgr_cli_py(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
+fn mcli_rust(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     // Enable better error reporting when the module is imported from Python.
     pyo3_log::init();
 

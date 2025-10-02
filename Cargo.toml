@@ -1,11 +1,11 @@
 [package]
-name = "mgr_cli_py"
+name = "mcli_rust"
 version = "0.1.0"
 edition = "2021"
 
 # We are building a shared library that can be imported from Python.
 [lib]
-name = "mgr_cli_py"
+name = "mcli_rust"
 crate-type = ["cdylib"]
 
 [dependencies]

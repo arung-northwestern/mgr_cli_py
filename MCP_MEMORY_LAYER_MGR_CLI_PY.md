@@ -1,6 +1,6 @@
 # MCP Memory Layer: MGR CLI PY
 ## Project Overview
-**Location**: `/mnt/windows/Users/arung/shared_cloned_repos/repos/mofography_clones/mgr_standalone/mgr_cli_py/`
+**Location**: `/mnt/windows/Users/arung/shared_cloned_repos/repos/mofography_clones/mgr_standalone/mcli_rust/`
 
 **Purpose**: High-performance CLI tool for Metal-Organic Framework (MOF) analysis with Rust backend for computational performance.
 
@@ -31,7 +31,7 @@ strip = true         # Remove debug symbols
 ```python
 rust_extensions=[
     RustExtension(
-        "mgr_cli_py",
+        "mcli_rust",
         path="Cargo.toml",
         rustc_flags=["-C", "target-cpu=native", "-C", "opt-level=3"],
     )

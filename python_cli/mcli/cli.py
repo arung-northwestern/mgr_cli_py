@@ -33,7 +33,7 @@ except ImportError:
     HAS_NUMPY = False
     np = None
 
-from do_not_commit.mgr.rust_fun import (
+from mgr_visualize.mgr.rust_fun import (
     dgrid_from_atoms_rust as compute_dgrid_rust,
     do_periodic_segmentation_rust as python_do_periodic_segmentation_rust,
 )
@@ -90,10 +90,10 @@ class MCLI:
         """Lazily import the Rust library."""
         if self._rust_lib is None:
             try:
-                import mgr_cli_py
-                self._rust_lib = mgr_cli_py
+                import mcli_rust
+                self._rust_lib = mcli_rust
             except ImportError as e:
-                print("Error: mgr_cli_py Rust library not found. Please build the project first.")
+                print("Error: mcli_rust Rust library not found. Please build the project first.")
                 print("Run: pip install -e .")
                 print(f"Original error: {e}")
                 sys.exit(1)

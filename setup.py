@@ -45,9 +45,14 @@ setup(
     install_requires=[
         "numpy>=1.20.0",
     ],
+    # Conditionally compile the Rust extension
+try:
+    import mcli_rust
+    rust_extensions = []
+except ImportError:
     rust_extensions=[
         RustExtension(
-            "mgr_cli_py",
+            "mcli_rust",
             path="Cargo.toml",
             binding=Binding.PyO3,
             debug=False,
