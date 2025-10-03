@@ -213,6 +213,46 @@ def save_pore_diameter_csv(results, output_file):
         print(f"Error saving pore diameter CSV: {e}")
 
 
+def get_pbc_groups(unmerged_regions, maxima_info):
+    """
+    Group unmerged regions based on periodic boundary conditions (PBC).
+
+    This function organizes unmerged regions into groups based on their maxima
+    indices. Each group is identified by a unique tuple of maxima indices
+    (columns 2-4 of `maxima_info`), and contains the corresponding region indices
+    (column 1 of `maxima_info`).
+
+    Args:
+        unmerged_regions (iterable): A collection of region indices that are not yet merged.
+        maxima_info (array-like): A 2D array where each row contains:
+            - Column 0: Region index
+            - Columns 1-3: Maxima indices (used as grouping keys)
+            - Column 4: Offsets in each direction
+              You get this as output when you call the 'do_periodic_segmentation' on the distance grid (dgrid)
+
+    Returns:
+        dict: A dictionary where keys are tuples of maxima indices (columns 2-4),
+            and values are sets of region indices (column 1) belonging to each group.
+    """
+    import numpy as np
+    from collections import defaultdict
+
+    # Create a dictionary where keys are tuples of maxima indices (cols 2-4)
+    # and values are lists of corresponding indices (col 1)
+    groups = defaultdict(list)
+
+    for row in maxima_info:
+        if row[0] in unmerged_regions:
+            # Use tuple of columns 2-4 as key (converting to tuple for hashability)
+            key = tuple(row[1:4])
+            # Add the index (first column) to the corresponding group
+            groups[key].append(int(row[0]))
+
+    # Convert the dictionary values to sets if you want unique indices
+    groups = {k: set(v) for k, v in groups.items()}
+    return groups
+
+
 def compute_auto_parameters(mat_atoms, spacing):
     """Automatically estimate optimal parameters from structure.
 
@@ -573,6 +613,10 @@ Examples:
             '-mrs', '--min-region-size', type=float,
             help=f'Minimum region size percentage (default: {self.DEFAULTS["min_region_size"]})'
         )
+        param_group.add_argument(
+            '--js-threshold', type=float, default=0.15,
+            help='Jensen-Shannon threshold for pocket type clustering (default: 0.15)'
+        )
 
         # Boolean flags
         flag_group = process_parser.add_argument_group('flags')
@@ -619,6 +663,10 @@ Examples:
         flag_group.add_argument(
             '--theme', choices=['dark', 'white'], default='dark',
             help='Theme for generated visualizations (default: dark)'
+        )
+        flag_group.add_argument(
+            '--types', action='store_true',
+            help='Detect pocket types using agglomerative clustering on cavity size distributions'
         )
 
         # Generate-config command
@@ -794,6 +842,73 @@ Examples:
                         # Save CSV files for PSD analysis
                         psd_csv_base_file = output_dir / f"{cif_file.stem}_psd"
                         save_psd_csv(psd_results, psd_csv_base_file, material_name=cif_file.stem)
+
+                # Handle pocket type detection if requested
+                if getattr(args, 'types', False):
+                    from skimage.measure import regionprops
+                    import numpy as np
+
+                    print("Detecting pocket types...")
+                    js_threshold = getattr(args, 'js_threshold', 0.15)
+
+                    # Get required data for clustering
+                    dgrid = result['dgrid']
+                    regions = result['regions']
+                    regions_pbc = result.get('regions_pbc', regions)
+                    maxima_info = result['maxima_info']
+                    all_maxima = result['all_maxima']
+                    all_maxima_radii = dgrid[tuple(maxima_info[:,1:4].T)]
+                    connections = result.get('connections', [])
+                    # Compute proper PBC groups using the reference library function
+                    unique_regions_for_pbc = result.get('unique_regions', [])
+                    pbc_groups_dict = get_pbc_groups(unique_regions_for_pbc, maxima_info)
+                    pbc_groups = [v for k, v in pbc_groups_dict.items()]
+                    unique_regions = result.get('unique_regions', [])
+
+                    # Trim maxima using regions.max() as shown in example
+                    maxima = all_maxima[:regions.max()]
+                    maxima_radii = all_maxima_radii[:regions.max()]
+                    connections_trimmed = [c for c in connections if np.all(np.isin(c[0], unique_regions))]
+
+                    if len(maxima) > 0:
+                        try:
+                            # Rebuild RAG following the example pattern
+                            rag = mgr.rag_from_connections(connections_trimmed, maxima)
+                            rag = mgr.add_pbc_to_rag(rag, pbc_groups)
+                            rag = mgr.add_maxima_to_rag(rag, maxima, maxima_radii, dgrid.shape, atoms)
+
+                            # Add PSD and clustering to RAG
+                            props = regionprops(regions)
+                            bins = np.linspace(0, 30, 50)
+
+                            # Check if any pbc_groups contain label 0 (background)
+                            has_zero = any(0 in group for group in pbc_groups)
+                            if has_zero:
+                                print("Debug: Removing groups with label 0")
+                                pbc_groups = [group for group in pbc_groups if 0 not in group]
+
+                            rag = mgr.add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, atoms, dgrid.shape)
+                            rag = mgr.add_clustering_to_rag_geometry_js(rag, props, pbc_groups, atoms, dgrid.shape, use_pbc=True, js_threshold=js_threshold)
+
+                            # Generate regions cluster
+                            regions_cluster = mgr.clustering_grid_from_regions(regions, rag, cluster_key="cluster_geom_pbc")
+
+                            # Store results
+                            result['regions_cluster'] = regions_cluster
+                            result['rag_clustered'] = rag
+                            result['pocket_types_detected'] = True
+                            result['js_threshold_used'] = js_threshold
+
+                            print(f"Pocket types detected using JS threshold: {js_threshold}")
+                            num_clusters = len(np.unique(regions_cluster)) - 1  # -1 for background
+                            print(f"Found {num_clusters} different pocket types")
+
+                        except Exception as e:
+                            print(f"Warning: Pocket type detection failed: {e}")
+                            result['pocket_types_detected'] = False
+                    else:
+                        print("Warning: Cannot perform pocket type detection - no maxima data found")
+                        result['pocket_types_detected'] = False
 
                 # Save results
                 save_payload = dict(result)
