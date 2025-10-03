@@ -719,11 +719,21 @@ def plot_connections_as_it_is(
         return []
 
     maxima = np.asarray(maxima, dtype=float)
-    cell = _compute_cell_matrix(ase_atoms)
+    from ase.geometry import complete_cell
+    cell = complete_cell(ase_atoms.get_cell()).T
     shape = np.asarray(shape, dtype=float)
 
     node_ids = sorted({int(idx) for conn in connections for idx in conn[0]})
-    node_positions = {node: np.dot(cell, (maxima[node - 1] / shape)) for node in node_ids if node - 1 < len(maxima)}
+
+    # Calculate node positions in real space (matches reference implementation)
+    node_positions = {}
+    for node in node_ids:
+        if node - 1 < len(maxima):
+            # Convert grid coordinates to fractional coordinates
+            frac_coords = maxima[node - 1] / np.array(shape)
+            # Convert fractional to real space coordinates
+            real_coords = np.dot(cell, frac_coords.T).T
+            node_positions[node] = real_coords
 
     cscale = kwargs.get("cscale", px.colors.sequential.Turbo)
     if isinstance(cscale, str):
@@ -754,9 +764,8 @@ def plot_connections_as_it_is(
         pos = node_positions[node]
         internal_nodes.append(pos)
         node_colors.append(node_to_color[node])
-        internal_hover.append(
-            f"Index: {node}<br>Type: Internal<br>Position: ({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}) Å"
-        )
+        hover_text = f"Index: {node}<br>Type: Internal<br>Position: ({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}) Å<br>Indices: [{maxima[node - 1][0]},{maxima[node - 1][1]}, {maxima[node - 1][2]}]"
+        internal_hover.append(hover_text)
 
     traces: List[go.Scatter3d] = []
     if internal_nodes:
@@ -771,7 +780,8 @@ def plot_connections_as_it_is(
                 hovertext=internal_hover,
                 hoverinfo="text",
                 name="Internal Maxima",
-                legendgroup="connections",
+                legendgroup="Pore Graph",
+                legendgrouptitle_text="Pore Graph",
             )
         )
 
@@ -790,7 +800,19 @@ def plot_connections_as_it_is(
         edge_x.extend([pos1[0], pos2[0], None])
         edge_y.extend([pos1[1], pos2[1], None])
         edge_z.extend([pos1[2], pos2[2], None])
-        edge_hover.extend([f"Internal edge: {n1}-{n2}", f"Internal edge: {n1}-{n2}", None])
+
+        # Include window information in hover text if available
+        if len(centers) > 0 and len(radii) > 0:
+            for window_pos, window_size in zip(centers, radii):
+                hover_text = (
+                    f"Internal edge: {n1}-{n2}<br>"
+                    f"Window position: ({window_pos[0]:.2f}, {window_pos[1]:.2f}, {window_pos[2]:.2f}) Å<br>"
+                    f"Window size: {window_size:.2f} Å"
+                )
+                edge_hover.extend([hover_text, hover_text, None])
+        else:
+            hover_text = f"Internal edge: {n1}-{n2}"
+            edge_hover.extend([hover_text, hover_text, None])
 
     if edge_x:
         traces.append(
@@ -803,7 +825,7 @@ def plot_connections_as_it_is(
                 hovertext=edge_hover,
                 hoverinfo="text",
                 name="Internal Connections",
-                legendgroup="connections",
+                legendgroup="Pore Graph",
             )
         )
 
@@ -812,8 +834,10 @@ def plot_connections_as_it_is(
         dotted_y: List[float] = []
         dotted_z: List[float] = []
         periodic_markers: List[np.ndarray] = []
-        periodic_hover: List[str] = []
+        periodic_edge_hover: List[str] = []
+        periodic_node_hover: List[str] = []
         periodic_colors: List[str] = []
+        maxima_indices = []
 
         for regions, exists, ctype, centers, radii in connections:
             if not exists or ctype != "periodic":
@@ -822,16 +846,32 @@ def plot_connections_as_it_is(
             if n1 not in node_positions:
                 continue
             start = node_positions[n1]
-            for center in centers:
+            maxima_indices.append(n2)  # Store n2 for node coloring
+            for center, radius in zip(centers, radii):
                 dotted_points = np.linspace(start, center, kwargs.get("edge_resolution", 20))
                 dotted_x.extend(np.concatenate([dotted_points[:, 0], [None]]))
                 dotted_y.extend(np.concatenate([dotted_points[:, 1], [None]]))
                 dotted_z.extend(np.concatenate([dotted_points[:, 2], [None]]))
                 periodic_markers.append(center)
-                periodic_hover.append(
-                    f"Periodic edge: {n1}-{n2}<br>Window: ({center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f}) Å"
+
+                # Generate edge hover text
+                edge_hover_text = (
+                    f"Periodic edge: {n1}-{n2}<br>"
+                    f"Window position: ({center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f}) Å<br>"
+                    f"Window size: {radius:.2f} Å"
                 )
-                periodic_colors.append(node_to_color.get(n2, "orange"))
+                periodic_edge_hover.append(edge_hover_text)
+
+                # Generate node hover text (like reference implementation)
+                node_hover_text = (
+                    f"Index: {n2}<br>"
+                    f"Type: Periodic<br>"
+                    f"Position: ({center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f}) Å"
+                )
+                periodic_node_hover.append(node_hover_text)
+
+            # Colors are assigned per maxima index after the loop
+        periodic_colors = [node_to_color[idx] for idx in maxima_indices]
 
         if dotted_x:
             traces.append(
@@ -842,8 +882,8 @@ def plot_connections_as_it_is(
                     mode="markers",
                     marker=dict(size=kwargs.get("dot_size", 1.0), color=kwargs.get("line_color", "red")),
                     hoverinfo="skip",
-                    name="Periodic Connections",
-                    legendgroup="connections",
+                    name="Periodic Connections (Dotted)",
+                    legendgroup="Pore Graph",
                 )
             )
 
@@ -861,10 +901,10 @@ def plot_connections_as_it_is(
                         color=periodic_colors,
                         line=dict(width=3, color=periodic_colors),
                     ),
-                    hovertext=periodic_hover,
+                    hovertext=periodic_node_hover,
                     hoverinfo="text",
                     name="Periodic Maxima",
-                    legendgroup="connections",
+                    legendgroup="Pore Graph",
                 )
             )
 
@@ -885,7 +925,7 @@ def plot_connections_as_it_is(
                     hovertext=[f"Index: {idx}" for idx in disconnected],
                     hoverinfo="text",
                     name="Disconnected Maxima",
-                    legendgroup="connections",
+                    legendgroup="Pore Graph",
                 )
             )
 
