@@ -73,7 +73,7 @@ if __package__ is None or __package__ == "":  # pragma: no cover - streamlit ent
     import sys
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from python_cli.mcli.cli import compute_dgrid_rust, python_do_periodic_segmentation_rust
+    from python_cli.mcli.cli import compute_dgrid_rust, python_do_periodic_segmentation_rust, get_pbc_groups
     from python_cli.mcli.plotting import (
         show_mof,
         STYLIZE_LIGHTING,
@@ -84,6 +84,7 @@ if __package__ is None or __package__ == "":  # pragma: no cover - streamlit ent
     )
 else:  # pragma: no cover - package import path
     from .plotting import show_mof, STYLIZE_LIGHTING, STYLIZE_LIGHTPOSITION, dark_layout, white_layout, prepare_results_for_plot
+    from .cli import get_pbc_groups
 
 
 ASCII_LOGO = r"""
@@ -389,6 +390,18 @@ def main() -> None:
         show_surface_pbc = st.checkbox("Show periodic pore surface", value=True)
         show_connections = st.checkbox("Show pore graph", value=True)
         show_maxima_spheres = st.checkbox("Show maxima spheres", value=False)
+        detect_pocket_types = st.checkbox("Detect Pocket Types", value=False)
+
+        js_threshold = 0.15
+        if detect_pocket_types:
+            js_threshold = st.number_input(
+                "Jensen-Shannon Threshold",
+                min_value=0.01,
+                max_value=1.0,
+                value=0.15,
+                step=0.01,
+                help="Threshold for agglomerative clustering based on Jensen-Shannon distance between cavity size distributions"
+            )
 
     surface_opacity = 1.0
     surface_pbc_opacity = 1.0
@@ -412,6 +425,88 @@ def main() -> None:
             )
             results["ase_atoms"] = atoms
             results["dgrid"] = results.get("dgrid", current_params["dgrid"])
+
+            # Add pocket type detection if requested
+            if detect_pocket_types:
+                from skimage.measure import regionprops
+                import plotly.express as px
+
+                # Get required data for clustering
+                dgrid = results["dgrid"]
+                regions = results["regions"]
+                regions_pbc = results["regions_pbc"]
+                maxima_info = results["maxima_info"]
+                all_maxima = results["all_maxima"]
+                all_maxima_radii = dgrid[tuple(maxima_info[:,1:4].T)]
+                connections = results["connections"]
+                unique_regions = results['unique_regions']
+                mat_atoms = results["ase_atoms"]
+
+                # Compute proper PBC groups using the reference library function
+                pbc_groups_dict = get_pbc_groups(unique_regions, maxima_info)
+                pbc_groups = [v for k, v in pbc_groups_dict.items()]
+
+                # Trim maxima using regions.max() as shown in example
+                maxima = all_maxima[:regions.max()]
+                maxima_radii = all_maxima_radii[:regions.max()]
+                connections_trimmed = [c for c in connections if np.all(np.isin(c[0], unique_regions))]
+
+                try:
+                    if len(maxima) > 0:
+                        # Debug output (can be removed in production)
+                        print('regions shape:', regions.shape, 'unique:', np.unique(regions))
+                        print('maxima shape:', maxima.shape, 'values:', maxima)
+                        print('maxima_info shape:', maxima_info.shape, 'values:', maxima_info)
+                        print('pbc_groups:', pbc_groups)
+                        print('connections:', connections)
+                        print('unique_regions:', unique_regions)
+                        print('maxima_radii:', maxima_radii)
+                        print('connections_trimmed:', connections_trimmed)
+
+                        # Build RAG following the example pattern (from scratch)
+                        rag = mgr.rag_from_connections(connections_trimmed, maxima)
+                        print('rag nodes after connections:', rag.nodes())
+                        print('rag edges after connections:', rag.edges())
+                        rag = mgr.add_pbc_to_rag(rag, pbc_groups)
+                        print('rag nodes after pbc:', rag.nodes())
+                        print('rag edges after pbc:', rag.edges())
+                        rag = mgr.add_maxima_to_rag(rag, maxima, maxima_radii, dgrid.shape, mat_atoms)
+                        print('rag nodes after maxima:', rag.nodes())
+                        print('rag edges after maxima:', rag.edges())
+                        print('pbc groups ', pbc_groups)
+
+                        # Add PSD and clustering to RAG
+                        props = regionprops(regions)
+                        bins = np.linspace(0, 30, 50)
+                        rag = mgr.add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, mat_atoms, dgrid.shape)
+                        print('rag nodes after psd:', rag.nodes())
+                        print('rag edges after psd:', rag.edges())
+                        rag = mgr.add_clustering_to_rag_geometry_js(rag, props, pbc_groups, mat_atoms, dgrid.shape, use_pbc=True, js_threshold=js_threshold)
+                        print('rag nodes after clustering:', rag.nodes())
+                        print('rag edges after clustering:', rag.edges())
+
+                        # Generate regions cluster
+                        regions_cluster = mgr.clustering_grid_from_regions(regions, rag, cluster_key="cluster_geom_pbc")
+                        print('regions_cluster:', regions_cluster)
+
+                        # Store results
+                        results["regions_cluster"] = regions_cluster
+                        results["rag_clustered"] = rag
+                        results["pocket_types_detected"] = True
+                        results["js_threshold_used"] = js_threshold
+
+                        print(f"Pocket types detected using JS threshold: {js_threshold}")
+                        num_clusters = len(np.unique(regions_cluster)) - 1  # -1 for background
+                        print(f"Found {num_clusters} different pocket types")
+
+                    else:
+                        print("Warning: Cannot perform pocket type detection - no maxima data found")
+                        results["pocket_types_detected"] = False
+
+                except Exception as e:
+                    print(f"Warning: Pocket type detection failed: {e}")
+                    results["pocket_types_detected"] = False
+
         finally:
             status.markdown("<div style='padding:8px;background:#003300;color:#00FF00;text-align:center;'>✓ COMPUTE FINISHED ✓</div>", unsafe_allow_html=True)
 
