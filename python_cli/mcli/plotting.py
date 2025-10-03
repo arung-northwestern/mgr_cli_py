@@ -312,10 +312,12 @@ def plot_surface_dgrid(
     ase_atoms,
     region_labels: np.ndarray | None = None,
     select: Iterable[int] | str = "all",
-    opacity: float = 0.8,
+    opacity: float = 1.0,
     color: str = "royalblue",
     stepsize: int = 1,
     hover_label: str = "Region:",
+    cscale=None,
+    stylize: bool = False,
     **kwargs: Any,
 ) -> go.Mesh3d:
     """Plot an isosurface of the distance grid, optionally colored by regions."""
@@ -338,7 +340,8 @@ def plot_surface_dgrid(
     kwargs.setdefault("showlegend", True)
 
     if region_labels is None:
-        return go.Mesh3d(
+        # Single color surface without regions
+        mesh_trace = go.Mesh3d(
             x=cart[:, 0],
             y=cart[:, 1],
             z=cart[:, 2],
@@ -350,27 +353,62 @@ def plot_surface_dgrid(
             name=name,
             **kwargs,
         )
+    else:
+        # Handle region coloring with cscale support
+        interpolator = _regular_grid(region_labels)
+        region_ids = interpolator(verts).astype(int)
+        hovertext = [f"{hover_label} {idx}" for idx in region_ids]
 
-    interpolator = _regular_grid(region_labels)
-    region_ids = interpolator(verts).astype(int)
-    color_map = _make_region_color_map(region_labels, opacity)
-    vertex_colors = [color_map.get(idx, "rgba(255,255,255,{:.2f})".format(opacity)) for idx in region_ids]
-    hovertext = [f"{hover_label} {idx}" for idx in region_ids]
+        if cscale is not None:
+            # Use intensity-based coloring with colorscale (like reference library)
+            # Map region IDs to intensity values (0-based)
+            intensity_values = region_ids - 1
 
-    return go.Mesh3d(
-        x=cart[:, 0],
-        y=cart[:, 1],
-        z=cart[:, 2],
-        i=faces[:, 0],
-        j=faces[:, 1],
-        k=faces[:, 2],
-        vertexcolor=vertex_colors,
-        hovertext=hovertext,
-        opacity=opacity,
-        name=name,
-        showscale=False,
-        **kwargs,
-    )
+            mesh_trace = go.Mesh3d(
+                x=cart[:, 0],
+                y=cart[:, 1],
+                z=cart[:, 2],
+                i=faces[:, 0],
+                j=faces[:, 1],
+                k=faces[:, 2],
+                intensity=intensity_values,
+                intensitymode='vertex',
+                colorscale=cscale,
+                hovertext=hovertext,
+                opacity=opacity,
+                name=name,
+                showscale=False,
+                **kwargs,
+            )
+        else:
+            # Fallback to vertexcolor approach
+            color_map = _make_region_color_map(region_labels, opacity)
+            vertex_colors = [color_map.get(idx, "rgba(255,255,255,{:.2f})".format(opacity)) for idx in region_ids]
+
+            mesh_trace = go.Mesh3d(
+                x=cart[:, 0],
+                y=cart[:, 1],
+                z=cart[:, 2],
+                i=faces[:, 0],
+                j=faces[:, 1],
+                k=faces[:, 2],
+                vertexcolor=vertex_colors,
+                hovertext=hovertext,
+                opacity=opacity,
+                name=name,
+                showscale=False,
+                **kwargs,
+            )
+
+    # Apply stylize lighting if requested (like reference library)
+    if stylize:
+        mesh_trace.update(
+            lighting=STYLIZE_LIGHTING,
+            lightposition=STYLIZE_LIGHTPOSITION,
+            showscale=False,
+        )
+
+    return mesh_trace
 def spheres_for_positions(
     positions: np.ndarray,
     radii: np.ndarray,
@@ -954,6 +992,23 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
             name="Regions Surface (PBC)",
         )
         traces.append(surface_trace_pbc)
+
+    # Add pocket type surface if available
+    if results.get("pocket_types_detected", False) and "regions_cluster" in results:
+        regions_cluster = results["regions_cluster"]
+        cscale = px.colors.qualitative.Pastel
+        surface_trace_cluster = plot_surface_dgrid(
+            dgrid=dgrid,
+            isovalue=float(defaults.get("plot_surface_isovalue", 0.75)),
+            ase_atoms=mat_atoms,
+            region_labels=regions_cluster - 1,
+            opacity=1.0,
+            name="Pocket Types",
+            cscale=cscale,
+            stylize=stylize,
+            hover_label="Pocket type :"
+        )
+        traces.append(surface_trace_cluster)
 
     if defaults.get("plot_connections", True) and connections_trimmed:
         connections_traces = plot_connections_as_it_is(connections_trimmed, maxima, regions.shape, mat_atoms)
