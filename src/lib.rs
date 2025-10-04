@@ -5403,7 +5403,7 @@ fn find_largest_including_sphere(
 
 
 #[pymodule]
-fn mcli_rust(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
+fn mgr_rust(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     // Enable better error reporting when the module is imported from Python.
     pyo3_log::init();
 
@@ -5748,11 +5748,62 @@ fn find_pore_limiting_radius(
             right = mid - 1; // No percolation, try a smaller threshold
         }
     }
-    
+
     // The pore limiting radius is the last threshold that allowed percolation
     if right < unique_values.len() {
         Ok(Some(unique_values[right]))
     } else {
         Ok(None)
     }
+}
+
+
+#[pymodule]
+fn mcli_rust(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
+    // Enable better error reporting when the module is imported from Python.
+    pyo3_log::init();
+
+    m.add_function(wrap_pyfunction!(dgrid_from_atoms, m)?)?;
+    m.add_function(wrap_pyfunction!(egrid_from_atoms, m)?)?;
+    m.add_function(wrap_pyfunction!(window_connections, m)?)?;
+    m.add_function(wrap_pyfunction!(periodic_gaussian_filter, m)?)?;
+    m.add_function(wrap_pyfunction!(seeded_watershed_bucket, m)?)?;
+    m.add_function(wrap_pyfunction!(seeded_watershed, m)?)?;
+    m.add_function(wrap_pyfunction!(seeded_watershed_masked, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_h_morph, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_h_morph_opening, m)?)?;
+    m.add_function(wrap_pyfunction!(move_maxima_to_peaks, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_h_morph2, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_h_morph_simple, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_h_morph_no_spacing, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_adaptive_geometry, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_selective_smoothing, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_selective_smoothing_parallel, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_selective_smoothing_parallel2, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_percolation_guided, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_voronoi_based, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_multiscale_log, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_pore_sizes_for_psd_pocketwise, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_pore_sizes_uniform, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_maxima_adaptive_h, m)?)?;
+    // Helper to inspect Rayon thread pool
+    m.add_function(wrap_pyfunction!(rayon_num_threads, m)?)?;
+    // m.add_function(wrap_pyfunction!(find_local_maxima_pbc, m)?)?;
+    // m.add_function(wrap_pyfunction!(find_local_maxima_cart, m)?)?;
+    m.add_function(wrap_pyfunction!(find_pore_limiting_radius, m)?)?;
+    // m.add_function(wrap_pyfunction!(find_end_channel_pairs, m)?);
+    m.add("__all__", vec![
+        "dgrid_from_atoms", "egrid_from_atoms", "window_connections", "periodic_gaussian_filter",
+        "seeded_watershed_bucket", "seeded_watershed", "seeded_watershed_masked",
+        "compute_pore_sizes_uniform", "compute_pore_sizes_for_psd_pocketwise",
+        "detect_maxima_h_morph", "detect_maxima_h_morph_opening", "move_maxima_to_peaks",
+        "detect_maxima_h_morph2", "detect_maxima_h_morph_simple", "detect_maxima_h_morph_no_spacing",
+        "detect_maxima_adaptive_geometry", "detect_maxima_selective_smoothing",
+        "detect_maxima_selective_smoothing_parallel", "detect_maxima_selective_smoothing_parallel2",
+        "detect_maxima_percolation_guided", "detect_maxima_voronoi_based", "detect_maxima_multiscale_log",
+        "detect_maxima_adaptive_h", "find_pore_limiting_radius", "rayon_num_threads"
+    ])?;
+
+    // By returning Ok(()), the module initialization is successful.
+    Ok(())
 }
