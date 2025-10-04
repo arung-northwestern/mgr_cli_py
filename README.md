@@ -434,8 +434,10 @@ mcli --banner
 
 | Option | Description |
 |--------|-------------|
-| `--banner` | Display the Mofography CLI banner and exit |
+| `--banner` | Display the Mofography CLI banner with developer information |
 | `--version` | Show version information |
+
+**Note**: To learn more about the developer, check out our cool banner with `mcli --banner`!
 
 ## Output Format
 

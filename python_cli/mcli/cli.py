@@ -549,17 +549,16 @@ class MCLI:
 
     def show_banner(self):
         """Display the Mofography CLI banner."""
-        banner = """
-╔══════════════════════════════════════════════════════════════╗
-║                                                              ║
-║   █▀▀ █▀█ █▀▀ ▄▀█ ▀█▀ █   █▀▀ █▀█ █▀▄ █▀▀ █▀▀ █▀▄   ║
-║   █▄▄ █▄█ ██▄ █▀█ ░█░ █▄▄ ██▄ █▄█ █▄▀ ██▄ █▄▄ █▄▀   ║
-║                                                              ║
-║              High-Performance MOF Analysis Tool              ║
-║                                                              ║
-║    Rust-powered segmentation • Python interface • Web UI    ║
-║                                                              ║
-╚══════════════════════════════════════════════════════════════╝
+        banner = r"""
+ ███╗   ███╗ ██████╗ ███████╗ ██████╗  ██████╗ ██████╗  █████╗ ██████╗ ██╗  ██╗██╗   ██╗
+ ████╗ ████║██╔═══██╗██╔════╝██╔═══██╗██╔════╝ ██╔══██╗██╔══██╗██╔══██╗██║  ██║╚██╗ ██╔╝
+ ██╔████╔██║██║   ██║█████╗  ██║   ██║██║  ███╗██████╔╝███████║██████╔╝███████║ ╚████╔╝ 
+ ██║╚██╔╝██║██║   ██║██╔══╝  ██║   ██║██║   ██║██╔══██╗██╔══██║██╔═══╝ ██╔══██║  ╚██╔╝  
+ ██║ ╚═╝ ██║╚██████╔╝██║     ╚██████╔╝╚██████╔╝██║  ██║██║  ██║██║     ██║  ██║   ██║   
+ ╚═╝     ╚═╝ ╚═════╝ ╚═╝      ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝  ╚═╝   ╚═╝   
+
+Mofography CLI Tool - High-Performance MOF Analysis
+Developed by © Dr. Arun Gopalan
         """
         print(banner)
 
@@ -832,7 +831,6 @@ Examples:
             sys.exit(1)
 
         print(f"Found {len(cif_files)} CIF file(s) to process")
-        print("MOFOGRAPHY CLI - Developed by © Dr. Arun Gopalan")
 
         # Apply auto-parameters if requested
         if getattr(args, 'auto_params', False):
