@@ -16,8 +16,22 @@ from ase.io import read
 import plotly.graph_objects as go
 import pandas as pd
 
-import mgr_visualize.mgr as mgr
-from mgr_visualize.mgr.helper import estimate_h_from_percolation_history
+import sys
+from pathlib import Path
+# Add mgr_src to path to use reference functions directly
+REPO_ROOT = Path(__file__).resolve().parents[2]
+MGR_SRC_PATH = REPO_ROOT / "mgr_src"
+if str(MGR_SRC_PATH) not in sys.path:
+    sys.path.insert(0, str(MGR_SRC_PATH))
+
+# Import the reference MGR library from mgr_src/mgr
+try:
+    import mgr as mgr
+    from mgr.helper import estimate_h_from_percolation_history
+except ImportError:
+    # Fallback to mgr_visualize if mgr_src is not available
+    import mgr_visualize.mgr as mgr
+    from mgr_visualize.mgr.helper import estimate_h_from_percolation_history
 
 
 def results_data_to_npz(results: Dict[str, Any]) -> bytes:
@@ -84,7 +98,7 @@ if __package__ is None or __package__ == "":  # pragma: no cover - streamlit ent
     )
 else:  # pragma: no cover - package import path
     from .plotting import show_mof, STYLIZE_LIGHTING, STYLIZE_LIGHTPOSITION, dark_layout, white_layout, prepare_results_for_plot
-    from .cli import get_pbc_groups
+    from .cli import compute_dgrid_rust, python_do_periodic_segmentation_rust, get_pbc_groups
 
 
 ASCII_LOGO = r"""
@@ -648,6 +662,8 @@ def main() -> None:
                     plot_status.markdown("<div style='padding:6px;background:#102a43;color:#7FDBFF;text-align:center;'>🎨 Rendering percolation view…</div>", unsafe_allow_html=True)
 
                     try:
+                        # Ensure plotly express is accessible for color scale
+                        import plotly.express as px
                         cluster_traces = mgr.plot_percolated_cluster_meshes(
                             analysis["percolation_history"],
                             analysis["dgrid"],

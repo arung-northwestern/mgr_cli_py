@@ -26,7 +26,20 @@ if str(REPO_ROOT) not in sys.path:
 from typing import List, Dict, Any, Optional
 
 # Import functions needed for pore diameter and percolation analysis
-import mgr_visualize.mgr as mgr
+import sys
+from pathlib import Path
+# Add mgr_src to path to use reference functions directly
+REPO_ROOT = Path(__file__).resolve().parents[2]
+MGR_SRC_PATH = REPO_ROOT / "mgr_src"
+if str(MGR_SRC_PATH) not in sys.path:
+    sys.path.insert(0, str(MGR_SRC_PATH))
+
+# Import the reference MGR library from mgr_src/mgr
+try:
+    import mgr as mgr
+except ImportError:
+    # Fallback to mgr_visualize if mgr_src is not available
+    import mgr_visualize.mgr as mgr
 
 # Optional numpy import - only needed for numpy-based .npz saving
 try:
@@ -39,21 +52,31 @@ except ImportError:
 def compute_dgrid_rust(mat_atoms, spacing):
     """Compute distance grid using Rust backend."""
     try:
-        import mcli_rust
-    except ImportError as e:
-        print("Error: mcli_rust Rust library not found. Please build the project first.")
-        print("Run: maturin build --release && pip install --force-reinstall target/wheels/*.whl")
-        sys.exit(1)
+        # Try to use the reference implementation first
+        from mgr.rust_fun import dgrid_from_atoms_rust
+        return dgrid_from_atoms_rust(mat_atoms, spacing)
+    except ImportError:
+        try:
+            # Fallback to mgr_visualize
+            from mgr_visualize.mgr.rust_fun import dgrid_from_atoms_rust
+            return dgrid_from_atoms_rust(mat_atoms, spacing)
+        except ImportError:
+            # Final fallback to direct mcli_rust call
+            try:
+                import mcli_rust
+                # Convert ASE atoms to required format
+                fpoints = mat_atoms.get_positions()
+                cell = mat_atoms.get_cell().array.T  # Transpose to match expected format
+                radii = np.array([1.0] * len(fpoints), dtype=np.float64)  # Default radii
 
-    # Convert ASE atoms to required format
-    fpoints = mat_atoms.get_positions()
-    cell = mat_atoms.get_cell().array.T  # Transpose to match expected format
-    radii = np.array([1.0] * len(fpoints), dtype=np.float64)  # Default radii
+                # Get grid dimensions
+                nx, ny, nz = int(np.round(cell[0,0] / spacing)), int(np.round(cell[1,1] / spacing)), int(np.round(cell[2,2] / spacing))
 
-    # Get grid dimensions
-    nx, ny, nz = int(np.round(cell[0,0] / spacing)), int(np.round(cell[1,1] / spacing)), int(np.round(cell[2,2] / spacing))
-
-    return mcli_rust.dgrid_from_atoms(fpoints, cell, radii, nx, ny, nz)
+                return mcli_rust.dgrid_from_atoms(fpoints, cell, radii, nx, ny, nz)
+            except ImportError as e:
+                print("Error: mcli_rust Rust library not found. Please build the project first.")
+                print("Run: maturin build --release && pip install --force-reinstall target/wheels/*.whl")
+                sys.exit(1)
 
 def python_do_periodic_segmentation_rust(
     dgrid,
@@ -75,46 +98,35 @@ def python_do_periodic_segmentation_rust(
 ):
     """Perform periodic segmentation using Rust backend."""
     try:
-        import mcli_rust
-    except ImportError as e:
-        print("Error: mcli_rust Rust library not found. Please build the project first.")
-        print("Run: maturin build --release && pip install --force-reinstall target/wheels/*.whl")
-        sys.exit(1)
+        # Import directly from the reference MGR library
+        from mgr.rust_fun import do_periodic_segmentation_rust
+    except ImportError:
+        try:
+            # Fallback to mgr_visualize if mgr_src is not available
+            from mgr_visualize.mgr.rust_fun import do_periodic_segmentation_rust
+        except ImportError as e:
+            print("Error: do_periodic_segmentation_rust function not found. Please ensure MGR library is available.")
+            sys.exit(1)
 
-    # The Rust function expects a path to structure file, but we have dgrid and mat_atoms
-    # We need to save the structure to a temporary file and call the Rust function
-    import tempfile
-    import os
-    from pathlib import Path
-
-    # Create a temporary file for the structure
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.cif', delete=False) as tmp_file:
-        tmp_path = tmp_file.name
-        # Write the structure to CIF format
-        mat_atoms.write(tmp_path, format='cif')
-
-    try:
-        # Call the Rust function with the file path
-        result = mcli_rust.do_periodic_segmentation_rust(
-            path_to_struct_file=tmp_path,
-            spacing=spacing if spacing is not None else 0.25,
-            mask_thickness=mask_thickness,
-            h=h,
-            min_distance=min_distance,
-            threshold_abs=threshold_abs,
-            return_padded_regions=return_padded_regions,
-            minimum_window_separation=minimum_window_separation,
-            wall_thickness=wall_thickness,
-            extra_padding=extra_padding,
-            compactness=compactness,
-            min_region_size=min_region_size,
-            disable_tqdm=disable_tqdm,
-            compute_connections=compute_connections,
-            return_dgrid=return_dgrid
-        )
-    finally:
-        # Clean up the temporary file
-        os.unlink(tmp_path)
+    # Call the reference implementation using mcli_rust
+    result = do_periodic_segmentation_rust(
+        dgrid=dgrid,
+        mat_atoms=mat_atoms,
+        mask_thickness=mask_thickness,
+        h=h,
+        min_distance=min_distance,
+        threshold_abs=threshold_abs,
+        return_padded_regions=return_padded_regions,
+        spacing=spacing,
+        minimum_window_separation=minimum_window_separation,
+        wall_thickness=wall_thickness,
+        extra_padding=extra_padding,
+        compactness=compactness,
+        min_region_size=min_region_size,
+        disable_tqdm=disable_tqdm,
+        compute_connections=compute_connections,
+        return_dgrid=return_dgrid
+    )
 
     return result
 
@@ -269,10 +281,15 @@ def compute_auto_parameters(mat_atoms, spacing):
     - Dictionary with estimated parameters
     """
     try:
-        from mgr_visualize.mgr.helper import estimate_h_from_percolation_history
-    except ImportError as e:
-        print(f"Warning: Could not import helper functions: {e}")
-        return {}
+        # Try to import from the reference library first
+        from mgr.helper import estimate_h_from_percolation_history
+    except ImportError:
+        try:
+            # Fallback to mgr_visualize
+            from mgr_visualize.mgr.helper import estimate_h_from_percolation_history
+        except ImportError as e:
+            print(f"Warning: Could not import helper functions: {e}")
+            return {}
 
     # Compute distance grid for analysis
     dgrid = compute_dgrid_rust(mat_atoms, spacing)
