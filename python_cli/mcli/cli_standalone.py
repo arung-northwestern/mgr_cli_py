@@ -170,18 +170,41 @@ class MCLIStandalone:
                 with zf.open(npy_filename, 'w') as f:
                     save_array_to_npy(f, value, key)
 
+    def show_banner(self):
+        """Display the Mofography CLI banner."""
+        banner = """
+╔══════════════════════════════════════════════════════════════╗
+║                                                              ║
+║   █▀▀ █▀█ █▀▀ ▄▀█ ▀█▀ █   █▀▀ █▀█ █▀▄ █▀▀ █▀▀ █▀▄   ║
+║   █▄▄ █▄█ ██▄ █▀█ ░█░ █▄▄ ██▄ █▄█ █▄▀ ██▄ █▄▄ █▄▀   ║
+║                                                              ║
+║              High-Performance MOF Analysis Tool              ║
+║                                                              ║
+║    Rust-powered segmentation • Python interface • Web UI    ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+        """
+        print(banner)
+
     def run(self):
         """Main CLI entry point."""
         parser = argparse.ArgumentParser(
-            description='MOF Analysis CLI (Standalone Version)',
+            description='Mofography CLI Tool - High-Performance MOF Analysis (Standalone Version)',
             formatter_class=argparse.RawDescriptionHelpFormatter,
             epilog="""
 Examples:
   mcli process my_structure.cif
   mcli process *.cif -o ./results/
-  mcli generate-config > config.json
+  mcli generate-config -o config.json
   mcli config-building
+  mcli --banner
             """
+        )
+        
+        # Global banner flag
+        parser.add_argument(
+            '--banner', action='store_true',
+            help='Display the Mofography CLI banner'
         )
 
         subparsers = parser.add_subparsers(dest='command', help='Available commands')
@@ -227,6 +250,12 @@ Examples:
 
         args = parser.parse_args()
 
+        # Handle banner flag
+        if args.banner:
+            self.show_banner()
+            if not args.command:
+                return
+
         if not args.command:
             parser.print_help()
             return
@@ -250,6 +279,9 @@ Examples:
 
         # Ensure output directory exists
         args.output_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"Processing {len(args.cif_files)} CIF file(s)")
+        print("MOFOGRAPHY CLI - Developed by © Dr. Arun Gopalan")
 
         # Process each CIF file
         for cif_file in args.cif_files:

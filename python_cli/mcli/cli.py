@@ -547,17 +547,35 @@ class MCLI:
                 sys.exit(1)
         return self._rust_lib
 
+    def show_banner(self):
+        """Display the Mofography CLI banner."""
+        banner = """
+╔══════════════════════════════════════════════════════════════╗
+║                                                              ║
+║   █▀▀ █▀█ █▀▀ ▄▀█ ▀█▀ █   █▀▀ █▀█ █▀▄ █▀▀ █▀▀ █▀▄   ║
+║   █▄▄ █▄█ ██▄ █▀█ ░█░ █▄▄ ██▄ █▄█ █▄▀ ██▄ █▄▄ █▄▀   ║
+║                                                              ║
+║              High-Performance MOF Analysis Tool              ║
+║                                                              ║
+║    Rust-powered segmentation • Python interface • Web UI    ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+        """
+        print(banner)
+
     def run(self):
         """Run the CLI application."""
         parser = argparse.ArgumentParser(
-            description="MCLI - MOF Analysis CLI Tool",
+            description="Mofography CLI Tool - High-Performance MOF Analysis",
             formatter_class=argparse.RawDescriptionHelpFormatter,
             epilog="""
 Examples:
   %(prog)s process structure.cif
   %(prog)s process *.cif -o ./results/
-  %(prog)s generate-config -mt 1.0 -ta 2.0 > config.json
+  %(prog)s generate-config -mt 1.0 -ta 2.0 -o config.json
   %(prog)s config-building
+  %(prog)s interactive
+  %(prog)s --banner
             """
         )
 
@@ -565,6 +583,10 @@ Examples:
         parser.add_argument(
             '--version', action='version',
             version=f'%(prog)s {__import__("mcli").__version__}'
+        )
+        parser.add_argument(
+            '--banner', action='store_true',
+            help='Display the Mofography CLI banner'
         )
 
         # Create subparsers
@@ -748,6 +770,12 @@ Examples:
         # Parse arguments
         args = parser.parse_args()
 
+        # Handle banner flag
+        if args.banner:
+            self.show_banner()
+            if not args.command:
+                return
+
         if not args.command:
             parser.print_help()
             return
@@ -804,6 +832,7 @@ Examples:
             sys.exit(1)
 
         print(f"Found {len(cif_files)} CIF file(s) to process")
+        print("MOFOGRAPHY CLI - Developed by © Dr. Arun Gopalan")
 
         # Apply auto-parameters if requested
         if getattr(args, 'auto_params', False):

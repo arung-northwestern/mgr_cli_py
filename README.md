@@ -1,10 +1,10 @@
-# MCLI - MOF Analysis CLI Tool
+# Mofography CLI Tool
 
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
-A high-performance command-line interface for analyzing Metal-Organic Frameworks (MOFs) using advanced segmentation algorithms. Built with Rust for performance and Python for usability.
+A high-performance command-line interface for analyzing Metal-Organic Frameworks (MOFs) using advanced segmentation algorithms. This is a separate, comparable version of the Mofography library that offers both CLI and interactive Streamlit modes, built with Rust for performance and Python for usability.
 
 ## Table of Contents
 - [Installation Guide](#-installation-guide)
@@ -32,12 +32,27 @@ A high-performance command-line interface for analyzing Metal-Organic Frameworks
 ## Features
 
 * **High-Performance Analysis**: Rust-powered segmentation algorithms for fast MOF analysis
+* **Interactive Browser Mode**: Streamlit-based web interface for visual analysis
 * **Batch Processing**: Process multiple CIF files in parallel
 * **Flexible Configuration**: Extensive parameter control with sensible defaults
 * **Compressed Output**: Efficient NPZ format for large datasets
 * **Cross-Platform**: Works on Windows, Linux, and macOS
 * **Rich Output**: Multiple analysis outputs for comprehensive characterization
 * **Smart Defaults**: Pre-configured parameters for common use cases
+
+## Why Choose CLI Over Python Package?
+
+* **🚀 Quick Use**: Analyze materials instantly without opening Python files or IPython sessions
+* **⚡ Fast Processing**: Optimized for rapid analysis of one or two materials without overhead
+* **🤖 AI Agent Friendly**: Perfect for AI assistants and agents without requiring MCP server context
+* **🎯 Distraction-Free**: For TUI lovers who prefer focused, command-line workflows
+* **🔄 Automation Ready**: Easy integration into scripts, pipelines, and automated workflows
+* **💾 Resource Efficient**: Lower memory footprint compared to full Python environment
+* **📦 Zero Dependencies**: Standalone executables available without Python installation
+
+## Relationship to Mofography Python Package
+
+This CLI tool is **separate** from the main Mofography Python package but maintains compatibility with the same core algorithms and reference functions. It's kept up-to-date with the latest computational methods while offering the advantages of a dedicated command-line interface and interactive web mode.
 
 ## Architecture
 
@@ -274,6 +289,9 @@ Once installed, MCLI is ready to analyze your CIF files:
 ### Basic Usage
 
 ```bash
+# Show the banner
+mcli --banner
+
 # Process a single CIF file with default settings
 mcli process my_structure.cif
 
@@ -282,6 +300,9 @@ mcli process *.cif -o ./results/
 
 # Process with custom parameters
 mcli process my_mof.cif --spacing 0.3 -H 0.5 --mask-thickness 0.8
+
+# Launch interactive web interface
+mcli interactive
 
 # Get help and see all options
 mcli --help
@@ -404,6 +425,17 @@ mcli interactive [options]
 |--------|-------------|
 | `--port` | Port to serve the Streamlit app (default chosen by Streamlit) |
 | `--no-browser` | Do not automatically open a browser window |
+
+### Global Options
+
+```bash
+mcli --banner
+```
+
+| Option | Description |
+|--------|-------------|
+| `--banner` | Display the Mofography CLI banner and exit |
+| `--version` | Show version information |
 
 ## Output Format
 
