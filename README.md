@@ -301,11 +301,23 @@ Each command generates:
 - **[Examples](#examples)**: See advanced usage patterns
 - **[Reading Results](#reading-results-in-python)**: How to work with output files
 
+## Commands Overview
+
+MCLI provides several commands for different tasks:
+
+```bash
+mcli process          # Analyze CIF files with comprehensive segmentation and analysis
+mcli generate-config  # Create configuration files with custom parameters
+mcli config-building  # Interactive configuration builder with guided prompts
+mcli plot            # Generate Plotly visualizations from existing results
+mcli interactive     # Launch interactive Streamlit web application
+```
+
 ## Configuration
 
 ### Generate Default Config
 ```bash
-mcli generate-config > config.json
+mcli generate-config -o config.json
 ```
 
 ### Customize Parameters
@@ -314,7 +326,8 @@ mcli generate-config \
     --spacing 0.3 \
     -H 0.5 \
     --mask-thickness 0.8 \
-    --threshold-abs 2.0 > custom_config.json
+    --threshold-abs 2.0 \
+    -o custom_config.json
 ```
 
 ### Interactive Builder
@@ -323,24 +336,74 @@ mcli config-building
 # Follow prompts to create custom configuration
 ```
 
-### Available Parameters
+### Analysis Parameters
 
 | Parameter | Short | Default | Description |
 |-----------|-------|---------|-------------|
 | `spacing` | `-s` | 0.5 | Grid spacing in Ångstroms |
-| `h` | `-H, --h` | 0.2 | Minimum pocket size difference in Å |
+| `h` | `-H` | 0.2 | Minimum difference between pocket sizes in Å |
 | `mask-thickness` | `-mt` | 0.5 | Void space mask thickness in Å |
-| `threshold-abs` | `-ta` | 1.5 | Minimum maxima size threshold in Å |
+| `threshold-abs` | `-ta` | 1.5 | Minimum maxima size in Å |
 | `min-distance` | `-md` | 1.5 | Minimum distance between maxima in Å |
-| `wall-thickness` | `-wt` | 0.08 | Wall region percentage (0-1) |
+| `minimum-window-separation` | `-ms` | 1.0 | Minimum separation between windows in Å |
+| `wall-thickness` | `-wt` | 0.08 | Wall thickness percentage (0-1) |
 | `extra-padding` | `-ep` | 1.0 | Additional grid padding in Å |
 | `min-region-size` | `-mrs` | 0.01 | Minimum region size percentage |
+| `js-threshold` | | 0.15 | Jensen-Shannon threshold for pocket type clustering |
 
-### Special Flags
-* `--no-connections`: Disable connection computation
-* `--return-padded-regions`: Include padded regions in output
-* `--return-dgrid`: Include distance grid in output
-* `--disable-tqdm`: Disable progress bars
+### Analysis Flags
+
+| Flag | Description |
+|------|-------------|
+| `--no-connections` | Disable connection computation |
+| `--return-padded-regions` | Include padded regions in output |
+| `--return-dgrid` | Include distance grid in output |
+| `--disable-tqdm` | Disable progress bars |
+| `--auto-params` | Automatically estimate optimal parameters from structure |
+| `--pore-dia` | Compute pore diameter and percolation analysis |
+| `--psd` | Compute pore size distribution analysis |
+| `--types` | Detect pocket types using agglomerative clustering on cavity size distributions |
+
+### Visualization Options
+
+| Flag | Description |
+|------|-------------|
+| `--plot-html` | Generate Plotly HTML visualization after processing |
+| `--html-dir` | Directory for HTML visualizations (defaults to output directory) |
+| `--no-stylize` | Disable stylized framework rendering in plots |
+| `--theme` | Theme for generated visualizations (dark/white, default: dark) |
+
+### Input/Output Options
+
+| Option | Description |
+|--------|-------------|
+| `-i, --input` | Input CIF file (alternative to positional arguments) |
+| `-o, --output-dir` | Output directory for results (default: current directory) |
+| `-c, --config` | Configuration file (JSON format) |
+
+### Plot Command Options
+
+```bash
+mcli plot results.npz [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `-o, --output-dir` | Directory to store generated HTML files |
+| `-c, --config` | Configuration file to control plotting options |
+| `--no-stylize` | Disable stylized framework rendering in plots |
+| `--cif` | Optional CIF file to use when metadata is missing |
+
+### Interactive Command Options
+
+```bash
+mcli interactive [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--port` | Port to serve the Streamlit app (default chosen by Streamlit) |
+| `--no-browser` | Do not automatically open a browser window |
 
 ## Output Format
 
