@@ -34,7 +34,7 @@ class MCLIStandalone:
     DEFAULTS = {
         'spacing': 0.5,
         'h': 0.2,
-        'mask_thickness': 0.5,
+        'mask_thickness': 1.5,
         'threshold_abs': 1.5,
         'min_distance': 1.5,
         'minimum_window_separation': 1.0,
