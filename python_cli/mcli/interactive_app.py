@@ -320,6 +320,24 @@ def main() -> None:
     )
 
     auto_set_params = st.checkbox("Auto set parameters", value=True)
+    
+    # Minimum box thickness option
+    min_box_thickness_enabled = st.checkbox(
+        "Ensure minimum box thickness", 
+        value=False,
+        help="Create supercell to ensure minimum box dimensions for accurate analysis. Useful for small unit cells."
+    )
+    
+    min_box_thickness = 6.0  # Default 6Å
+    if min_box_thickness_enabled:
+        min_box_thickness = st.number_input(
+            "Minimum box thickness (Å)",
+            value=6.0,
+            min_value=1.0,
+            max_value=50.0,
+            step=0.5,
+            help="Minimum dimension for the simulation box. Creates supercell if unit cell is smaller."
+        )
 
     param_state = st.session_state.setdefault("param_cache", {})
     cache_key = f"{getattr(cif_path, 'name', 'uploaded')}::{spacing:.3f}"
@@ -331,7 +349,7 @@ def main() -> None:
     if current_params is None:
         current_params = {
             "dgrid": compute_dgrid_rust(atoms, spacing),
-            "mask_thickness": 0.5,
+            "mask_thickness": 1.5,
             "h": 0.4,
             "surface_value": 2.0,
         }
@@ -427,8 +445,28 @@ def main() -> None:
         status.markdown("<div style='padding:8px;background:#332700;color:#FFD700;text-align:center;'>⚡ COMPUTING ⚡</div>", unsafe_allow_html=True)
 
         try:
+            # Handle minimum box thickness - create supercell if needed
+            working_atoms = atoms
+            if min_box_thickness_enabled:
+                # Get current cell dimensions
+                cell_lengths = atoms.get_cell_lengths_and_angles()[:3]
+                min_current_length = min(cell_lengths)
+                
+                if min_current_length < min_box_thickness:
+                    # Calculate repetitions needed
+                    try:
+                        repetitions = mgr.get_repetitions_to_meet_cutoff(atoms, min_box_thickness)
+                        if hasattr(repetitions, '__len__') and len(repetitions) >= 3:
+                            rep_str = f"{repetitions[0]}x{repetitions[1]}x{repetitions[2]}"
+                        else:
+                            rep_str = f"{repetitions}x{repetitions}x{repetitions}"
+                        st.info(f"Creating {rep_str} supercell to meet minimum box thickness of {min_box_thickness:.1f} Å")
+                        working_atoms = atoms * repetitions
+                    except Exception as e:
+                        st.warning(f"Could not create supercell automatically: {e}. Using original unit cell.")
+            
             results = _run_segmentation(
-                atoms,
+                working_atoms,
                 current_params["dgrid"],
                 spacing=spacing,
                 mask_thickness=mask_thickness,
@@ -437,7 +475,7 @@ def main() -> None:
                 threshold_abs=threshold_abs,
                 extra_padding=extra_padding,
             )
-            results["ase_atoms"] = atoms
+            results["ase_atoms"] = working_atoms
             results["dgrid"] = results.get("dgrid", current_params["dgrid"])
 
             # Add pocket type detection if requested
@@ -463,7 +501,7 @@ def main() -> None:
                 # Trim maxima using regions.max() as shown in example
                 maxima = all_maxima[:regions.max()]
                 maxima_radii = all_maxima_radii[:regions.max()]
-                connections_trimmed = [c for c in connections if np.all(np.isin(c[0], unique_regions))]
+                connections_trimmed = [c for c in connections if np.any(np.isin(c[0], unique_regions))]
 
                 try:
                     if len(maxima) > 0:
@@ -538,7 +576,7 @@ def main() -> None:
     metadata = st.session_state.get("latest_metadata", {})
     analysis_key = st.session_state.get("analysis_key")
 
-    visualization_tab, percolation_tab, psd_tab = st.tabs(["Visualization", "PLD & Percolation", "Pore Size Distribution"])
+    visualization_tab, percolation_tab, psd_tab, sa_vol_tab = st.tabs(["Visualization", "PLD & Percolation", "Pore Size Distribution", "Surface Areas & Void Volumes"])
 
     with visualization_tab:
         if results_data is None:
@@ -876,6 +914,238 @@ def main() -> None:
                         mime="text/csv",
                     )
                     st.dataframe(pocket_data["df"], use_container_width=True)
+
+    with sa_vol_tab:
+        if results_data is None:
+            st.info("Run the computation to enable surface area and void volume analysis.")
+        else:
+            st.subheader("Surface Areas & Void Volumes")
+
+            # Add probe radius input
+            probe_radius = st.number_input(
+                "Probe Radius (Å)",
+                value=1.2,  # Default helium radius
+                min_value=0.1,
+                max_value=10.0,
+                step=0.1,
+                help="Probe radius for surface area and volume calculations. Default is helium radius (1.2 Å)."
+            )
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.markdown("### Surface Area Analysis")
+                if st.button("Compute Surface Areas", key="compute_sa"):
+                    try:
+                        # Import the surface area computation function directly
+                        from mgr.compute import compute_surface_area_from_results
+
+                        # Convert results dict to expected format for reference functions
+                        # Our app uses 'dgrid' but reference functions expect 'distance_grid'
+                        modified_results = results_data.copy()
+                        if 'dgrid' in modified_results:
+                            modified_results['distance_grid'] = modified_results['dgrid']
+
+                        with st.spinner("Computing surface area analysis..."):
+                            atoms = results_data.get('ase_atoms')
+                            if atoms is None:
+                                st.error("Atoms object not found in results. Please re-run the computation.")
+                                sa_results = None
+                            else:
+                                sa_results = compute_surface_area_from_results(modified_results, atoms, probe_radius)
+
+                        if sa_results:
+                            st.session_state["sa_results"] = sa_results
+                            st.success("Surface area analysis completed!")
+                        else:
+                            st.error("Surface area analysis failed. Please ensure mgr_src is properly installed.")
+                    except ImportError:
+                        st.error("Surface area computation functions not available. Please ensure mgr_src is properly installed.")
+                    except Exception as e:
+                        st.error(f"Error computing surface areas: {e}")
+
+            with col2:
+                st.markdown("### Void Volume Analysis")
+                if st.button("Compute Void Volumes", key="compute_vol"):
+                    try:
+                        # Import the void volume computation function directly
+                        from mgr.compute import compute_void_volume_from_results
+
+                        # Convert results dict to expected format for reference functions
+                        # Our app uses 'dgrid' but reference functions expect 'distance_grid'
+                        modified_results = results_data.copy()
+                        if 'dgrid' in modified_results:
+                            modified_results['distance_grid'] = modified_results['dgrid']
+
+                        with st.spinner("Computing void volume analysis..."):
+                            atoms = results_data.get('ase_atoms')
+                            if atoms is None:
+                                st.error("Atoms object not found in results. Please re-run the computation.")
+                                vol_results = None
+                            else:
+                                vol_results = compute_void_volume_from_results(modified_results, atoms, probe_radius)
+
+                        if vol_results:
+                            st.session_state["vol_results"] = vol_results
+                            st.success("Void volume analysis completed!")
+                        else:
+                            st.error("Void volume analysis failed. Please ensure mgr_src is properly installed.")
+                    except ImportError:
+                        st.error("Void volume computation functions not available. Please ensure mgr_src is properly installed.")
+                    except Exception as e:
+                        st.error(f"Error computing void volumes: {e}")
+
+            # Display results if available
+            sa_results = st.session_state.get("sa_results")
+            vol_results = st.session_state.get("vol_results")
+
+            if sa_results:
+                st.markdown("### Surface Area Results")
+
+                # Global metrics
+                total_sa = sa_results.get('total_surface_area', 0)
+                accessible_sa = sa_results.get('accessible_surface_area', 0)
+                inaccessible_sa = total_sa - accessible_sa
+                accessible_fraction = sa_results.get('accessible_fraction', 0)
+
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Total Surface Area", f"{total_sa:.4f} m²/g")
+                col2.metric("Accessible Surface Area", f"{accessible_sa:.4f} m²/g")
+                col3.metric("Inaccessible Surface Area", f"{inaccessible_sa:.4f} m²/g")
+                col4.metric("Accessible Fraction", f"{accessible_fraction:.4f}")
+
+                # Create breakdown data
+                breakdown_data = []
+
+                # Region-wise breakdown
+                by_region = sa_results.get('by_region', {})
+                if by_region:
+                    for region_id, area in by_region.items():
+                        breakdown_data.append({
+                            'Type': 'Region',
+                            'Category': 'Individual',
+                            'Label': f'region_{region_id}',
+                            'Surface Area (m²/g)': area
+                        })
+
+                # Pocket-wise breakdown
+                by_pocket = sa_results.get('by_pocket', {})
+                if by_pocket:
+                    for pocket_id, area in by_pocket.items():
+                        breakdown_data.append({
+                            'Type': 'Pocket',
+                            'Category': 'Complete',
+                            'Label': str(pocket_id),
+                            'Surface Area (m²/g)': area
+                        })
+
+                # Percolated cluster breakdown
+                by_percolated_cluster = sa_results.get('by_percolated_cluster', {})
+                if by_percolated_cluster:
+                    for cluster_id, area in by_percolated_cluster.items():
+                        breakdown_data.append({
+                            'Type': 'Cluster',
+                            'Category': 'Percolated',
+                            'Label': str(cluster_id),
+                            'Surface Area (m²/g)': area
+                        })
+
+                if breakdown_data:
+                    st.markdown("#### Detailed Breakdown")
+                    sa_df = pd.DataFrame(breakdown_data)
+
+                    # Create bar chart
+                    import plotly.express as px
+                    fig_sa = px.bar(sa_df, x='Label', y='Surface Area (m²/g)',
+                                  color='Type', barmode='group',
+                                  title="Surface Area Breakdown by Category")
+                    st.plotly_chart(fig_sa, use_container_width=True)
+
+                    # Show data table
+                    st.dataframe(sa_df, use_container_width=True)
+
+                    # Download CSV
+                    csv_sa = sa_df.to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        label="Download surface area results (CSV)",
+                        data=csv_sa,
+                        file_name=f"mcli_{getattr(cif_path, 'stem', 'analysis')}_surface_area.csv",
+                        mime="text/csv",
+                    )
+
+            if vol_results:
+                st.markdown("### Void Volume Results")
+
+                # Global metrics
+                total_vol = vol_results.get('total_void_volume', 0)
+                accessible_vol = vol_results.get('accessible_void_volume', 0)
+                inaccessible_vol = total_vol - accessible_vol
+                accessible_fraction = vol_results.get('accessible_fraction', 0)
+
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Total Void Volume", f"{total_vol:.4f} cm³/g")
+                col2.metric("Accessible Void Volume", f"{accessible_vol:.4f} cm³/g")
+                col3.metric("Inaccessible Void Volume", f"{inaccessible_vol:.4f} cm³/g")
+                col4.metric("Accessible Fraction", f"{accessible_fraction:.4f}")
+
+                # Create breakdown data
+                breakdown_data = []
+
+                # Region-wise breakdown
+                by_region = vol_results.get('by_region', {})
+                if by_region:
+                    for region_id, volume in by_region.items():
+                        breakdown_data.append({
+                            'Type': 'Region',
+                            'Category': 'Individual',
+                            'Label': f'region_{region_id}',
+                            'Void Volume (cm³/g)': volume
+                        })
+
+                # Pocket-wise breakdown
+                by_pocket = vol_results.get('by_pocket', {})
+                if by_pocket:
+                    for pocket_id, volume in by_pocket.items():
+                        breakdown_data.append({
+                            'Type': 'Pocket',
+                            'Category': 'Complete',
+                            'Label': str(pocket_id),
+                            'Void Volume (cm³/g)': volume
+                        })
+
+                # Percolated cluster breakdown
+                by_percolated_cluster = vol_results.get('by_percolated_cluster', {})
+                if by_percolated_cluster:
+                    for cluster_id, volume in by_percolated_cluster.items():
+                        breakdown_data.append({
+                            'Type': 'Cluster',
+                            'Category': 'Percolated',
+                            'Label': str(cluster_id),
+                            'Void Volume (cm³/g)': volume
+                        })
+
+                if breakdown_data:
+                    st.markdown("#### Detailed Breakdown")
+                    vol_df = pd.DataFrame(breakdown_data)
+
+                    # Create bar chart
+                    import plotly.express as px
+                    fig_vol = px.bar(vol_df, x='Label', y='Void Volume (cm³/g)',
+                                   color='Type', barmode='group',
+                                   title="Void Volume Breakdown by Category")
+                    st.plotly_chart(fig_vol, use_container_width=True)
+
+                    # Show data table
+                    st.dataframe(vol_df, use_container_width=True)
+
+                    # Download CSV
+                    csv_vol = vol_df.to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        label="Download void volume results (CSV)",
+                        data=csv_vol,
+                        file_name=f"mcli_{getattr(cif_path, 'stem', 'analysis')}_void_volume.csv",
+                        mime="text/csv",
+                    )
 
 
 if __name__ == "__main__":
