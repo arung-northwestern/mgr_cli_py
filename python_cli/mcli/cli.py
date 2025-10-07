@@ -490,6 +490,236 @@ def save_psd_csv(results, output_file, material_name="material"):
         print(f"Error saving PSD CSV: {e}")
 
 
+def compute_surface_area_analysis(results_dict, mat_atoms, probe_radius=None):
+    """
+    Compute surface area analysis from results dictionary.
+
+    Parameters:
+    - results_dict: Dictionary containing analysis results
+    - mat_atoms: ASE atoms object
+    - probe_radius: Probe radius for surface area calculation
+
+    Returns:
+    - Dictionary with surface area analysis results
+    """
+    try:
+        # Convert results dict to expected format for reference functions
+        # Our CLI uses 'dgrid' but reference functions expect 'distance_grid'
+        modified_results = results_dict.copy()
+        if 'dgrid' in modified_results:
+            modified_results['distance_grid'] = modified_results['dgrid']
+
+        from mgr.compute import compute_surface_area_from_results
+        return compute_surface_area_from_results(modified_results, mat_atoms, probe_radius)
+    except ImportError:
+        try:
+            # Convert results dict to expected format for reference functions
+            modified_results = results_dict.copy()
+            if 'dgrid' in modified_results:
+                modified_results['distance_grid'] = modified_results['dgrid']
+
+            from mgr_visualize.mgr.compute import compute_surface_area_from_results
+            return compute_surface_area_from_results(modified_results, mat_atoms, probe_radius)
+        except ImportError:
+            print("Warning: Surface area computation functions not available. Please ensure mgr_src is properly installed.")
+            return None
+    except Exception as e:
+        print(f"Warning: Surface area computation failed with error: {e}")
+        print("This might be due to inappropriate parameters for this material structure.")
+        print("Try using --auto-params to automatically estimate optimal parameters, or adjust:")
+        print("  - --mask-thickness (default: 1.5)")
+        print("  - --threshold-abs (default: 1.5)")
+        print("  - --spacing (default: 0.5)")
+        print("  - --h (default: 0.2)")
+        return None
+
+
+def compute_void_volume_analysis(results_dict, mat_atoms, probe_radius=None):
+    """
+    Compute void volume analysis from results dictionary.
+
+    Parameters:
+    - results_dict: Dictionary containing analysis results
+    - mat_atoms: ASE atoms object
+    - probe_radius: Probe radius for volume calculation
+
+    Returns:
+    - Dictionary with void volume analysis results
+    """
+    try:
+        # Convert results dict to expected format for reference functions
+        # Our CLI uses 'dgrid' but reference functions expect 'distance_grid'
+        modified_results = results_dict.copy()
+        if 'dgrid' in modified_results:
+            modified_results['distance_grid'] = modified_results['dgrid']
+
+        from mgr.compute import compute_void_volume_from_results
+        return compute_void_volume_from_results(modified_results, mat_atoms, probe_radius)
+    except ImportError:
+        try:
+            # Convert results dict to expected format for reference functions
+            modified_results = results_dict.copy()
+            if 'dgrid' in modified_results:
+                modified_results['distance_grid'] = modified_results['dgrid']
+
+            from mgr_visualize.mgr.compute import compute_void_volume_from_results
+            return compute_void_volume_from_results(modified_results, mat_atoms, probe_radius)
+        except ImportError:
+            print("Warning: Void volume computation functions not available. Please ensure mgr_src is properly installed.")
+            return None
+    except Exception as e:
+        print(f"Warning: Void volume computation failed with error: {e}")
+        print("This might be due to inappropriate parameters for this material structure.")
+        print("Try using --auto-params to automatically estimate optimal parameters, or adjust:")
+        print("  - --mask-thickness (default: 1.5)")
+        print("  - --threshold-abs (default: 1.5)")
+        print("  - --spacing (default: 0.5)")
+        print("  - --h (default: 0.2)")
+        return None
+
+
+def save_surface_area_csv(results, output_file, material_name="material"):
+    """Save surface area analysis results to CSV.
+
+    Parameters:
+    - results: Dictionary with surface area analysis results
+    - output_file: Path to output CSV file
+    - material_name: Name of the material for filename
+    """
+    import csv
+
+    if not results:
+        print("No surface area results to save.")
+        return
+
+    try:
+        # Save surface area CSV
+        sa_csv_file = output_file.parent / f"{output_file.stem}_surface_area.csv"
+
+        with open(sa_csv_file, 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+
+            # Write global metrics
+            writer.writerow(['Type', 'Category', 'Label', 'Surface_Area_m2_g', 'Unit'])
+
+            # Global surface areas
+            writer.writerow(['Global', 'Total', 'All', f"{results.get('total_surface_area', 0):.4f}", 'm²/g'])
+            writer.writerow(['Global', 'Accessible', 'All', f"{results.get('accessible_surface_area', 0):.4f}", 'm²/g'])
+            writer.writerow(['Global', 'Inaccessible', 'All', f"{results.get('total_surface_area', 0) - results.get('accessible_surface_area', 0):.4f}", 'm²/g'])
+
+            # Accessible fraction
+            total_sa = results.get('total_surface_area', 0)
+            accessible_sa = results.get('accessible_surface_area', 0)
+            if total_sa > 0:
+                accessible_fraction = accessible_sa / total_sa
+                writer.writerow(['Global', 'Fraction', 'Accessible', f"{accessible_fraction:.4f}", 'ratio'])
+
+            # Region-wise surface areas
+            by_region = results.get('by_region', {})
+            if by_region:
+                writer.writerow([])  # Empty row
+                writer.writerow(['Region', 'Individual', 'Label', 'Surface_Area_m2_g', 'Unit'])
+                for region_id, area in by_region.items():
+                    writer.writerow(['Region', 'Individual', f"region_{region_id}", f"{area:.4f}", 'm²/g'])
+
+            # Pocket-wise surface areas
+            by_pocket = results.get('by_pocket', {})
+            if by_pocket:
+                writer.writerow([])  # Empty row
+                writer.writerow(['Pocket', 'Complete', 'Label', 'Surface_Area_m2_g', 'Unit'])
+                for pocket_id, area in by_pocket.items():
+                    writer.writerow(['Pocket', 'Complete', f"{pocket_id}", f"{area:.4f}", 'm²/g'])
+
+            # Percolated cluster surface areas
+            by_percolated_cluster = results.get('by_percolated_cluster', {})
+            if by_percolated_cluster:
+                writer.writerow([])  # Empty row
+                writer.writerow(['Cluster', 'Percolated', 'Label', 'Surface_Area_m2_g', 'Unit'])
+                for cluster_id, area in by_percolated_cluster.items():
+                    writer.writerow(['Cluster', 'Percolated', f"{cluster_id}", f"{area:.4f}", 'm²/g'])
+
+            # Probe radius used
+            probe_radius = results.get('probe_radius', 'N/A')
+            writer.writerow([])  # Empty row
+            writer.writerow(['Parameter', 'Probe_Radius', 'Value', f"{probe_radius}", 'Å'])
+
+        print(f"Surface area analysis saved to: {sa_csv_file}")
+
+    except Exception as e:
+        print(f"Error saving surface area CSV: {e}")
+
+
+def save_void_volume_csv(results, output_file, material_name="material"):
+    """Save void volume analysis results to CSV.
+
+    Parameters:
+    - results: Dictionary with void volume analysis results
+    - output_file: Path to output CSV file
+    - material_name: Name of the material for filename
+    """
+    import csv
+
+    if not results:
+        print("No void volume results to save.")
+        return
+
+    try:
+        # Save void volume CSV
+        vol_csv_file = output_file.parent / f"{output_file.stem}_void_volume.csv"
+
+        with open(vol_csv_file, 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+
+            # Write global metrics
+            writer.writerow(['Type', 'Category', 'Label', 'Void_Volume_cm3_g', 'Unit'])
+
+            # Global void volumes
+            writer.writerow(['Global', 'Total', 'All', f"{results.get('total_void_volume', 0):.4f}", 'cm³/g'])
+            writer.writerow(['Global', 'Accessible', 'All', f"{results.get('accessible_void_volume', 0):.4f}", 'cm³/g'])
+            writer.writerow(['Global', 'Inaccessible', 'All', f"{results.get('total_void_volume', 0) - results.get('accessible_void_volume', 0):.4f}", 'cm³/g'])
+
+            # Accessible fraction
+            total_vol = results.get('total_void_volume', 0)
+            accessible_vol = results.get('accessible_void_volume', 0)
+            if total_vol > 0:
+                accessible_fraction = accessible_vol / total_vol
+                writer.writerow(['Global', 'Fraction', 'Accessible', f"{accessible_fraction:.4f}", 'ratio'])
+
+            # Region-wise void volumes
+            by_region = results.get('by_region', {})
+            if by_region:
+                writer.writerow([])  # Empty row
+                writer.writerow(['Region', 'Individual', 'Label', 'Void_Volume_cm3_g', 'Unit'])
+                for region_id, volume in by_region.items():
+                    writer.writerow(['Region', 'Individual', f"region_{region_id}", f"{volume:.4f}", 'cm³/g'])
+
+            # Pocket-wise void volumes
+            by_pocket = results.get('by_pocket', {})
+            if by_pocket:
+                writer.writerow([])  # Empty row
+                writer.writerow(['Pocket', 'Complete', 'Label', 'Void_Volume_cm3_g', 'Unit'])
+                for pocket_id, volume in by_pocket.items():
+                    writer.writerow(['Pocket', 'Complete', f"{pocket_id}", f"{volume:.4f}", 'cm³/g'])
+
+            # Percolated cluster void volumes
+            by_percolated_cluster = results.get('by_percolated_cluster', {})
+            if by_percolated_cluster:
+                writer.writerow([])  # Empty row
+                writer.writerow(['Cluster', 'Percolated', 'Label', 'Void_Volume_cm3_g', 'Unit'])
+                for cluster_id, volume in by_percolated_cluster.items():
+                    writer.writerow(['Cluster', 'Percolated', f"{cluster_id}", f"{volume:.4f}", 'cm³/g'])
+
+            # Probe radius used
+            probe_radius = results.get('probe_radius', 'N/A')
+            writer.writerow([])  # Empty row
+            writer.writerow(['Parameter', 'Probe_Radius', 'Value', f"{probe_radius}", 'Å'])
+
+        print(f"Void volume analysis saved to: {vol_csv_file}")
+
+    except Exception as e:
+        print(f"Error saving void volume CSV: {e}")
+
+
 class MCLI:
     """Main CLI class for MOF analysis."""
 
@@ -507,15 +737,15 @@ class MCLI:
         'plot_surface': True,
         'plot_surface_pbc': True,
         'plot_surface_isovalue': 0.75,
-        'plot_surface_opacity': 0.9,
-        'plot_surface_pbc_opacity': 0.9,
+        'plot_surface_opacity': 1.0,
+        'plot_surface_pbc_opacity': 1.0,
     }
 
     # Default configuration values
     DEFAULTS = {
         'spacing': 0.5,
         'h': 0.2,
-        'mask_thickness': 0.5,
+        'mask_thickness': 1.5,
         'threshold_abs': 1.5,
         'min_distance': 1.5,
         'minimum_window_separation': None,
@@ -706,6 +936,21 @@ Examples:
             '--types', action='store_true',
             help='Detect pocket types using agglomerative clustering on cavity size distributions'
         )
+        flag_group.add_argument(
+            '--sa', action='store_true',
+            help='Compute surface area analysis with percolation accessibility'
+        )
+        flag_group.add_argument(
+            '--vol', action='store_true',
+            help='Compute void volume analysis with percolation accessibility'
+        )
+
+        # Analysis parameters
+        analysis_group = process_parser.add_argument_group('analysis options')
+        analysis_group.add_argument(
+            '--probe-radius', type=float,
+            help='Probe radius for surface area and volume calculations (default: helium radius 1.2 Å)'
+        )
 
         # Generate-config command
         config_parser = subparsers.add_parser(
@@ -887,6 +1132,74 @@ Examples:
                         psd_csv_base_file = output_dir / f"{cif_file.stem}_psd"
                         save_psd_csv(psd_results, psd_csv_base_file, material_name=cif_file.stem)
 
+                # Handle surface area analysis if requested
+                if getattr(args, 'sa', False):
+                    print("Computing surface area analysis...")
+
+                    # Get probe radius from args or use default
+                    probe_radius = getattr(args, 'probe_radius', None)
+                    if probe_radius is None:
+                        from ase.data import vdw_radii
+                        probe_radius = vdw_radii[2]  # helium radius
+                        print(f"  Using default probe radius: {probe_radius:.3f} Å")
+                    else:
+                        print(f"  Using probe radius: {probe_radius:.3f} Å")
+
+                    # Compute surface area analysis
+                    sa_results = compute_surface_area_analysis(result, atoms, probe_radius)
+                    if sa_results:
+                        # Add to main results
+                        result['surface_area_analysis'] = sa_results
+
+                        # Save CSV file for surface area analysis
+                        sa_csv_base_file = output_dir / f"{cif_file.stem}_sa"
+                        save_surface_area_csv(sa_results, sa_csv_base_file, material_name=cif_file.stem)
+
+                        # Print summary
+                        total_sa = sa_results.get('total_surface_area', 0)
+                        accessible_sa = sa_results.get('accessible_surface_area', 0)
+                        accessible_fraction = sa_results.get('accessible_fraction', 0)
+                        print(f"  Surface Area Results:")
+                        print(f"    Total surface area: {total_sa:.4f} m²/g")
+                        print(f"    Accessible surface area: {accessible_sa:.4f} m²/g")
+                        print(f"    Accessible fraction: {accessible_fraction:.4f}")
+                    else:
+                        print("  Surface area analysis failed")
+
+                # Handle void volume analysis if requested
+                if getattr(args, 'vol', False):
+                    print("Computing void volume analysis...")
+
+                    # Get probe radius from args or use default
+                    probe_radius = getattr(args, 'probe_radius', None)
+                    if probe_radius is None:
+                        from ase.data import vdw_radii
+                        probe_radius = vdw_radii[2]  # helium radius
+                        print(f"  Using default probe radius: {probe_radius:.3f} Å")
+                    else:
+                        print(f"  Using probe radius: {probe_radius:.3f} Å")
+
+                    # Compute void volume analysis
+                    vol_results = compute_void_volume_analysis(result, atoms, probe_radius)
+                    if vol_results:
+                        # Add to main results
+                        result['void_volume_analysis'] = vol_results
+
+                        # Save CSV file for void volume analysis
+                        vol_csv_base_file = output_dir / f"{cif_file.stem}_vol"
+                        save_void_volume_csv(vol_results, vol_csv_base_file, material_name=cif_file.stem)
+
+                        # Print summary
+                        total_vol = vol_results.get('total_void_volume', 0)
+                        accessible_vol = vol_results.get('accessible_void_volume', 0)
+                        accessible_fraction = vol_results.get('accessible_fraction', 0)
+                        print(f"  Void Volume Results:")
+                        print(f"    Total void volume: {total_vol:.4f} cm³/g")
+                        print(f"    Accessible void volume: {accessible_vol:.4f} cm³/g")
+                        print(f"    Accessible fraction: {accessible_fraction:.4f}")
+                    else:
+                        print("  Void volume analysis failed")
+
                 # Handle pocket type detection if requested
                 if getattr(args, 'types', False):
                     from skimage.measure import regionprops
@@ -912,7 +1225,7 @@ Examples:
                     # Trim maxima using regions.max() as shown in example
                     maxima = all_maxima[:regions.max()]
                     maxima_radii = all_maxima_radii[:regions.max()]
-                    connections_trimmed = [c for c in connections if np.all(np.isin(c[0], unique_regions))]
+                    connections_trimmed = [c for c in connections if np.any(np.isin(c[0], unique_regions))]
 
                     if len(maxima) > 0:
                         try:
@@ -1185,6 +1498,14 @@ Examples:
             value = getattr(args, arg_name, None)
             if value is not None:
                 result[config_key] = value
+
+        # Ensure return_dgrid is enabled if sa or vol analysis is requested
+        if (hasattr(args, 'sa') and args.sa) or (hasattr(args, 'vol') and args.vol):
+            if not result.get('return_dgrid', False):
+                result['return_dgrid'] = True
+                print("Info: Automatically enabled distance grid (--return-dgrid) for surface area and/or void volume analysis")
+            else:
+                print("Info: Distance grid (--return-dgrid) is enabled for surface area and/or void volume analysis")
 
         # Handle boolean flags
         if hasattr(args, 'no_connections') and args.no_connections:
