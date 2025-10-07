@@ -1579,6 +1579,21 @@ Examples:
                     'radii': np.array([conn[4].flatten() for conn in value])
                 }
                 save_dict[key] = connections_dict
+            elif key == 'rag_clustered':
+                # Special handling for NetworkX graphs - preserve the graph object
+                # NetworkX graphs can't be directly saved to numpy, so we pickle them
+                try:
+                    import pickle
+                    save_dict[key] = pickle.dumps(value)
+                except ImportError:
+                    print(f"Warning: Could not save NetworkX graph for {key} - pickle not available")
+                    # Fallback: save basic graph information as dict
+                    save_dict[key] = {
+                        'nodes': list(value.nodes()),
+                        'edges': list(value.edges()),
+                        'node_attrs': dict(value.nodes(data=True)),
+                        'graph_attrs': dict(value.graph)
+                    }
             else:
                 # Rust function already returns PyArray objects for numerical data
                 # Python objects (dicts, lists) are handled as-is
@@ -1663,13 +1678,59 @@ Examples:
         with np.load(path, allow_pickle=True) as npz:  # type: ignore[arg-type]
             for key in npz.files:
                 value = npz[key]
+
                 if isinstance(value, np.ndarray):
                     if value.dtype == object and value.size == 1:
-                        data[key] = value.item()
+                        loaded_value = value.item()
+
+                        # Special handling for NetworkX graphs
+                        if key == 'rag_clustered':
+                            try:
+                                import pickle
+                                # Check if it's a pickled NetworkX graph (bytes)
+                                if isinstance(loaded_value, bytes):
+                                    data[key] = pickle.loads(loaded_value)
+                                else:
+                                    data[key] = loaded_value
+                            except ImportError:
+                                print(f"Warning: Could not unpickle NetworkX graph for {key} - pickle not available")
+                                data[key] = loaded_value
+                            except Exception as e:
+                                print(f"Warning: Error unpickling {key}: {e}")
+                                data[key] = loaded_value
+                        else:
+                            data[key] = loaded_value
                         continue
+                    elif key == 'rag_clustered':
+                        # Handle case where rag_clustered is saved as bytes array (dtype |Sxxx)
+                        try:
+                            loaded_value = value.item() if value.size == 1 else value
+                            if isinstance(loaded_value, bytes):
+                                import pickle
+                                data[key] = pickle.loads(loaded_value)
+                            else:
+                                data[key] = loaded_value
+                        except Exception as e:
+                            print(f"Warning: Could not process {key}: {e}")
+                            data[key] = value
+                        continue
+
                     if value.shape == ():
                         data[key] = value.item()
                         continue
+                elif key == 'rag_clustered':
+                    # Handle case where rag_clustered is not a numpy array
+                    if isinstance(value, bytes):
+                        try:
+                            import pickle
+                            data[key] = pickle.loads(value)
+                        except Exception as e:
+                            print(f"Warning: Could not unpickle {key}: {e}")
+                            data[key] = value
+                    else:
+                        data[key] = value
+                    continue
+
                 data[key] = value
         return data
 
