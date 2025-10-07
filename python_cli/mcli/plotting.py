@@ -717,193 +717,7 @@ def _decode_connections(raw: Any) -> List[Tuple[np.ndarray, bool, str, np.ndarra
     raise TypeError("Unsupported connections payload")
 
 
-def plot_connections_as_it_is(
-    connections: Sequence[Tuple[np.ndarray, bool, str, np.ndarray, np.ndarray]],
-    maxima: np.ndarray,
-    shape: Sequence[int],
-    ase_atoms,
-    plot_periodic: bool = True,
-    plot_disconnected: bool = False,
-    **kwargs: Any,
-) -> List[go.Scatter3d]:
-    """Render connection graph traces, honoring periodic connections."""
 
-    connections = _decode_connections(connections)
-    if not connections:
-        return []
-
-    maxima = np.asarray(maxima, dtype=float)
-    cell = _compute_cell_matrix(ase_atoms)
-    shape = np.asarray(shape, dtype=float)
-
-    node_ids = sorted({int(idx) for conn in connections for idx in conn[0]})
-    node_positions = {node: np.dot(cell, (maxima[node - 1] / shape)) for node in node_ids if node - 1 < len(maxima)}
-
-    cscale = kwargs.get("cscale", px.colors.sequential.Turbo)
-    if isinstance(cscale, str):
-        cscale = getattr(px.colors.sequential, cscale, px.colors.sequential.Turbo)
-
-    node_to_color = {
-        node: px.colors.sample_colorscale(cscale, (node - 1) / max(len(maxima) - 1, 1))[0]
-        for node in node_ids
-    }
-
-    internal_nodes: List[np.ndarray] = []
-    internal_hover: List[str] = []
-    node_colors: List[str] = []
-    periodic_nodes = set()
-    internal_nodes_set = set()
-
-    for regions, exists, ctype, centers, radii in connections:
-        if exists and ctype == "periodic":
-            periodic_nodes.update(regions)
-        if exists and ctype == "internal":
-            internal_nodes_set.update(regions)
-
-    exclusive_periodic = periodic_nodes - internal_nodes_set
-
-    for node in node_ids:
-        if node in exclusive_periodic or node not in node_positions:
-            continue
-        pos = node_positions[node]
-        internal_nodes.append(pos)
-        node_colors.append(node_to_color[node])
-        internal_hover.append(
-            f"Index: {node}<br>Type: Internal<br>Position: ({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}) Å"
-        )
-
-    traces: List[go.Scatter3d] = []
-    if internal_nodes:
-        coords = np.vstack(internal_nodes)
-        traces.append(
-            go.Scatter3d(
-                x=coords[:, 0],
-                y=coords[:, 1],
-                z=coords[:, 2],
-                mode="markers",
-                marker=dict(size=kwargs.get("marker_size", 10), color=node_colors, line=dict(width=2, color=node_colors)),
-                hovertext=internal_hover,
-                hoverinfo="text",
-                name="Internal Maxima",
-                legendgroup="connections",
-            )
-        )
-
-    edge_x: List[float] = []
-    edge_y: List[float] = []
-    edge_z: List[float] = []
-    edge_hover: List[str] = []
-
-    for regions, exists, ctype, centers, radii in connections:
-        if not exists or ctype != "internal":
-            continue
-        n1, n2 = regions
-        if n1 not in node_positions or n2 not in node_positions:
-            continue
-        pos1, pos2 = node_positions[n1], node_positions[n2]
-        edge_x.extend([pos1[0], pos2[0], None])
-        edge_y.extend([pos1[1], pos2[1], None])
-        edge_z.extend([pos1[2], pos2[2], None])
-        edge_hover.extend([f"Internal edge: {n1}-{n2}", f"Internal edge: {n1}-{n2}", None])
-
-    if edge_x:
-        traces.append(
-            go.Scatter3d(
-                x=edge_x,
-                y=edge_y,
-                z=edge_z,
-                mode="lines",
-                line=dict(width=4, color=kwargs.get("line_color", "red")),
-                hovertext=edge_hover,
-                hoverinfo="text",
-                name="Internal Connections",
-                legendgroup="connections",
-            )
-        )
-
-    if plot_periodic:
-        dotted_x: List[float] = []
-        dotted_y: List[float] = []
-        dotted_z: List[float] = []
-        periodic_markers: List[np.ndarray] = []
-        periodic_hover: List[str] = []
-        periodic_colors: List[str] = []
-
-        for regions, exists, ctype, centers, radii in connections:
-            if not exists or ctype != "periodic":
-                continue
-            n1, n2 = regions
-            if n1 not in node_positions:
-                continue
-            start = node_positions[n1]
-            for center in centers:
-                dotted_points = np.linspace(start, center, kwargs.get("edge_resolution", 20))
-                dotted_x.extend(np.concatenate([dotted_points[:, 0], [None]]))
-                dotted_y.extend(np.concatenate([dotted_points[:, 1], [None]]))
-                dotted_z.extend(np.concatenate([dotted_points[:, 2], [None]]))
-                periodic_markers.append(center)
-                periodic_hover.append(
-                    f"Periodic edge: {n1}-{n2}<br>Window: ({center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f}) Å"
-                )
-                periodic_colors.append(node_to_color.get(n2, "orange"))
-
-        if dotted_x:
-            traces.append(
-                go.Scatter3d(
-                    x=dotted_x,
-                    y=dotted_y,
-                    z=dotted_z,
-                    mode="markers",
-                    marker=dict(size=kwargs.get("dot_size", 1.0), color=kwargs.get("line_color", "red")),
-                    hoverinfo="skip",
-                    name="Periodic Connections",
-                    legendgroup="connections",
-                )
-            )
-
-        if periodic_markers:
-            pm = np.vstack(periodic_markers)
-            traces.append(
-                go.Scatter3d(
-                    x=pm[:, 0],
-                    y=pm[:, 1],
-                    z=pm[:, 2],
-                    mode="markers",
-                    marker=dict(
-                        symbol="circle-open",
-                        size=kwargs.get("marker_size", 10),
-                        color=periodic_colors,
-                        line=dict(width=3, color=periodic_colors),
-                    ),
-                    hovertext=periodic_hover,
-                    hoverinfo="text",
-                    name="Periodic Maxima",
-                    legendgroup="connections",
-                )
-            )
-
-    if plot_disconnected:
-        maxima_coords = np.dot(cell, (maxima / shape).T).T
-        linked = set(node_ids)
-        all_nodes = set(range(1, len(maxima) + 1))
-        disconnected = sorted(all_nodes - linked)
-        if disconnected:
-            coords = maxima_coords[[idx - 1 for idx in disconnected]]
-            traces.append(
-                go.Scatter3d(
-                    x=coords[:, 0],
-                    y=coords[:, 1],
-                    z=coords[:, 2],
-                    mode="markers",
-                    marker=dict(size=kwargs.get("marker_size", 10), color="gray", opacity=0.3),
-                    hovertext=[f"Index: {idx}" for idx in disconnected],
-                    hoverinfo="text",
-                    name="Disconnected Maxima",
-                    legendgroup="connections",
-                )
-            )
-
-    return traces
 
 
 def prepare_results_for_plot(result: Dict[str, Any], ase_atoms) -> Dict[str, Any]:
@@ -981,7 +795,7 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
     connections = results.get("connections", [])
     unique_regions = np.asarray(results.get("unique_regions", []), dtype=int)
     if unique_regions.size:
-        connections_trimmed = [c for c in connections if np.all(np.isin(c[0], unique_regions))]
+        connections_trimmed = [c for c in connections if np.any(np.isin(c[0], unique_regions))]
     else:
         connections_trimmed = list(connections)
 
@@ -1025,7 +839,7 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         traces.append(surface_trace_cluster)
 
     if defaults.get("plot_connections", True) and connections_trimmed:
-        connections_traces = plot_connections_as_it_is(connections_trimmed, maxima, regions.shape, mat_atoms)
+        connections_traces = mgr_visualize.plot_connections_as_it_is(connections_trimmed, all_maxima, dgrid.shape, mat_atoms)
         traces.extend(connections_traces)
 
     if defaults.get("plot_maxima", True) and len(maxima):
@@ -1063,7 +877,6 @@ __all__ = [
     "make_fig_orthographic",
     "plot_cell",
     "plot_surface_dgrid",
-    "plot_connections_as_it_is",
     "plot_maxima",
     "plot_framework_as_mesh",
     "spheres_for_positions",
