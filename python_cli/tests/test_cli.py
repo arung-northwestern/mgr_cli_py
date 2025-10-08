@@ -142,7 +142,7 @@ class TestMCLI(unittest.TestCase):
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=self.test_dir.parent)
 
         self.assertEqual(result.returncode, 0, f"Command failed: {result.stderr}")
-        self.assertIn("MCLI", result.stdout)
+        self.assertIn("Mofography CLI Tool", result.stdout)
         self.assertIn("process", result.stdout)
         self.assertIn("generate-config", result.stdout)
         self.assertIn("config-building", result.stdout)

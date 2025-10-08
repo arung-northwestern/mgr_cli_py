@@ -34,12 +34,6 @@ dependencies = [
 [project.scripts]
 mcli = "mcli.cli:main"
 
-[project.urls]
-Homepage = ""
-Repository = ""
-Documentation = ""
-Bug Reports = ""
-Source = ""
 
 [tool.setuptools]
 packages = ["mcli"]

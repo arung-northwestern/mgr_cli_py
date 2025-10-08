@@ -478,6 +478,31 @@ def main() -> None:
             results["ase_atoms"] = working_atoms
             results["dgrid"] = results.get("dgrid", current_params["dgrid"])
 
+            # Derive final maxima and radii from segmentation results to ensure they are available for the RAG download.
+            # This logic mirrors the CLI's --rag option post-processing.
+            try:
+                dgrid = results.get("dgrid")
+                regions = results.get("regions")
+                maxima_info = results.get("maxima_info")
+                all_maxima = results.get("all_maxima")
+
+                if dgrid is not None and regions is not None and maxima_info is not None and all_maxima is not None and regions.max() > 0:
+                    all_maxima_radii = dgrid[tuple(maxima_info[:, 1:4].T)]
+                    # Trim the full list of maxima down to the number of regions found.
+                    final_maxima = all_maxima[:regions.max()]
+                    final_maxima_radii = all_maxima_radii[:regions.max()]
+                    
+                    # Store them back into the main results dictionary
+                    results["maxima"] = final_maxima
+                    results["maxima_radii"] = final_maxima_radii
+                else:
+                    # Handle case with no regions found or missing data
+                    results["maxima"] = np.empty((0, 3), dtype=int)
+                    results["maxima_radii"] = np.empty(0, dtype=float)
+            except Exception as e:
+                st.warning(f"Could not derive final maxima/radii: {e}. RAG download may fail.")
+
+
             # Add pocket type detection if requested
             if detect_pocket_types:
                 from skimage.measure import regionprops
@@ -612,7 +637,7 @@ def main() -> None:
                     st.download_button(
                         label="Download interactive HTML",
                         data=file_handle,
-                        file_name=f"mcli_{getattr(cif_path, 'stem', 'analysis')}.html",
+                        file_name=f"{getattr(cif_path, 'stem', 'analysis')}.html",
                         mime="text/html",
                     )
                 if results_data:
@@ -621,9 +646,58 @@ def main() -> None:
                         st.download_button(
                             label="Download results NPZ",
                             data=npz_bytes,
-                            file_name=f"mcli_{getattr(cif_path, 'stem', 'analysis')}_results.npz",
+                            file_name=f"{getattr(cif_path, 'stem', 'analysis')}_results.npz",
                             mime="application/octet-stream",
                         )
+
+                    # --- Download RAG (Pickle) Button ---
+                    import pickle
+                    rag_obj = None
+                    try:
+                        # Gather required fields for CLI-style RAG (no clustering, no PSD)
+                        connections = results_data.get("connections")
+                        maxima = results_data.get("maxima")
+                        maxima_radii = results_data.get("maxima_radii")
+                        dgrid = results_data.get("dgrid")
+                        regions = results_data.get("regions")
+                        mat_atoms = results_data.get("ase_atoms")
+                        unique_regions = results_data.get("unique_regions")
+                        maxima_info = results_data.get("maxima_info")
+                        required_fields = [
+                            ("connections", connections),
+                            ("maxima", maxima),
+                            ("maxima_radii", maxima_radii),
+                            ("dgrid", dgrid),
+                            ("regions", regions),
+                            ("ase_atoms", mat_atoms),
+                            ("unique_regions", unique_regions),
+                            ("maxima_info", maxima_info),
+                        ]
+                        missing = [name for name, val in required_fields if val is None]
+                        if missing:
+                            raise ValueError(f"Missing fields: {missing}")
+                        pbc_groups_dict = get_pbc_groups(unique_regions, maxima_info)
+                        pbc_groups = [v for k, v in pbc_groups_dict.items()]
+                        # Build RAG (steps 1-3, no clustering, no PSD)
+                        rag = mgr.rag_from_connections(connections, maxima)
+                        rag = mgr.add_pbc_to_rag(rag, pbc_groups)
+                        rag = mgr.add_maxima_to_rag(rag, maxima, maxima_radii, dgrid.shape, mat_atoms)
+                        rag_obj = rag
+                    except Exception as e:
+                        st.warning(f"Could not reconstruct RAG for download: {e}")
+                        rag_obj = None
+
+                    if rag_obj is not None:
+                        rag_bytes = pickle.dumps(rag_obj)
+                        st.download_button(
+                            label="Download RAG (.pkl)",
+                            data=rag_bytes,
+                            file_name=f"{getattr(cif_path, 'stem', 'analysis')}_rag.pkl",
+                            mime="application/octet-stream",
+                        )
+                    else:
+                        st.info("RAG is not available for download. Ensure segmentation is complete.")
+
             with tips_column:
                 st.markdown("""
                 ### Tips
@@ -705,14 +779,14 @@ def main() -> None:
                         cluster_traces = mgr.plot_percolated_cluster_meshes(
                             analysis["percolation_history"],
                             analysis["dgrid"],
-                            analysis["regions"],
-                            atoms,
-                            probe_radius=selected_radius,
-                            isovalue=analysis["isovalue"],
-                            stylize=True,
-                            opacity=1.0,
-                            cscale = px.colors.qualitative.Pastel,
-                        )
+                        analysis["regions"],
+                        atoms,
+                        probe_radius=selected_radius,
+                        isovalue=analysis["isovalue"],
+                        stylize=True,
+                        opacity=1.0,
+                        cscale = px.colors.qualitative.Pastel,
+                    )
                     except ValueError as exc:
                         st.error(str(exc))
                         cluster_traces = []
@@ -897,7 +971,7 @@ def main() -> None:
                     st.download_button(
                         label="Download global PSD (CSV)",
                         data=uniform_csv,
-                        file_name=f"mcli_{getattr(cif_path, 'stem', 'analysis')}_psd_uniform.csv",
+                        file_name=f"{getattr(cif_path, 'stem', 'analysis')}_psd_uniform.csv",
                         mime="text/csv",
                     )
                     st.dataframe(uniform_data["df"], use_container_width=True)
@@ -910,7 +984,7 @@ def main() -> None:
                     st.download_button(
                         label="Download pocket-wise PSDs (CSV)",
                         data=pocket_csv,
-                        file_name=f"mcli_{getattr(cif_path, 'stem', 'analysis')}_psd_pockets.csv",
+                        file_name=f"{getattr(cif_path, 'stem', 'analysis')}_psd_pockets.csv",
                         mime="text/csv",
                     )
                     st.dataframe(pocket_data["df"], use_container_width=True)
@@ -1069,7 +1143,7 @@ def main() -> None:
                     st.download_button(
                         label="Download surface area results (CSV)",
                         data=csv_sa,
-                        file_name=f"mcli_{getattr(cif_path, 'stem', 'analysis')}_surface_area.csv",
+                        file_name=f"{getattr(cif_path, 'stem', 'analysis')}_surface_area.csv",
                         mime="text/csv",
                     )
 
@@ -1143,7 +1217,7 @@ def main() -> None:
                     st.download_button(
                         label="Download void volume results (CSV)",
                         data=csv_vol,
-                        file_name=f"mcli_{getattr(cif_path, 'stem', 'analysis')}_void_volume.csv",
+                        file_name=f"{getattr(cif_path, 'stem', 'analysis')}_void_volume.csv",
                         mime="text/csv",
                     )
 
