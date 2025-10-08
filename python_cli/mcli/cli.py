@@ -801,10 +801,16 @@ Developed by © Dr. Arun Gopalan
 Examples:
   %(prog)s process structure.cif
   %(prog)s process *.cif -o ./results/
+  %(prog)s process structure.cif --types   # Detect pocket types and save RAG pickle
+  %(prog)s process structure.cif --rag     # Save RAG pickle only (no clustering)
   %(prog)s generate-config -mt 1.0 -ta 2.0 -o config.json
   %(prog)s config-building
   %(prog)s interactive
   %(prog)s --banner
+
+Notes:
+  --types now always saves the region adjacency graph (RAG) as a pickle file in addition to pocket type detection.
+  --rag can be used independently to save the RAG after segmentation, even if pocket type detection is not performed.
             """
         )
 
@@ -934,7 +940,11 @@ Examples:
         )
         flag_group.add_argument(
             '--types', action='store_true',
-            help='Detect pocket types using agglomerative clustering on cavity size distributions'
+            help='Detect pocket types using agglomerative clustering on cavity size distributions. If set, saves pocket type segmentation and (now) also outputs a RAG pickle file.'
+        )
+        flag_group.add_argument(
+            '--rag', action='store_true',
+            help='Save the NetworkX region adjacency graph (RAG) as a pickle file after segmentation. Can be used independently or with --types.'
         )
         flag_group.add_argument(
             '--sa', action='store_true',
@@ -1200,6 +1210,38 @@ Examples:
                     else:
                         print("  Void volume analysis failed")
 
+                # Handle RAG output if requested (even without --types)
+                if getattr(args, 'rag', False) and not getattr(args, 'types', False):
+                    # Only build/save RAG if not already handled by --types
+                    import numpy as np
+                    import pickle
+                    dgrid = result['dgrid']
+                    regions = result['regions']
+                    maxima_info = result['maxima_info']
+                    all_maxima = result['all_maxima']
+                    all_maxima_radii = dgrid[tuple(maxima_info[:,1:4].T)]
+                    connections = result.get('connections', [])
+                    unique_regions_for_pbc = result.get('unique_regions', [])
+                    pbc_groups_dict = get_pbc_groups(unique_regions_for_pbc, maxima_info)
+                    pbc_groups = [v for k, v in pbc_groups_dict.items()]
+                    unique_regions = result.get('unique_regions', [])
+                    maxima = all_maxima[:regions.max()]
+                    maxima_radii = all_maxima_radii[:regions.max()]
+                    connections_trimmed = [c for c in connections if np.any(np.isin(c[0], unique_regions))]
+                    if len(maxima) > 0:
+                        try:
+                            rag = mgr.rag_from_connections(connections_trimmed, maxima)
+                            rag = mgr.add_pbc_to_rag(rag, pbc_groups)
+                            rag = mgr.add_maxima_to_rag(rag, maxima, maxima_radii, dgrid.shape, atoms)
+                            rag_pickle_path = output_dir / f"{cif_file.stem}_rag_clustered.pkl"
+                            with open(rag_pickle_path, 'wb') as f:
+                                pickle.dump(rag, f)
+                            print(f"RAG (region adjacency graph) saved to: {rag_pickle_path}")
+                        except Exception as e:
+                            print(f"Warning: RAG creation failed: {e}")
+                    else:
+                        print("Warning: Cannot build RAG - no maxima data found")
+
                 # Handle pocket type detection if requested
                 if getattr(args, 'types', False):
                     from skimage.measure import regionprops
@@ -1249,27 +1291,38 @@ Examples:
 
                             # Generate regions cluster
                             regions_cluster = mgr.clustering_grid_from_regions(regions, rag, cluster_key="cluster_geom_pbc")
+                        except Exception as e:
+                            print(f"Warning: Pocket type detection failed: {e}")
+                            regions_cluster = None
+                            rag = None
 
-                            # Store results
+                        if regions_cluster is not None:
                             result['regions_cluster'] = regions_cluster
-                            result['rag_clustered'] = rag
                             result['pocket_types_detected'] = True
                             result['js_threshold_used'] = js_threshold
+
+                            # Save RAG pickle if --types or --rag is set
+                            if getattr(args, 'types', False) or getattr(args, 'rag', False):
+                                import pickle
+                                rag_pickle_path = output_dir / f"{cif_file.stem}_rag_clustered.pkl"
+                                with open(rag_pickle_path, 'wb') as f:
+                                    pickle.dump(rag, f)
+                                print(f"RAG (region adjacency graph) saved to: {rag_pickle_path}")
 
                             print(f"Pocket types detected using JS threshold: {js_threshold}")
                             num_clusters = len(np.unique(regions_cluster)) - 1  # -1 for background
                             print(f"Found {num_clusters} different pocket types")
-
-                        except Exception as e:
-                            print(f"Warning: Pocket type detection failed: {e}")
+                        else:
+                            print("Warning: Cannot perform pocket type detection - no maxima data found or clustering failed")
                             result['pocket_types_detected'] = False
-                    else:
-                        print("Warning: Cannot perform pocket type detection - no maxima data found")
-                        result['pocket_types_detected'] = False
+
 
                 # Save results
                 save_payload = dict(result)
                 save_payload['cif_path'] = str(cif_file)
+                # Ensure rag_clustered is not present in results
+                if 'rag_clustered' in save_payload:
+                    del save_payload['rag_clustered']
                 self.save_results(save_payload, output_file)
                 print(f"Results saved to: {output_file}")
 
@@ -1626,6 +1679,19 @@ Examples:
 
         def save_array_to_npy(f, array_data, key):
             """Save array data in .npy format."""
+            # Special handling for NetworkX graphs
+            if key == 'rag_clustered':
+                try:
+                    import networkx as nx
+                    if isinstance(array_data, nx.Graph):
+                        # NetworkX graph - pickle it for preservation
+                        import pickle
+                        write_npy_header(f, (), '|O')
+                        pickle.dump(array_data, f)
+                        return
+                except ImportError:
+                    pass  # NetworkX not available, fall through to default handling
+
             if hasattr(array_data, 'shape') and hasattr(array_data, 'dtype'):
                 # It's a numpy array from Rust
                 shape = array_data.shape
@@ -1665,7 +1731,18 @@ Examples:
 
     def save_results(self, result: Dict[str, Any], output_file: Path):
         """Save results using numpy or standalone implementation."""
-        if self.USE_STANDALONE or not HAS_NUMPY:
+        # Check if NetworkX graphs are present - always use numpy method for proper graph preservation
+        has_networkx_graphs = 'rag_clustered' in result
+        try:
+            import networkx as nx
+            has_networkx_graphs = has_networkx_graphs and isinstance(result['rag_clustered'], nx.Graph)
+        except ImportError:
+            pass
+
+        if has_networkx_graphs and HAS_NUMPY:
+            # Always use numpy method for NetworkX graphs to preserve them properly
+            self.save_results_numpy(result, output_file)
+        elif self.USE_STANDALONE or not HAS_NUMPY:
             if not HAS_NUMPY:
                 print("Warning: numpy not available, using standalone implementation")
             self.save_results_standalone(result, output_file)
