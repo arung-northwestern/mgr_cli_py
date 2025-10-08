@@ -443,6 +443,11 @@ mcli --banner
 
 Results saved as compressed NumPy files (`.npz`) containing:
 
+- **RAG Pickle Output:**
+  - If you use `--types` or `--rag`, a NetworkX region adjacency graph (RAG) is also saved as a pickle file (`*_rag_clustered.pkl`).
+  - This file can be loaded with `pickle` and is compatible with NetworkX for further graph analysis or visualization.
+
+
 * **`maxima_pbc`**: Periodic boundary condition maxima coordinates
 * **`regions_pbc`**: Periodic boundary condition region segmentation
 * **`maxima_info`**: Detailed maxima information with PBC offsets
@@ -465,14 +470,21 @@ mcli process *.cif -o ./mof_analysis/
 ```
 
 ### Advanced Analysis
-```bash
+```
 # High-resolution analysis with distance grid
 mcli process my_mof.cif \
     --spacing 0.25 \
     --mask-thickness 0.7 \
     --return-dgrid \
     --return-padded-regions
+
+# Detect pocket types and save RAG pickle
+mcli process my_mof.cif --types
+# Save RAG pickle only (no clustering)
+mcli process my_mof.cif --rag
+# The RAG will be saved as my_mof_rag_clustered.pkl in the output directory.
 ```
+
 
 ### Batch Processing with Config
 ```bash
