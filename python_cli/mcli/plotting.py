@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
+import hashlib
 
 import numpy as np
 import plotly.graph_objects as go
@@ -743,6 +744,33 @@ def prepare_results_for_plot(result: Dict[str, Any], ase_atoms) -> Dict[str, Any
     return prepared
 
 
+# Cache for framework traces to avoid recomputation
+_framework_cache: Dict[str, Tuple[go.BaseTraceType, ...]] = {}
+
+
+def _get_framework_cache_key(mat_atoms, style: str, show_rings: bool, stylize: bool) -> str:
+    """Generate a unique cache key for framework traces."""
+    import tempfile
+    import os
+    
+    # Create a hash based on atomic positions, numbers, and key parameters
+    positions = mat_atoms.get_positions()
+    numbers = mat_atoms.get_atomic_numbers()
+    cell = mat_atoms.get_cell()
+    
+    # Create a string representation
+    key_data = f"{positions.tobytes().hex()}{numbers.tobytes().hex()}{cell.tobytes().hex()}{style}{show_rings}{stylize}"
+    
+    # Generate hash
+    return hashlib.md5(key_data.encode()).hexdigest()
+
+
+def clear_framework_cache():
+    """Clear the framework cache to free memory."""
+    global _framework_cache
+    _framework_cache.clear()
+
+
 def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, Any] | None = None) -> go.Figure:
     mat_atoms = results["ase_atoms"]
     dgrid = results["dgrid"]
@@ -782,12 +810,29 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
 
     framework_style = defaults.get("plot_framework_style", "mesh")
     if defaults.get("plot_framework", True):
-        framework_traces = plot_framework_as_mesh(
-            mat_atoms,
-            stylize=stylize,
-            style=framework_style,
-            show_rings=defaults.get("plot_framework_show_rings", True),
+        # Check cache first to avoid recomputation
+        cache_key = _get_framework_cache_key(
+            mat_atoms, 
+            framework_style, 
+            defaults.get("plot_framework_show_rings", True), 
+            stylize
         )
+        
+        if cache_key in _framework_cache:
+            framework_traces = _framework_cache[cache_key]
+        else:
+            framework_traces = plot_framework_as_mesh(
+                mat_atoms,
+                stylize=stylize,
+                style=framework_style,
+                show_rings=defaults.get("plot_framework_show_rings", True),
+            )
+            # Cache the result (limit cache size to prevent memory issues)
+            if len(_framework_cache) > 10:  # Keep only last 10 different frameworks
+                oldest_key = next(iter(_framework_cache))
+                del _framework_cache[oldest_key]
+            _framework_cache[cache_key] = framework_traces
+        
         traces.extend(framework_traces)
 
     if defaults.get("plot_cell", True):
