@@ -292,6 +292,9 @@ def main() -> None:
         if sample_choice == "<None>":
             sample_choice = None
 
+    st.markdown("""
+    **Note:** If you upload a CIF file, it will be used instead of the selected sample material below.
+    """)
     uploaded_file = st.file_uploader("Upload CIF file", type=["cif"])
 
     atoms = None
@@ -310,6 +313,7 @@ def main() -> None:
         return
 
     st.markdown("### 🔧 Workflow Parameters")
+    st.info("After changing any parameter or material, please click 'Compute and Visualize' to update the results.")
 
     spacing = st.number_input(
         "Grid Spacing (Å)",
@@ -607,6 +611,8 @@ def main() -> None:
         if results_data is None:
             st.info("Run the computation to visualize the structure.")
         else:
+            material_name = getattr(cif_path, 'stem', 'Material')
+            st.markdown(f"## Material: **{material_name}**")
             framework_style = "scatter" if simple_framework and not mesh_framework else "mesh"
             main_plot_status = st.empty()
             main_plot_status.markdown("<div style='padding:6px;background:#102a43;color:#7FDBFF;text-align:center;'>🎨 Rendering main view…</div>", unsafe_allow_html=True)
@@ -628,21 +634,23 @@ def main() -> None:
                 ),
             )
 
-            plot_column, tips_column = st.columns([3, 1])
-            with plot_column:
-                st.plotly_chart(fig, use_container_width=True)
-                html_path = Path("interactive_plot.html")
-                fig.write_html(html_path)
-                with open(html_path, "rb") as file_handle:
+            st.plotly_chart(fig, use_container_width=True)
+            # --- Download buttons in a row ---
+            html_path = Path("interactive_plot.html")
+            fig.write_html(html_path)
+            col_html, col_npz, col_rag = st.columns(3)
+            with open(html_path, "rb") as file_handle:
+                with col_html:
                     st.download_button(
                         label="Download interactive HTML",
                         data=file_handle,
                         file_name=f"{getattr(cif_path, 'stem', 'analysis')}.html",
                         mime="text/html",
                     )
-                if results_data:
-                    npz_bytes = results_data_to_npz(results_data)
-                    if npz_bytes:
+            if results_data:
+                npz_bytes = results_data_to_npz(results_data)
+                if npz_bytes:
+                    with col_npz:
                         st.download_button(
                             label="Download results NPZ",
                             data=npz_bytes,
@@ -650,62 +658,64 @@ def main() -> None:
                             mime="application/octet-stream",
                         )
 
-                    # --- Download RAG (Pickle) Button ---
-                    import pickle
+                # --- Download RAG (Pickle) Button ---
+                import pickle
+                rag_obj = None
+                try:
+                    # Gather required fields for CLI-style RAG (no clustering, no PSD)
+                    connections = results_data.get("connections")
+                    maxima = results_data.get("maxima")
+                    maxima_radii = results_data.get("maxima_radii")
+                    dgrid = results_data.get("dgrid")
+                    regions = results_data.get("regions")
+                    mat_atoms = results_data.get("ase_atoms")
+                    unique_regions = results_data.get("unique_regions")
+                    maxima_info = results_data.get("maxima_info")
+                    required_fields = [
+                        ("connections", connections),
+                        ("maxima", maxima),
+                        ("maxima_radii", maxima_radii),
+                        ("dgrid", dgrid),
+                        ("regions", regions),
+                        ("ase_atoms", mat_atoms),
+                        ("unique_regions", unique_regions),
+                        ("maxima_info", maxima_info),
+                    ]
+                    missing = [name for name, val in required_fields if val is None]
+                    if missing:
+                        raise ValueError(f"Missing fields: {missing}")
+                    pbc_groups_dict = get_pbc_groups(unique_regions, maxima_info)
+                    pbc_groups = [v for k, v in pbc_groups_dict.items()]
+                    # Build RAG (steps 1-3, no clustering, no PSD)
+                    rag = mgr.rag_from_connections(connections, maxima)
+                    rag = mgr.add_pbc_to_rag(rag, pbc_groups)
+                    rag = mgr.add_maxima_to_rag(rag, maxima, maxima_radii, dgrid.shape, mat_atoms)
+                    rag_obj = rag
+                except Exception as e:
+                    st.warning(f"Could not reconstruct RAG for download: {e}")
                     rag_obj = None
-                    try:
-                        # Gather required fields for CLI-style RAG (no clustering, no PSD)
-                        connections = results_data.get("connections")
-                        maxima = results_data.get("maxima")
-                        maxima_radii = results_data.get("maxima_radii")
-                        dgrid = results_data.get("dgrid")
-                        regions = results_data.get("regions")
-                        mat_atoms = results_data.get("ase_atoms")
-                        unique_regions = results_data.get("unique_regions")
-                        maxima_info = results_data.get("maxima_info")
-                        required_fields = [
-                            ("connections", connections),
-                            ("maxima", maxima),
-                            ("maxima_radii", maxima_radii),
-                            ("dgrid", dgrid),
-                            ("regions", regions),
-                            ("ase_atoms", mat_atoms),
-                            ("unique_regions", unique_regions),
-                            ("maxima_info", maxima_info),
-                        ]
-                        missing = [name for name, val in required_fields if val is None]
-                        if missing:
-                            raise ValueError(f"Missing fields: {missing}")
-                        pbc_groups_dict = get_pbc_groups(unique_regions, maxima_info)
-                        pbc_groups = [v for k, v in pbc_groups_dict.items()]
-                        # Build RAG (steps 1-3, no clustering, no PSD)
-                        rag = mgr.rag_from_connections(connections, maxima)
-                        rag = mgr.add_pbc_to_rag(rag, pbc_groups)
-                        rag = mgr.add_maxima_to_rag(rag, maxima, maxima_radii, dgrid.shape, mat_atoms)
-                        rag_obj = rag
-                    except Exception as e:
-                        st.warning(f"Could not reconstruct RAG for download: {e}")
-                        rag_obj = None
 
-                    if rag_obj is not None:
-                        rag_bytes = pickle.dumps(rag_obj)
+                if rag_obj is not None:
+                    rag_bytes = pickle.dumps(rag_obj)
+                    with col_rag:
                         st.download_button(
                             label="Download RAG (.pkl)",
                             data=rag_bytes,
                             file_name=f"{getattr(cif_path, 'stem', 'analysis')}_rag.pkl",
                             mime="application/octet-stream",
                         )
-                    else:
+                else:
+                    with col_rag:
                         st.info("RAG is not available for download. Ensure segmentation is complete.")
 
-            with tips_column:
-                st.markdown("""
-                ### Tips
-                - Toggle traces via the legend to focus on specific features.
-                - Use simple framework for a faster plot, or turn it off if not needed.
-                - Performance mode speeds up surface generation on large unit cells.
-                - Orthographic projection pairs best with stylize disabled.
-                """)
+            # --- Tips/help below plot and buttons ---
+            st.markdown("""
+            ### Tips
+            - Toggle traces via the legend to focus on specific features.
+            - Use simple framework for a faster plot, or turn it off if not needed.
+            - Performance mode speeds up surface generation on large unit cells.
+            - Orthographic projection pairs best with stylize disabled.
+            """)
 
             main_plot_status.markdown("<div style='padding:6px;background:#06310c;color:#6FE37F;text-align:center;'>✅ Plotting complete</div>", unsafe_allow_html=True)
 
@@ -713,6 +723,8 @@ def main() -> None:
         if results_data is None:
             st.info("Run the computation to enable PLD and percolation analysis.")
         else:
+            material_name = getattr(cif_path, 'stem', 'Material')
+            st.markdown(f"## Material: **{material_name}**")
             pld_cache = st.session_state.setdefault("pld_cache", {})
             effective_key = analysis_key or cache_key
             compute_pld = st.button("Compute PLD & percolation metrics", key="compute_pld")
@@ -993,6 +1005,8 @@ def main() -> None:
         if results_data is None:
             st.info("Run the computation to enable surface area and void volume analysis.")
         else:
+            material_name = getattr(cif_path, 'stem', 'Material')
+            st.markdown(f"## Material: **{material_name}**")
             st.subheader("Surface Areas & Void Volumes")
 
             # Add probe radius input
@@ -1005,69 +1019,78 @@ def main() -> None:
                 help="Probe radius for surface area and volume calculations. Default is helium radius (1.2 Å)."
             )
 
-            col1, col2 = st.columns(2)
+            # Clear cached SA/V results when probe radius changes
+            current_probe_key = f"probe_{probe_radius:.3f}"
+            if st.session_state.get("last_probe_key") != current_probe_key:
+                st.session_state.pop("sa_results", None)
+                st.session_state.pop("vol_results", None)
+                st.session_state["last_probe_key"] = current_probe_key
 
-            with col1:
-                st.markdown("### Surface Area Analysis")
-                if st.button("Compute Surface Areas", key="compute_sa"):
-                    try:
-                        # Import the surface area computation function directly
-                        from mgr.compute import compute_surface_area_from_results
+            st.markdown("### Surface Area & Void Volume Analysis")
+            if st.button("Compute Surface Area & Void Volume", key="compute_sa_vol"):
+                try:
+                    from mgr.compute import compute_surface_area_from_results, compute_void_volume_from_results
 
-                        # Convert results dict to expected format for reference functions
-                        # Our app uses 'dgrid' but reference functions expect 'distance_grid'
-                        modified_results = results_data.copy()
-                        if 'dgrid' in modified_results:
-                            modified_results['distance_grid'] = modified_results['dgrid']
+                    # First, ensure we have percolation analysis data
+                    analysis_key = st.session_state.get("analysis_key")
+                    cache_key = analysis_key or st.session_state.setdefault("param_cache", {}).get(f"{getattr(cif_path, 'name', 'uploaded')}::{float(metadata.get('spacing', spacing)):.3f}")
 
+                    pld_cache = st.session_state.setdefault("pld_cache", {})
+                    percolation_analysis = pld_cache.get(cache_key)
+
+                    if percolation_analysis is None:
+                        with st.spinner("Computing required percolation analysis first..."):
+                            percolation_analysis = _compute_pld_analysis(
+                                results_data,
+                                atoms,
+                                spacing=float(metadata.get("spacing", spacing)),
+                                mask_thickness=float(metadata.get("mask_thickness", mask_thickness)),
+                            )
+                            pld_cache[cache_key] = percolation_analysis
+
+                    # Prepare complete results dictionary like CLI does
+                    modified_results = results_data.copy()
+                    if 'dgrid' in modified_results:
+                        modified_results['distance_grid'] = modified_results['dgrid']
+
+                    # Add percolation analysis data to results
+                    modified_results.update(percolation_analysis)
+
+                    atoms = results_data.get('ase_atoms')
+                    if atoms is None:
+                        st.error("Atoms object not found in results. Please re-run the computation.")
+                        sa_results = None
+                        vol_results = None
+                    else:
                         with st.spinner("Computing surface area analysis..."):
-                            atoms = results_data.get('ase_atoms')
-                            if atoms is None:
-                                st.error("Atoms object not found in results. Please re-run the computation.")
-                                sa_results = None
-                            else:
-                                sa_results = compute_surface_area_from_results(modified_results, atoms, probe_radius)
-
-                        if sa_results:
-                            st.session_state["sa_results"] = sa_results
-                            st.success("Surface area analysis completed!")
-                        else:
-                            st.error("Surface area analysis failed. Please ensure mgr_src is properly installed.")
-                    except ImportError:
-                        st.error("Surface area computation functions not available. Please ensure mgr_src is properly installed.")
-                    except Exception as e:
-                        st.error(f"Error computing surface areas: {e}")
-
-            with col2:
-                st.markdown("### Void Volume Analysis")
-                if st.button("Compute Void Volumes", key="compute_vol"):
-                    try:
-                        # Import the void volume computation function directly
-                        from mgr.compute import compute_void_volume_from_results
-
-                        # Convert results dict to expected format for reference functions
-                        # Our app uses 'dgrid' but reference functions expect 'distance_grid'
-                        modified_results = results_data.copy()
-                        if 'dgrid' in modified_results:
-                            modified_results['distance_grid'] = modified_results['dgrid']
-
+                            print(f"Computing surface area with probe radius: {probe_radius:.3f} Å")
+                            print(f"Results keys available: {list(modified_results.keys())}")
+                            sa_results = compute_surface_area_from_results(modified_results, atoms, probe_radius)
+                            print(f"Surface area results: {sa_results}")
                         with st.spinner("Computing void volume analysis..."):
-                            atoms = results_data.get('ase_atoms')
-                            if atoms is None:
-                                st.error("Atoms object not found in results. Please re-run the computation.")
-                                vol_results = None
-                            else:
-                                vol_results = compute_void_volume_from_results(modified_results, atoms, probe_radius)
+                            print(f"Computing void volume with probe radius: {probe_radius:.3f} Å")
+                            vol_results = compute_void_volume_from_results(modified_results, atoms, probe_radius)
+                            print(f"Void volume results: {vol_results}")
 
-                        if vol_results:
-                            st.session_state["vol_results"] = vol_results
-                            st.success("Void volume analysis completed!")
-                        else:
-                            st.error("Void volume analysis failed. Please ensure mgr_src is properly installed.")
-                    except ImportError:
-                        st.error("Void volume computation functions not available. Please ensure mgr_src is properly installed.")
-                    except Exception as e:
-                        st.error(f"Error computing void volumes: {e}")
+                    if sa_results:
+                        st.session_state["sa_results"] = sa_results
+                        st.success("Surface area analysis completed!")
+                    else:
+                        st.error("Surface area analysis failed. Please ensure mgr_src is properly installed.")
+                    if vol_results:
+                        st.session_state["vol_results"] = vol_results
+                        st.success("Void volume analysis completed!")
+                    else:
+                        st.error("Void volume analysis failed. Please ensure mgr_src is properly installed.")
+                except ImportError:
+                    st.error("Surface area or void volume computation functions not available. Please ensure mgr_src is properly installed.")
+                except Exception as e:
+                    st.error(f"Error computing surface area or void volume: {e}")
+                    st.info("This might be due to inappropriate parameters for this material structure. Try adjusting:")
+                    st.info("- Grid spacing (smaller values like 0.3-0.4 Å may help)")
+                    st.info("- Mask thickness (default: 1.5 Å)")
+                    st.info("- Threshold absolute (default: 1.5 Å)")
+                    st.info("- Or use 'Auto set parameters' option")
 
             # Display results if available
             sa_results = st.session_state.get("sa_results")

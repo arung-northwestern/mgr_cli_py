@@ -67,6 +67,7 @@ white_layout = dict(
     margin=dict(t=20, b=20, l=20, r=20),
     showlegend=True,
     legend=dict(x=1.1, y=0.75, groupclick="toggleitem"),
+    height=800,
 )
 
 dark_layout = dict(
@@ -79,7 +80,8 @@ dark_layout = dict(
     ),
     margin=dict(t=20, b=20, l=20, r=20),
     showlegend=True,
-    legend=dict(x=0.1, y=1.1, groupclick="toggleitem"),
+    legend=dict(x=1.1, y=0.75, groupclick="toggleitem"),
+    height=800,
 )
 
 
