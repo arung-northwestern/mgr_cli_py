@@ -2429,11 +2429,13 @@ def draw_framework(ase_atoms, bond_orders=None, show_aromatics=True, show_atom_l
         # G = sgraph_from_atoms(ase_atoms_updated)
 
         ring_traces = plot_aromatic_rings(ase_atoms=ase_atoms_updated)
+        
+        # Assign the same legendgroup to aromatic rings as atoms and bonds
+        for ring_trace in ring_traces:
+            ring_trace['legendgroup'] = 'framework'
+            ring_trace['legendgrouptitle_text'] = 'Framework'
 
         traces = traces + list(ring_traces)
-
-    for t in ring_traces:                             #   isomorphic_aromatic_cycles=isomorphic_aromatic_cycles)
-        t['legendgroup'] = traces[0]['legendgroup']
     if bool(bond_data):
         print('4. Creating traces for additional bond data provided')
         # for key in bond_data.keys():
