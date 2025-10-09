@@ -8629,6 +8629,57 @@ def do_periodic_segmentation_basic(
     return outputs
 
 
+def select_percolation_threshold(percolation_history, probe_radius):
+    """
+    Select the appropriate threshold for percolation analysis with proper warning logging.
+    
+    Parameters:
+    -----------
+    percolation_history : list
+        List of (threshold, components) tuples from compute_percolation_history
+    probe_radius : float
+        Requested probe radius in Angstroms
+        
+    Returns:
+    --------
+    tuple
+        (selected_threshold, threshold_components, exact_match, message)
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    if not percolation_history:
+        return None, None, False, "No percolation history available"
+    
+    available_thresholds = [t for t, c in percolation_history]
+    max_threshold = max(available_thresholds)
+    
+    # Case 1: Probe radius exceeds PLD (no percolation)
+    if probe_radius > max_threshold:
+        return None, None, False, f"Probe radius {probe_radius:.3f} Å exceeds PLD {max_threshold:.3f} Å - no percolation"
+    
+    # Case 2: Exact match found
+    exact_matches = [(t, c) for t, c in percolation_history if abs(t - probe_radius) < 1e-10]
+    if exact_matches:
+        threshold, components = exact_matches[0]
+        return threshold, components, True, f"Exact threshold match: {threshold:.3f} Å"
+    
+    # Case 3: Use largest threshold <= probe_radius with WARNING
+    valid_thresholds = [(t, c) for t, c in percolation_history if t <= probe_radius]
+    threshold, components = max(valid_thresholds, key=lambda x: x[0])
+    
+    nearest_threshold = min(available_thresholds, key=lambda t: abs(t - probe_radius))
+    warning_msg = (f"Probe radius {probe_radius:.3f} Å not available in percolation history. "
+                  f"Using threshold {threshold:.3f} Å (nearest available: {nearest_threshold:.3f} Å). "
+                  f"Threshold step size is 0.05 Å - consider using available thresholds for exact results.")
+    
+    # Log warning for threshold approximation
+    logger.warning(warning_msg)
+    
+    message = f"Using threshold {threshold:.3f} Å for probe radius {probe_radius:.3f} Å (approximated)"
+    return threshold, components, False, message
+
+
 def compute_surface_area_from_results(
     results_dict,
     mat_atoms,
@@ -8694,19 +8745,37 @@ def compute_surface_area_from_results(
     total_mesh = get_isosurface_mesh(distance_grid, probe_radius, mat_atoms)
     total_surface_area = total_mesh.area * 1e-20 / mass_g
 
-    # Step 2: Get percolating regions if percolation history is available
+    # Step 2: Ensure percolation history is available
+    if 'percolation_history' not in results_dict:
+        logger.info("Percolation history not found in results. Computing it now...")
+        results_dict = compute_percolation_history_from_results(results_dict)
+        logger.info(f"Computed percolation history with {len(results_dict['percolation_history'])} entries")
+
+    # Step 3: Get percolating regions using unified threshold selection
     percolating_regions = set()
-    if 'percolation_history' in results_dict:
-        percolation_history = results_dict['percolation_history']
-        for threshold, components in percolation_history:
-            if threshold >= probe_radius:
-                for axis, comp_list in components.items():
-                    for comp in comp_list:
-                        percolating_regions.update(comp)
-                break  # Use the first threshold >= probe_radius
+    selected_threshold = None
+
+    percolation_history = results_dict.get('percolation_history', [])
+
+    threshold, components, exact_match, message = select_percolation_threshold(
+        percolation_history, probe_radius
+    )
+
+    logger.info(message)
+
+    if threshold is not None:
+        selected_threshold = threshold
+        # Extract percolating regions from selected threshold
+        for axis, comp_list in components.items():
+            for comp in comp_list:
+                percolating_regions.update(comp)
+        
+        if not exact_match:
+            logger.warning(f"Using approximated threshold for probe radius {probe_radius:.3f} Å - results may be approximate")
     else:
-        # If no percolation history, assume all regions are accessible
-        percolating_regions = set(np.unique(regions_pbc)[1:])  # Exclude background
+        # No percolation case
+        percolating_regions = set()
+        logger.info(f"No percolation at probe radius {probe_radius:.3f} Å - accessible surface area will be zero")
 
     # Step 3: Get surface area meshes for each region
     submeshes = get_isosurface_submeshes(
@@ -8737,24 +8806,24 @@ def compute_surface_area_from_results(
         if accessible_pocket_area > 0:
             accessible_pocket_areas[pocket_id] = accessible_pocket_area
 
-    # Step 6: Group percolating regions into percolated clusters
-    # Regions that percolate together in the same direction form a cluster
+    # Step 6: Group accessible regions into percolated clusters using selected_threshold
     percolated_clusters = {}
-    if 'percolation_history' in results_dict:
-        percolation_history = results_dict['percolation_history']
+    if selected_threshold is not None and percolation_history:
+        # Find the components that exactly match our selected threshold
         for threshold, components in percolation_history:
-            if threshold >= probe_radius:
+            if abs(threshold - selected_threshold) < 1e-10:
                 cluster_id = 0
                 for axis, comp_list in components.items():
                     for comp in comp_list:
-                        # Each component in each direction is a separate percolated cluster
                         cluster_regions = set(comp).intersection(percolating_regions)
                         if cluster_regions:
                             percolated_clusters[f"axis_{axis}_cluster_{cluster_id}"] = cluster_regions
                             cluster_id += 1
-                break  # Use the first threshold >= probe_radius
-
-    logger.info(f"Found {len(percolated_clusters)} percolated clusters at probe radius {probe_radius:.3f} Å")
+                break  # Found our exact threshold, stop searching
+        
+        logger.info(f"Found {len(percolated_clusters)} percolated clusters at threshold {selected_threshold:.3f} Å")
+    else:
+        logger.info("No percolated clusters found - no accessible regions for cluster formation")
 
     # Calculate surface area by percolated cluster
     percolated_cluster_areas = {}
@@ -8929,21 +8998,39 @@ def compute_void_volume_from_results(
     total_void_fraction = np.sum(distance_grid > probe_radius) / distance_grid.size
     total_void_volume = total_void_fraction * mat_atoms.get_volume() * 1e-24 / mass_g  # cm³/g
 
-    # Step 2: Get percolating regions if percolation history is available
-    percolating_regions = set()
-    if 'percolation_history' in results_dict:
-        percolation_history = results_dict['percolation_history']
-        for threshold, components in percolation_history:
-            if threshold >= probe_radius:
-                for axis, comp_list in components.items():
-                    for comp in comp_list:
-                        percolating_regions.update(comp)
-                break  # Use the first threshold >= probe_radius
-    else:
-        # If no percolation history, assume all regions are accessible
-        percolating_regions = set(np.unique(regions_pbc)[1:])  # Exclude background
+    # Step 2: Ensure percolation history is available
+    if 'percolation_history' not in results_dict:
+        logger.info("Percolation history not found in results. Computing it now...")
+        results_dict = compute_percolation_history_from_results(results_dict)
+        logger.info(f"Computed percolation history with {len(results_dict['percolation_history'])} entries")
 
-    # Step 3: Calculate void volume by individual region
+    # Step 3: Get percolating regions using unified threshold selection
+    percolating_regions = set()
+    selected_threshold = None
+
+    percolation_history = results_dict.get('percolation_history', [])
+
+    threshold, components, exact_match, message = select_percolation_threshold(
+        percolation_history, probe_radius
+    )
+
+    logger.info(message)
+
+    if threshold is not None:
+        selected_threshold = threshold
+        # Extract percolating regions from selected threshold
+        for axis, comp_list in components.items():
+            for comp in comp_list:
+                percolating_regions.update(comp)
+        
+        if not exact_match:
+            logger.warning(f"Using approximated threshold for probe radius {probe_radius:.3f} Å - results may be approximate")
+    else:
+        # No percolation case
+        percolating_regions = set()
+        logger.info(f"No percolation at probe radius {probe_radius:.3f} Å - accessible void volume will be zero")
+
+    # Step 4: Calculate void volume by individual region
     # Create boolean mask for regions
     region_ids = np.unique(regions_pbc)[1:]  # Skip background (0)
     region_volumes = {}
@@ -8964,7 +9051,7 @@ def compute_void_volume_from_results(
         if region_id in percolating_regions:
             accessible_region_volumes[region_id] = region_volume
 
-    # Step 4: Calculate void volume by complete pocket
+    # Step 5: Calculate void volume by complete pocket
     pocket_volumes = {}
     accessible_pocket_volumes = {}
 
@@ -8976,22 +9063,24 @@ def compute_void_volume_from_results(
         if accessible_pocket_volume > 0:
             accessible_pocket_volumes[pocket_id] = accessible_pocket_volume
 
-    # Step 5: Group accessible regions into percolated clusters
-    # Regions that percolate together in the same direction form a cluster
+    # Step 5: Group accessible regions into percolated clusters using selected_threshold
     percolated_clusters = {}
-    if 'percolation_history' in results_dict:
-        percolation_history = results_dict['percolation_history']
+    if selected_threshold is not None and percolation_history:
+        # Find the components that exactly match our selected threshold
         for threshold, components in percolation_history:
-            if threshold >= probe_radius:
+            if abs(threshold - selected_threshold) < 1e-10:
                 cluster_id = 0
                 for axis, comp_list in components.items():
                     for comp in comp_list:
-                        # Each component in each direction is a separate percolated cluster
                         cluster_regions = set(comp).intersection(percolating_regions)
                         if cluster_regions:
                             percolated_clusters[f"axis_{axis}_cluster_{cluster_id}"] = cluster_regions
                             cluster_id += 1
-                break  # Use the first threshold >= probe_radius
+                break  # Found our exact threshold, stop searching
+        
+        logger.info(f"Found {len(percolated_clusters)} percolated clusters at threshold {selected_threshold:.3f} Å")
+    else:
+        logger.info("No percolated clusters found - no accessible regions for cluster formation")
 
     # Calculate void volume by percolated cluster
     percolated_cluster_volumes = {}
