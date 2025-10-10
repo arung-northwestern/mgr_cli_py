@@ -8845,10 +8845,17 @@ def compute_surface_area_from_results(
 
     for i, region_id in enumerate(region_ids):
         if i < len(submeshes):
-            area = submeshes[i].area * 1e-20 / mass_g
-            region_areas[region_id] = area
-            if region_id in percolating_regions:
-                accessible_region_areas[region_id] = area
+            # Check if submesh is a valid trimesh object with area attribute
+            if hasattr(submeshes[i], 'area'):
+                area = submeshes[i].area * 1e-20 / mass_g
+                region_areas[region_id] = area
+                if region_id in percolating_regions:
+                    accessible_region_areas[region_id] = area
+            else:
+                print(f"Warning: Submesh {i} for region {region_id} is not a valid trimesh object, skipping area calculation")
+                region_areas[region_id] = 0.0
+                if region_id in percolating_regions:
+                    accessible_region_areas[region_id] = 0.0
 
     # Step 5: Calculate surface area by complete pocket
     pocket_areas = {}
