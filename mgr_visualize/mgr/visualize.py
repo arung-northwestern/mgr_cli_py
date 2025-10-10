@@ -1413,7 +1413,7 @@ def get_isosurface_submeshes(dgrid, isoval, ase_atoms, region_labels,
     sampled_colors = px.sample_colorscale(colorscale, np.unique(region_labels)[1:]/region_labels.max())
     mesh_colors = [parse_rgb(s) for s in sampled_colors]
     for i,m in enumerate(dist_iso_submeshes):
-        m.visual_vertex_colors = mesh_colors[i] 
+        m.visual.vertex_colors = mesh_colors[i] 
     return dist_iso_submeshes
 
 def get_isosurface_submeshes(dgrid, isoval, ase_atoms, region_labels,
