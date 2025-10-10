@@ -1413,7 +1413,11 @@ def get_isosurface_submeshes(dgrid, isoval, ase_atoms, region_labels,
     sampled_colors = px.sample_colorscale(colorscale, np.unique(region_labels)[1:]/region_labels.max())
     mesh_colors = [parse_rgb(s) for s in sampled_colors]
     for i,m in enumerate(dist_iso_submeshes):
-        m.visual.vertex_colors = mesh_colors[i] 
+        # Check if m is a valid trimesh object with visual attributes
+        if hasattr(m, 'visual') and hasattr(m.visual, 'vertex_colors'):
+            m.visual.vertex_colors = mesh_colors[i] 
+        else:
+            print(f"Warning: Submesh {i} is not a valid trimesh object, skipping color assignment")
     return dist_iso_submeshes
 
 def get_isosurface_submeshes(dgrid, isoval, ase_atoms, region_labels,
@@ -1470,7 +1474,11 @@ def get_isosurface_submeshes(dgrid, isoval, ase_atoms, region_labels,
     mesh_colors = [parse_rgb(s) for s in sampled_colors]
     print('mesh colors', mesh_colors)
     for i,m in enumerate(dist_iso_submeshes):
-        m.visual.vertex_colors = mesh_colors[i] 
+        # Check if m is a valid trimesh object with visual attributes
+        if hasattr(m, 'visual') and hasattr(m.visual, 'vertex_colors'):
+            m.visual.vertex_colors = mesh_colors[i] 
+        else:
+            print(f"Warning: Submesh {i} is not a valid trimesh object, skipping color assignment")
     return dist_iso_submeshes
 def plot_framework_as_mesh(ase_atoms, show_rings=True, stylize=False, kwargs_frame_mesh=dict(showlegend=True, showscale=False, name='Framework', legendgroup='framework', legendgrouptitle_text='Framework'), kwargs_mesh_for_atoms={}, kwargs_aromatic_rings={}):
     """

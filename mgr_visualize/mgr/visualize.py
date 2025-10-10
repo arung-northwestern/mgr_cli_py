@@ -1309,6 +1309,15 @@ def mesh_for_atoms(ase_atoms, bonds=None, colormap=None, bond_rgba_array=[127, 1
     cylinders = cylinders_for_bonds(bonds, ase_atoms, **kwargs_cylinders)
 
     combined = trimesh.util.concatenate(spheres, cylinders)
+
+    # Check if combined is a valid trimesh object, handle potential failures
+    if not hasattr(combined, 'visual'):
+        # If concatenation failed, try to create a default empty mesh
+        import numpy as np
+        combined = trimesh.Trimesh(vertices=np.array([[0, 0, 0]]), faces=np.array([[0, 0, 0]]))
+        # Initialize visual properties for the fallback mesh
+        combined.visual = trimesh.visual.ColorVisuals(mesh=combined, vertex_colors=np.array([[127, 127, 127, 255]]))
+
     if return_scene:
         for i, s in enumerate(spheres):
             s.visual = trimesh.visual.TextureVisuals(material=trimesh.visual.material.PBRMaterial())
@@ -1413,7 +1422,11 @@ def get_isosurface_submeshes(dgrid, isoval, ase_atoms, region_labels,
     sampled_colors = px.sample_colorscale(colorscale, np.unique(region_labels)[1:]/region_labels.max())
     mesh_colors = [parse_rgb(s) for s in sampled_colors]
     for i,m in enumerate(dist_iso_submeshes):
-        m.visual.vertex_colors = mesh_colors[i] 
+        # Check if m is a valid trimesh object with visual attributes
+        if hasattr(m, 'visual') and hasattr(m.visual, 'vertex_colors'):
+            m.visual.vertex_colors = mesh_colors[i] 
+        else:
+            print(f"Warning: Submesh {i} is not a valid trimesh object, skipping color assignment")
     return dist_iso_submeshes
 
 def get_isosurface_submeshes(dgrid, isoval, ase_atoms, region_labels,
@@ -1470,7 +1483,11 @@ def get_isosurface_submeshes(dgrid, isoval, ase_atoms, region_labels,
     mesh_colors = [parse_rgb(s) for s in sampled_colors]
     print('mesh colors', mesh_colors)
     for i,m in enumerate(dist_iso_submeshes):
-        m.visual.vertex_colors = mesh_colors[i] 
+        # Check if m is a valid trimesh object with visual attributes
+        if hasattr(m, 'visual') and hasattr(m.visual, 'vertex_colors'):
+            m.visual.vertex_colors = mesh_colors[i] 
+        else:
+            print(f"Warning: Submesh {i} is not a valid trimesh object, skipping color assignment")
     return dist_iso_submeshes
 def plot_framework_as_mesh(ase_atoms, show_rings=True, stylize=False, kwargs_frame_mesh=dict(showlegend=True, showscale=False, name='Framework', legendgroup='framework', legendgrouptitle_text='Framework'), kwargs_mesh_for_atoms={}, kwargs_aromatic_rings={}):
     """
@@ -1490,6 +1507,13 @@ def plot_framework_as_mesh(ase_atoms, show_rings=True, stylize=False, kwargs_fra
     if 'covalent_bonds' not in ase_atoms.info.keys():
         ase_atoms = update_with_covalent_bonds(ase_atoms)
     combined = mesh_for_atoms(ase_atoms, **kwargs_mesh_for_atoms)
+
+    # Check if combined is a valid trimesh object with visual attributes
+    if not hasattr(combined, 'visual') or not hasattr(combined.visual, 'vertex_colors'):
+        # Return an empty mesh trace if combined is invalid
+        import plotly.graph_objects as go
+        return (go.Mesh3d(x=[], y=[], z=[], i=[], j=[], k=[], name='Framework'),)
+
     import plotly.graph_objects as go
     verts = combined.vertices
     faces = combined.faces
@@ -1576,19 +1600,26 @@ def add_hoverdata_to_atoms_traces(atoms_trace, ase_atoms, bond_rgba=[127,128,129
 def plot_mesh(mesh, stylize=False, **kwargs_plotly_mesh3d):
     """
     It takes a trimesh object and returns a plotly mesh3d object.
-    
+
     :param mesh: a list of trimesh objects
     :param stylize: If True, the mesh will be rendered with a nice lighting effect, defaults to False
     (optional)
     :return: A plotly mesh object
     """
-    
-    
+
+
     import trimesh
     if len(mesh) > 1:
         mesh = trimesh.util.concatenate(mesh)
     else:
         mesh = mesh[0]
+
+    # Check if mesh is a valid trimesh object with visual attributes
+    if not hasattr(mesh, 'visual') or not hasattr(mesh.visual, 'vertex_colors'):
+        # Return an empty mesh trace if mesh is invalid
+        import plotly.graph_objects as go
+        return go.Mesh3d(x=[], y=[], z=[], i=[], j=[], k=[], name='mesh')
+
     import plotly.graph_objects as go
     verts = mesh.vertices
     faces = mesh.faces
