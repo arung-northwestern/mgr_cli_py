@@ -753,6 +753,7 @@ class MCLI:
         'plot_surface_isovalue': 0.75,
         'plot_surface_opacity': 1.0,
         'plot_surface_pbc_opacity': 1.0,
+        'plot_surface_types_opacity': 1.0,
     }
 
     # Default configuration values
@@ -1497,6 +1498,7 @@ Notes:
             'plot_surface_isovalue': f'Isovalue for surface plotting (default: {self.DEFAULTS["plot_surface_isovalue"]})',
             'plot_surface_opacity': f'Surface opacity (0-1) (default: {self.DEFAULTS["plot_surface_opacity"]})',
             'plot_surface_pbc_opacity': f'PBC surface opacity (0-1) (default: {self.DEFAULTS["plot_surface_pbc_opacity"]})',
+            'plot_surface_types_opacity': f'Pocket types surface opacity (0-1) (default: {self.DEFAULTS["plot_surface_types_opacity"]})',
         }
 
         for key, prompt in prompts.items():
@@ -1855,6 +1857,7 @@ Notes:
             'plot_surface_isovalue': config.get('plot_surface_isovalue', self.PLOT_DEFAULTS['plot_surface_isovalue']),
             'plot_surface_opacity': config.get('plot_surface_opacity', self.PLOT_DEFAULTS['plot_surface_opacity']),
             'plot_surface_pbc_opacity': config.get('plot_surface_pbc_opacity', self.PLOT_DEFAULTS['plot_surface_pbc_opacity']),
+            'plot_surface_types_opacity': config.get('plot_surface_types_opacity', self.PLOT_DEFAULTS['plot_surface_types_opacity']),
         }
 
     def _read_atoms(self, cif_path: Path):

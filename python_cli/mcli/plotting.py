@@ -791,6 +791,7 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         "plot_surface_isovalue": 0.75,
         "plot_surface_opacity": 1.0,
         "plot_surface_pbc_opacity": 1.0,
+        "plot_surface_types_opacity": 1.0,
         "plot_projection": "perspective",
         "plot_layout": "dark",
     }
@@ -877,7 +878,7 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
             isovalue=float(defaults.get("plot_surface_isovalue", 0.75)),
             ase_atoms=mat_atoms,
             region_labels=regions_cluster - 1,
-            opacity=1.0,
+            opacity=float(defaults.get("plot_surface_types_opacity", 1.0)),
             name="Pocket Types",
             cscale=cscale,
             stylize=stylize,

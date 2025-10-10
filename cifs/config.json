@@ -25,5 +25,6 @@
   "plot_surface_pbc": true,
   "plot_surface_isovalue": 1.0,
   "plot_surface_opacity": 1.0,
-  "plot_surface_pbc_opacity": 1.0
+  "plot_surface_pbc_opacity": 1.0,
+  "plot_surface_types_opacity": 1.0
 }
