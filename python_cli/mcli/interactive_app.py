@@ -251,7 +251,7 @@ def _compute_pld_analysis(
 
 def _make_plot(results: Dict[str, Any], *, stylize: bool, projection: str, layout: str,
                framework_style: str, show_surface: bool, show_surface_pbc: bool,
-               surface_value: float, surface_opacity: float, surface_pbc_opacity: float,
+               surface_value: float, surface_opacity: float, surface_pbc_opacity: float, surface_types_opacity: float,
                show_connections: bool, show_maxima_spheres: bool) -> go.Figure:
     options = {
         "plot_framework_style": framework_style,
@@ -260,6 +260,7 @@ def _make_plot(results: Dict[str, Any], *, stylize: bool, projection: str, layou
         "plot_surface_isovalue": surface_value,
         "plot_surface_opacity": surface_opacity,
         "plot_surface_pbc_opacity": surface_pbc_opacity,
+        "plot_surface_types_opacity": surface_types_opacity,
         "plot_connections": show_connections,
         "plot_maxima_show_spheres": show_maxima_spheres,
         "plot_projection": projection,
@@ -428,6 +429,10 @@ def main() -> None:
         show_maxima_spheres = st.checkbox("Show maxima spheres", value=False)
         detect_pocket_types = st.checkbox("Detect Pocket Types", value=False)
 
+        surface_opacity = st.slider("Surface Opacity", min_value=0.0, max_value=1.0, value=1.0, step=0.1)
+        surface_pbc_opacity = st.slider("Periodic Surface Opacity", min_value=0.0, max_value=1.0, value=1.0, step=0.1)
+        surface_types_opacity = st.slider("Pocket Types Opacity", min_value=0.0, max_value=1.0, value=1.0, step=0.1)
+
         js_threshold = 0.15
         if detect_pocket_types:
             js_threshold = st.number_input(
@@ -439,8 +444,7 @@ def main() -> None:
                 help="Threshold for agglomerative clustering based on Jensen-Shannon distance between cavity size distributions"
             )
 
-    surface_opacity = 1.0
-    surface_pbc_opacity = 1.0
+
 
     compute_clicked = st.button("Compute and Visualize")
 
@@ -627,6 +631,7 @@ def main() -> None:
                     plot_surface_isovalue=surface_value,
                     plot_surface_opacity=surface_opacity,
                     plot_surface_pbc_opacity=surface_pbc_opacity,
+                    plot_surface_types_opacity=surface_types_opacity,
                     plot_connections=show_connections,
                     plot_maxima_show_spheres=show_maxima_spheres,
                     plot_projection=projection_choice,
