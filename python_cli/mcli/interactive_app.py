@@ -1104,12 +1104,18 @@ def main() -> None:
                 accessible_sa = sa_results.get('accessible_surface_area', 0)
                 inaccessible_sa = total_sa - accessible_sa
                 accessible_fraction = sa_results.get('accessible_fraction', 0)
+                
+                # Point probe reference
+                point_probe_ref = sa_results.get('point_probe_reference', {})
+                point_probe_sa = point_probe_ref.get('surface_area', 0)
+                point_probe_fraction = point_probe_ref.get('surface_area_fraction', 0)
 
-                col1, col2, col3, col4 = st.columns(4)
+                col1, col2, col3, col4, col5 = st.columns(5)
                 col1.metric("Total Surface Area", f"{total_sa:.4f} m²/g")
                 col2.metric("Accessible Surface Area", f"{accessible_sa:.4f} m²/g")
                 col3.metric("Inaccessible Surface Area", f"{inaccessible_sa:.4f} m²/g")
                 col4.metric("Accessible Fraction", f"{accessible_fraction:.4f}")
+                col5.metric("Point Probe (r=0)", f"{point_probe_sa:.4f} m²/g", help=f"Surface area accessible to point probe (radius = 0 Å)\nFraction of point probe: {point_probe_fraction:.4f}")
 
                 # Create breakdown data
                 breakdown_data = []
@@ -1178,12 +1184,18 @@ def main() -> None:
                 accessible_vol = vol_results.get('accessible_void_volume', 0)
                 inaccessible_vol = total_vol - accessible_vol
                 accessible_fraction = vol_results.get('accessible_fraction', 0)
+                
+                # Point probe reference
+                point_probe_ref = vol_results.get('point_probe_reference', {})
+                point_probe_vol = point_probe_ref.get('void_volume', 0)
+                point_probe_fraction = point_probe_ref.get('void_volume_fraction', 0)
 
-                col1, col2, col3, col4 = st.columns(4)
+                col1, col2, col3, col4, col5 = st.columns(5)
                 col1.metric("Total Void Volume", f"{total_vol:.4f} cm³/g")
                 col2.metric("Accessible Void Volume", f"{accessible_vol:.4f} cm³/g")
                 col3.metric("Inaccessible Void Volume", f"{inaccessible_vol:.4f} cm³/g")
                 col4.metric("Accessible Fraction", f"{accessible_fraction:.4f}")
+                col5.metric("Point Probe (r=0)", f"{point_probe_vol:.4f} cm³/g", help=f"Void volume accessible to point probe (radius = 0 Å)\nFraction of point probe: {point_probe_fraction:.4f}")
 
                 # Create breakdown data
                 breakdown_data = []

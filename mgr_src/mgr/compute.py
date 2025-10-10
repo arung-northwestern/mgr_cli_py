@@ -8680,6 +8680,62 @@ def select_percolation_threshold(percolation_history, probe_radius):
     return threshold, components, False, message
 
 
+def compute_point_probe_reference(results_dict, mat_atoms):
+    """
+    Compute point probe (probe_radius = 0) surface area and void volume as reference.
+    
+    This function calculates the total accessible surface area and void volume 
+    for a point probe (radius = 0), representing the maximum possible 
+    accessibility in the structure.
+    
+    Parameters:
+    -----------
+    results_dict : dict
+        Results dictionary containing distance_grid, pbc_groups, regions_pbc
+    mat_atoms : ase.Atoms
+        Atomic structure for mass calculation
+        
+    Returns:
+    --------
+    dict
+        Dictionary containing point probe reference values:
+        - 'surface_area': Total surface area accessible to point probe (m²/g)
+        - 'void_volume': Total void volume accessible to point probe (cm³/g)
+    """
+    import numpy as np
+    from ase.data import vdw_radii
+    from ase.units import _amu
+    from .visualize import get_isosurface_mesh, get_isosurface_submeshes
+    
+    # Extract required data
+    distance_grid = results_dict['distance_grid']
+    pbc_groups = results_dict['pbc_groups']
+    regions_pbc = results_dict['regions_pbc']
+    
+    # Convert pbc_groups to dictionary format if it's a list
+    if isinstance(pbc_groups, list):
+        pbc_groups = {f"pocket_{i}": group_set for i, group_set in enumerate(pbc_groups)}
+    
+    # Calculate mass for normalization
+    mass_g = mat_atoms.get_masses().sum() * _amu * 1000  # grams
+    
+    # Calculate voxel volume
+    voxel_volume = mat_atoms.get_volume() / distance_grid.size  # Å³
+    
+    # Point probe surface area calculation (dgrid > 0)
+    point_probe_mesh = get_isosurface_mesh(distance_grid, 0.0, mat_atoms)
+    point_probe_surface_area = point_probe_mesh.area * 1e-20 / mass_g  # m²/g
+    
+    # Point probe void volume calculation (dgrid > 0)
+    point_probe_void_fraction = np.sum(distance_grid > 0) / distance_grid.size
+    point_probe_void_volume = point_probe_void_fraction * mat_atoms.get_volume() * 1e-24 / mass_g  # cm³/g
+    
+    return {
+        'surface_area': point_probe_surface_area,
+        'void_volume': point_probe_void_volume
+    }
+
+
 def compute_surface_area_from_results(
     results_dict,
     mat_atoms,
@@ -8919,6 +8975,14 @@ def compute_surface_area_from_results(
         }
     }
 
+    # Add point probe reference
+    point_probe_ref = compute_point_probe_reference(results_dict, mat_atoms)
+    results['point_probe_reference'] = {
+        'surface_area': point_probe_ref['surface_area'],
+        'void_volume': point_probe_ref['void_volume'],
+        'surface_area_fraction': accessible_surface_area / point_probe_ref['surface_area'] if point_probe_ref['surface_area'] > 0 else 0
+    }
+
     # Add detailed results if requested
     if return_details:
         results.update({
@@ -8927,7 +8991,8 @@ def compute_surface_area_from_results(
             'region_areas': region_areas,
             'pocket_areas': pocket_areas,
             'total_mesh': total_mesh,
-            'submeshes': submeshes
+            'submeshes': submeshes,
+            'point_probe_details': point_probe_ref
         })
 
     return results
@@ -9176,6 +9241,14 @@ def compute_void_volume_from_results(
         }
     }
 
+    # Add point probe reference
+    point_probe_ref = compute_point_probe_reference(results_dict, mat_atoms)
+    results['point_probe_reference'] = {
+        'surface_area': point_probe_ref['surface_area'],
+        'void_volume': point_probe_ref['void_volume'],
+        'void_volume_fraction': accessible_void_volume / point_probe_ref['void_volume'] if point_probe_ref['void_volume'] > 0 else 0
+    }
+
     # Add detailed results if requested
     if return_details:
         results.update({
@@ -9183,7 +9256,8 @@ def compute_void_volume_from_results(
             'percolated_clusters': percolated_clusters,
             'region_volumes': region_volumes,
             'pocket_volumes': pocket_volumes,
-            'voxel_volume': voxel_volume
+            'voxel_volume': voxel_volume,
+            'point_probe_details': point_probe_ref
         })
 
     return results

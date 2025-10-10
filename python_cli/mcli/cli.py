@@ -614,6 +614,13 @@ def save_surface_area_csv(results, output_file, material_name="material"):
                 accessible_fraction = accessible_sa / total_sa
                 writer.writerow(['Global', 'Fraction', 'Accessible', f"{accessible_fraction:.4f}", 'ratio'])
 
+            # Point probe reference
+            point_probe_ref = results.get('point_probe_reference', {})
+            point_probe_sa = point_probe_ref.get('surface_area', 0)
+            point_probe_fraction = point_probe_ref.get('surface_area_fraction', 0)
+            writer.writerow(['Global', 'Point Probe', 'All', f"{point_probe_sa:.4f}", 'm²/g'])
+            writer.writerow(['Global', 'Fraction', 'Point Probe', f"{point_probe_fraction:.4f}", 'ratio'])
+
             # Region-wise surface areas
             by_region = results.get('by_region', {})
             if by_region:
@@ -684,6 +691,13 @@ def save_void_volume_csv(results, output_file, material_name="material"):
             if total_vol > 0:
                 accessible_fraction = accessible_vol / total_vol
                 writer.writerow(['Global', 'Fraction', 'Accessible', f"{accessible_fraction:.4f}", 'ratio'])
+
+            # Point probe reference
+            point_probe_ref = results.get('point_probe_reference', {})
+            point_probe_vol = point_probe_ref.get('void_volume', 0)
+            point_probe_fraction = point_probe_ref.get('void_volume_fraction', 0)
+            writer.writerow(['Global', 'Point Probe', 'All', f"{point_probe_vol:.4f}", 'cm³/g'])
+            writer.writerow(['Global', 'Fraction', 'Point Probe', f"{point_probe_fraction:.4f}", 'ratio'])
 
             # Region-wise void volumes
             by_region = results.get('by_region', {})
@@ -1169,10 +1183,18 @@ Notes:
                         total_sa = sa_results.get('total_surface_area', 0)
                         accessible_sa = sa_results.get('accessible_surface_area', 0)
                         accessible_fraction = sa_results.get('accessible_fraction', 0)
+                        
+                        # Add point probe reference
+                        point_probe_ref = sa_results.get('point_probe_reference', {})
+                        point_probe_sa = point_probe_ref.get('surface_area', 0)
+                        point_probe_fraction = point_probe_ref.get('surface_area_fraction', 0)
+                        
                         print(f"  Surface Area Results:")
                         print(f"    Total surface area: {total_sa:.4f} m²/g")
                         print(f"    Accessible surface area: {accessible_sa:.4f} m²/g")
                         print(f"    Accessible fraction: {accessible_fraction:.4f}")
+                        print(f"    Point probe reference (radius = 0): {point_probe_sa:.4f} m²/g")
+                        print(f"    Point probe fraction: {point_probe_fraction:.4f}")
                     else:
                         print("  Surface area analysis failed")
 
@@ -1203,10 +1225,18 @@ Notes:
                         total_vol = vol_results.get('total_void_volume', 0)
                         accessible_vol = vol_results.get('accessible_void_volume', 0)
                         accessible_fraction = vol_results.get('accessible_fraction', 0)
+                        
+                        # Add point probe reference
+                        point_probe_ref = vol_results.get('point_probe_reference', {})
+                        point_probe_vol = point_probe_ref.get('void_volume', 0)
+                        point_probe_fraction = point_probe_ref.get('void_volume_fraction', 0)
+                        
                         print(f"  Void Volume Results:")
                         print(f"    Total void volume: {total_vol:.4f} cm³/g")
                         print(f"    Accessible void volume: {accessible_vol:.4f} cm³/g")
                         print(f"    Accessible fraction: {accessible_fraction:.4f}")
+                        print(f"    Point probe reference (radius = 0): {point_probe_vol:.4f} cm³/g")
+                        print(f"    Point probe fraction: {point_probe_fraction:.4f}")
                     else:
                         print("  Void volume analysis failed")
 
