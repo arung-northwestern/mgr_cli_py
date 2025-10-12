@@ -1100,17 +1100,47 @@ def plot_cycle_highlights(sgraph, cycles_to_highlight,
 def trimesh_from_pyvista(pv_mesh):
     """
     `trimesh_from_pyvista(pv_mesh)` takes a PyVista mesh and returns a Trimesh mesh
-    
+
     :param pv_mesh: a pyvista mesh object
     :return: A trimesh object.
     """
     import trimesh
-    faces_array = pv_mesh.faces.reshape((pv_mesh.n_faces_strict, 4))[:, 1:]
+    import numpy as np
+
+    # PyVista faces are stored as [n_points, p0, p1, p2, ...] concatenated
+    faces = pv_mesh.faces
+    if len(faces) == 0:
+        # Return empty mesh if no faces
+        return trimesh.Trimesh()
+
+    # Calculate expected number of faces based on first face's point count
+    n_points_per_face = faces[0]
+    n_faces = len(faces) // (n_points_per_face + 1)
+
+    # Check for data corruption/mismatch and handle gracefully
+    expected_length = n_faces * (n_points_per_face + 1)
+    if len(faces) != expected_length:
+        faces = faces[:expected_length]
+        n_faces = len(faces) // (n_points_per_face + 1)
+
+    if n_points_per_face == 3:  # Triangles
+        faces_array = faces.reshape((n_faces, 4))[:, 1:]
+    else:  # Other face types (like quads)
+        faces_array = faces.reshape((n_faces, n_points_per_face + 1))[:, 1:]
+
+    # Trimesh can only handle triangles, so convert quads to triangles if needed
+    if n_points_per_face == 4:  # Quads
+        # Convert each quad [v0, v1, v2, v3] to two triangles [v0, v1, v2] and [v0, v2, v3]
+        triangles = []
+        for quad in faces_array:
+            triangles.extend([quad[:3], [quad[0], quad[2], quad[3]]])
+        faces_array = np.array(triangles)
+
     tmesh = trimesh.Trimesh(pv_mesh.points, faces_array)
     return tmesh
 
 
-def spheres_for_atoms(ase_atoms, radii=None, scale=0.8, colormap=None, theta_resolution=10, phi_resolution=10):
+def spheres_for_atoms(ase_atoms, radii=None, scale=0.5, colormap=None, theta_resolution=8, phi_resolution=8):
     """
     It takes an ASE atoms object and returns a list of trimesh objects, each of which is a sphere with
     radius and center corresponding to the atom's covalent radius and position.
@@ -1252,9 +1282,14 @@ def cylinders_for_bonds(bonds, ase_atoms, radius=0.25, bond_rgba_array=[127, 128
     directions = bond_coords[:, 1] - bond_coords[:, 0]
     centers = (bond_coords[:, 0] + bond_coords[:, 1]) / 2
     heights = np.linalg.norm(directions, axis=1)
-    cylinders = [
-        pv.Cylinder(center=c, direction=d, resolution=cylinder_resolution, radius=radius, height=h).triangulate() for
-        c, d, h in zip(centers, directions, heights)]
+
+    import pyvista as pv
+    cylinders = []
+    for i, (center, direction, height) in enumerate(zip(centers, directions, heights)):
+        direction_norm = direction / height
+        cylinder = pv.Cylinder(center=center, direction=direction_norm, height=height, radius=0.25)
+        cylinders.append(cylinder)
+
     cylinders_tmesh = [trimesh_from_pyvista(c) for c in cylinders]
     for i, c in enumerate(cylinders_tmesh):
         # c.visual =trimesh.visual.TextureVisuals(material=trimesh.visual.material.PBRMaterial())
@@ -1266,7 +1301,7 @@ def cylinders_for_bonds(bonds, ase_atoms, radius=0.25, bond_rgba_array=[127, 128
 
 
 def mesh_for_atoms(ase_atoms, bonds=None, colormap=None, bond_rgba_array=[127, 128, 129, 255],
-                   kwargs_spheres=dict(scale=0.8, radii=None), kwargs_cylinders=dict(radius=0.25), return_scene=False):
+                   kwargs_spheres=dict(scale=0.5, radii=None), kwargs_cylinders=dict(radius=0.25), return_scene=False):
     """
     > It takes an ASE atoms object and returns a trimesh object that can be rendered in a Jupyter
     notebook
@@ -1493,8 +1528,9 @@ def plot_framework_as_mesh(ase_atoms, show_rings=True, stylize=False, kwargs_fra
     :param kwargs_highlight: keyword arguments for plot_aromatic_rings
     :return: A tuple of plotly traces.
     """
-
     from .analyze import update_with_covalent_bonds
+
+    # Check if covalent bonds already exist before recomputing
     if 'covalent_bonds' not in ase_atoms.info.keys():
         ase_atoms = update_with_covalent_bonds(ase_atoms)
     combined = mesh_for_atoms(ase_atoms, **kwargs_mesh_for_atoms)
@@ -1520,8 +1556,7 @@ def plot_framework_as_mesh(ase_atoms, show_rings=True, stylize=False, kwargs_fra
     framework_mesh_trace = add_hoverdata_to_atoms_traces(framework_mesh_trace, ase_atoms)
     traces = (framework_mesh_trace,)
     if show_rings:
-        if not ('covalent_bonds' in ase_atoms.info.keys()):
-            ase_atoms = update_with_covalent_bonds(ase_atoms)
+        # Bonds already computed above, no need to recompute
         # sgraph = sgraph_from_atoms(ase_atoms=ase_atoms)
         aromatic_rings_trace = plot_aromatic_rings(ase_atoms, **kwargs_aromatic_rings)
         traces = (framework_mesh_trace, *aromatic_rings_trace)
