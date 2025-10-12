@@ -309,6 +309,18 @@ def main() -> None:
         cif_path = samples[sample_choice]
         atoms = read(str(cif_path))
 
+    # Compute bonds immediately after loading CIF
+    if atoms is not None:
+        try:
+            import mgr as mgr
+            from mgr.analyze import update_with_covalent_bonds
+            atoms = update_with_covalent_bonds(atoms)
+        except ImportError:
+            # Fallback to mgr_visualize if mgr_src is not available
+            import mgr_visualize.mgr as mgr
+            from mgr_visualize.mgr.analyze import update_with_covalent_bonds
+            atoms = update_with_covalent_bonds(atoms)
+
     if atoms is None:
         st.info("Upload a CIF file or pick a sample to begin.")
         return
@@ -433,13 +445,13 @@ def main() -> None:
         surface_pbc_opacity = st.slider("Periodic Surface Opacity", min_value=0.0, max_value=1.0, value=1.0, step=0.1)
         surface_types_opacity = st.slider("Pocket Types Opacity", min_value=0.0, max_value=1.0, value=1.0, step=0.1)
 
-        js_threshold = 0.15
+        js_threshold = 0.2
         if detect_pocket_types:
             js_threshold = st.number_input(
                 "Jensen-Shannon Threshold",
                 min_value=0.01,
                 max_value=1.0,
-                value=0.15,
+                value=0.2,
                 step=0.01,
                 help="Threshold for agglomerative clustering based on Jensen-Shannon distance between cavity size distributions"
             )

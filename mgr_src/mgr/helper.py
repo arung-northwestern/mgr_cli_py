@@ -639,7 +639,7 @@ def estimate_h_from_percolation_history(distance_grid):
 
     if not local_constrictions:
         print("No significant constrictions found")
-        h = min(0.4, max(0.1, plr * 0.15))
+        h = min(0.2, max(0.1, plr * 0.15))
         return h
 
     # Convert to array and analyze
@@ -662,7 +662,7 @@ def estimate_h_from_percolation_history(distance_grid):
 
     if len(valid_constrictions) == 0:
         print("No valid constrictions after filtering")
-        h = min(0.4, max(0.1, plr * 0.15))
+        h = min(0.2, max(0.1, plr * 0.15))
         return h
 
     print(f"Found {len(valid_constrictions)} valid constrictions")
@@ -683,7 +683,7 @@ def estimate_h_from_percolation_history(distance_grid):
     print("average relative depth is ", avg_relative_depth)
     print("minimum prominence is ", min_prominence)
     # h = min(0.4, max(0.1, min(h_from_depth, h_from_prominence)))
-    h = min(0.4, min_prominence)
+    h = min(0.2, min_prominence)
 
     print(f"PLR: {plr:.2f}")
     print(f"Average relative depth: {avg_relative_depth:.2f}")

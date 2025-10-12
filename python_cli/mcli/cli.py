@@ -97,6 +97,9 @@ def python_do_periodic_segmentation_rust(
     return_dgrid=False
 ):
     """Perform periodic segmentation using Rust backend."""
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    
     try:
         # Import directly from the reference MGR library
         from mgr.rust_fun import do_periodic_segmentation_rust
@@ -1279,7 +1282,7 @@ Notes:
                     import numpy as np
 
                     print("Detecting pocket types...")
-                    js_threshold = getattr(args, 'js_threshold', 0.15)
+                    js_threshold = getattr(args, 'js_threshold', 0.2)
 
                     # Get required data for clustering
                     dgrid = result['dgrid']
@@ -1870,7 +1873,24 @@ Notes:
             sys.exit(1)
 
         try:
-            return read(str(cif_path))
+            atoms = read(str(cif_path))
+            # Compute bonds immediately after loading CIF
+            REPO_ROOT = Path(__file__).resolve().parents[2]
+            MGR_SRC_PATH = REPO_ROOT / "mgr_src"
+            if str(MGR_SRC_PATH) not in sys.path:
+                sys.path.insert(0, str(MGR_SRC_PATH))
+            
+            try:
+                import mgr as mgr
+                from mgr.analyze import update_with_covalent_bonds
+                atoms = update_with_covalent_bonds(atoms)
+            except ImportError:
+                # Fallback to mgr_visualize if mgr_src is not available
+                import mgr_visualize.mgr as mgr
+                from mgr_visualize.mgr.analyze import update_with_covalent_bonds
+                atoms = update_with_covalent_bonds(atoms)
+            
+            return atoms
         except Exception as exc:  # pragma: no cover - file errors
             print(f"Error reading CIF file {cif_path}: {exc}")
             sys.exit(1)
