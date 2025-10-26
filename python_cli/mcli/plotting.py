@@ -658,9 +658,52 @@ def plot_framework_as_mesh(ase_atoms, stylize: bool = True, style: str = "mesh",
 
 
 def _safe_update_with_covalent_bonds(ase_atoms):
-    """Safe version of update_with_covalent_bonds that filters zero-length bonds."""
+    """Safe version of update_with_covalent_bonds that removes duplicate atoms after bond creation."""
     try:
+        # Use standard update_with_covalent_bonds function as-is
         mat_updated = update_with_covalent_bonds(ase_atoms)
+        
+        # Remove duplicate atoms that might have been created for PBC images
+        positions = mat_updated.get_positions()
+        atoms_to_keep = list(range(len(positions)))
+        duplicate_atoms = set()
+        
+        # Find duplicate atoms (exact same coordinates)
+        for i in range(len(positions)):
+            for j in range(i+1, len(positions)):
+                if np.linalg.norm(positions[i] - positions[j]) < 1e-10:
+                    duplicate_atoms.add(j)  # Mark second occurrence as duplicate
+        
+        # Remove duplicate atoms and update bonds
+        if duplicate_atoms:
+            print(f"Warning: Removing {len(duplicate_atoms)} duplicate atoms (PBC images) to prevent plotting issues")
+            atoms_to_keep = [i for i in range(len(positions)) if i not in duplicate_atoms]
+            
+            from ase import Atoms
+            unique_atoms = Atoms(
+                symbols=mat_updated[atoms_to_keep].get_chemical_symbols(),
+                positions=mat_updated[atoms_to_keep].get_positions(),
+                cell=mat_updated.get_cell(),
+                pbc=mat_updated.get_pbc()
+            )
+            
+            # Update bond indices to account for removed atoms
+            if 'covalent_bonds' in mat_updated.info:
+                old_to_new_indices = {old: new for new, old in enumerate(atoms_to_keep)}
+                updated_bonds = []
+                updated_orders = []
+                
+                for i, bond in enumerate(mat_updated.info['covalent_bonds']):
+                    if (bond[0] in old_to_new_indices and bond[1] in old_to_new_indices):
+                        new_bond = [old_to_new_indices[bond[0]], old_to_new_indices[bond[1]]]
+                        updated_bonds.append(new_bond)
+                        if i < len(mat_updated.info.get('covalent_bond_orders', [])):
+                            updated_orders.append(mat_updated.info['covalent_bond_orders'][i])
+                
+                unique_atoms.info['covalent_bonds'] = updated_bonds
+                unique_atoms.info['covalent_bond_orders'] = updated_orders
+            
+            mat_updated = unique_atoms
         
         # Filter out zero-length bonds that cause division by zero
         if 'covalent_bonds' in mat_updated.info:
@@ -674,14 +717,15 @@ def _safe_update_with_covalent_bonds(ase_atoms):
             removed_count = 0
             
             for i, bond in enumerate(original_bonds):
-                pos1, pos2 = positions[bond[0]], positions[bond[1]]
-                distance = np.linalg.norm(pos1 - pos2)
-                if distance > 1e-10:  # Only keep bonds with non-zero length
-                    valid_bonds.append(bond)
-                    if i < len(original_orders):
-                        valid_orders.append(original_orders[i])
-                else:
-                    removed_count += 1
+                if len(bond) >= 2:
+                    pos1, pos2 = positions[bond[0]], positions[bond[1]]
+                    distance = np.linalg.norm(pos1 - pos2)
+                    if distance > 1e-10:  # Only keep bonds with non-zero length
+                        valid_bonds.append(bond)
+                        if i < len(original_orders):
+                            valid_orders.append(original_orders[i])
+                    else:
+                        removed_count += 1
             
             if removed_count > 0:
                 print(f"Warning: Removed {removed_count} zero-length bonds to prevent division by zero error")
