@@ -623,13 +623,15 @@ def plot_framework_as_mesh(ase_atoms, stylize: bool = True, style: str = "mesh",
     """Return framework traces, defaulting to mesh rendering with scatter fallback."""
 
     if style.lower() != "mesh":
-        ase_atoms_updated = update_with_covalent_bonds(ase_atoms)
+        ase_atoms_updated = _safe_update_with_covalent_bonds(ase_atoms)
         # return _draw_framework_scatter(ase_atoms, stylize=stylize)
         return mgr_visualize.draw_framework(ase_atoms_updated)
 
     try:
+        # Use safe bond update to prevent zero-length bonds
+        safe_atoms = _safe_update_with_covalent_bonds(ase_atoms)
         traces = mgr_visualize.plot_framework_as_mesh(
-            ase_atoms,
+            safe_atoms,
             show_rings=show_rings,
             stylize=stylize,
             kwargs_frame_mesh=dict(
@@ -655,11 +657,46 @@ def plot_framework_as_mesh(ase_atoms, stylize: bool = True, style: str = "mesh",
         return _draw_framework_fallback(ase_atoms, stylize=stylize, show_rings=show_rings)
 
 
-def _draw_framework_fallback(ase_atoms, stylize: bool = True, show_rings: bool = True) -> Tuple[go.BaseTraceType, ...]:
+def _safe_update_with_covalent_bonds(ase_atoms):
+    """Safe version of update_with_covalent_bonds that filters zero-length bonds."""
     try:
         mat_updated = update_with_covalent_bonds(ase_atoms)
-    except Exception:
-        mat_updated = ase_atoms
+        
+        # Filter out zero-length bonds that cause division by zero
+        if 'covalent_bonds' in mat_updated.info:
+            positions = mat_updated.get_positions()
+            original_bonds = mat_updated.info['covalent_bonds']
+            original_orders = mat_updated.info.get('covalent_bond_orders', [])
+            
+            # Filter bonds to remove zero-length bonds
+            valid_bonds = []
+            valid_orders = []
+            removed_count = 0
+            
+            for i, bond in enumerate(original_bonds):
+                pos1, pos2 = positions[bond[0]], positions[bond[1]]
+                distance = np.linalg.norm(pos1 - pos2)
+                if distance > 1e-10:  # Only keep bonds with non-zero length
+                    valid_bonds.append(bond)
+                    if i < len(original_orders):
+                        valid_orders.append(original_orders[i])
+                else:
+                    removed_count += 1
+            
+            if removed_count > 0:
+                print(f"Warning: Removed {removed_count} zero-length bonds to prevent division by zero error")
+            
+            mat_updated.info['covalent_bonds'] = valid_bonds
+            if original_orders:
+                mat_updated.info['covalent_bond_orders'] = valid_orders
+        
+        return mat_updated
+    except Exception as e:
+        print(f"Warning: Bond update failed with error: {e}")
+        return ase_atoms
+
+def _draw_framework_fallback(ase_atoms, stylize: bool = True, show_rings: bool = True) -> Tuple[go.BaseTraceType, ...]:
+    mat_updated = _safe_update_with_covalent_bonds(ase_atoms)
 
     try:
         fallback = mgr_visualize.draw_framework(
@@ -670,9 +707,10 @@ def _draw_framework_fallback(ase_atoms, stylize: bool = True, show_rings: bool =
         if isinstance(fallback, (list, tuple)):
             return tuple(fallback)
         return (fallback,)
-    except Exception:
-        # return _draw_framework_scatter(mat_updated, stylize=stylize)
-        return mgr_visualize.draw_framework(mat_updated)
+    except Exception as e:
+        print(f"Warning: draw_framework failed with error: {e}")
+        print("Falling back to simple scatter plot for framework")
+        return _draw_framework_scatter(mat_updated, stylize=stylize)
 
 
 

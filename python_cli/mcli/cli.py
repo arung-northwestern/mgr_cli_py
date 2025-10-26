@@ -1463,6 +1463,17 @@ Notes:
         except FileNotFoundError:  # pragma: no cover
             print("Error: streamlit executable not found. Please install streamlit to use interactive mode.")
             sys.exit(1)
+        except subprocess.CalledProcessError as e:
+            print(f"Error: Streamlit exited with error code {e.returncode}")
+            print("This is often caused by issues with molecular structure processing:")
+            print("  - Duplicate atoms in the structure")
+            print("  - Invalid geometry data")
+            print("  - Missing or corrupted CIF files")
+            print("Try using --verbose flag for more details or check your input structure.")
+            sys.exit(1)
+        except Exception as e:
+            print(f"Unexpected error launching interactive mode: {e}")
+            sys.exit(1)
 
     def generate_config_command(self, args):
         """Handle the generate-config command."""
