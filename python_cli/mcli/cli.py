@@ -1127,6 +1127,10 @@ Notes:
             try:
                 result = self.process_single_cif(cif_file, config)
                 atoms = self._read_atoms(cif_file)
+                # Keep a copy of original atoms without covalent bonds for RAG operations
+                # to avoid duplicate atom warnings in MGR library functions
+                from ase.io import read
+                original_atoms = read(str(cif_file))
 
                 # Generate output filename
                 output_file = output_dir / f"{cif_file.stem}_results.npz"
@@ -1266,7 +1270,7 @@ Notes:
                         try:
                             rag = mgr.rag_from_connections(connections_trimmed, maxima)
                             rag = mgr.add_pbc_to_rag(rag, pbc_groups)
-                            rag = mgr.add_maxima_to_rag(rag, maxima, maxima_radii, dgrid.shape, atoms)
+                            rag = mgr.add_maxima_to_rag(rag, maxima, maxima_radii, dgrid.shape, original_atoms)
                             rag_pickle_path = output_dir / f"{cif_file.stem}_rag_clustered.pkl"
                             with open(rag_pickle_path, 'wb') as f:
                                 pickle.dump(rag, f)
@@ -1308,7 +1312,7 @@ Notes:
                             # Rebuild RAG following the example pattern
                             rag = mgr.rag_from_connections(connections_trimmed, maxima)
                             rag = mgr.add_pbc_to_rag(rag, pbc_groups)
-                            rag = mgr.add_maxima_to_rag(rag, maxima, maxima_radii, dgrid.shape, atoms)
+                            rag = mgr.add_maxima_to_rag(rag, maxima, maxima_radii, dgrid.shape, original_atoms)
 
                             # Add PSD and clustering to RAG
                             props = regionprops(regions)
@@ -1320,8 +1324,8 @@ Notes:
                                 print("Debug: Removing groups with label 0")
                                 pbc_groups = [group for group in pbc_groups if 0 not in group]
 
-                            rag = mgr.add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, atoms, dgrid.shape)
-                            rag = mgr.add_clustering_to_rag_geometry_js(rag, props, pbc_groups, atoms, dgrid.shape, use_pbc=True, js_threshold=js_threshold)
+                            rag = mgr.add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, original_atoms, dgrid.shape)
+                            rag = mgr.add_clustering_to_rag_geometry_js(rag, props, pbc_groups, original_atoms, dgrid.shape, use_pbc=True, js_threshold=js_threshold)
 
                             # Generate regions cluster
                             regions_cluster = mgr.clustering_grid_from_regions(regions, rag, cluster_key="cluster_geom_pbc")
@@ -1885,22 +1889,24 @@ Notes:
 
         try:
             atoms = read(str(cif_path))
-            # Compute bonds immediately after loading CIF
+            # Compute bonds immediately after loading CIF only if not already done
             REPO_ROOT = Path(__file__).resolve().parents[2]
             MGR_SRC_PATH = REPO_ROOT / "mgr_src"
             if str(MGR_SRC_PATH) not in sys.path:
                 sys.path.insert(0, str(MGR_SRC_PATH))
-            
-            try:
-                import mgr as mgr
-                from mgr.analyze import update_with_covalent_bonds
-                atoms = update_with_covalent_bonds(atoms)
-            except ImportError:
-                # Fallback to mgr_visualize if mgr_src is not available
-                import mgr_visualize.mgr as mgr
-                from mgr_visualize.mgr.analyze import update_with_covalent_bonds
-                atoms = update_with_covalent_bonds(atoms)
-            
+
+            # Check if covalent bonds have already been computed to avoid duplicate atoms
+            if 'covalent_bonds' not in atoms.info:
+                try:
+                    import mgr as mgr
+                    from mgr.analyze import update_with_covalent_bonds
+                    atoms = update_with_covalent_bonds(atoms)
+                except ImportError:
+                    # Fallback to mgr_visualize if mgr_src is not available
+                    import mgr_visualize.mgr as mgr
+                    from mgr_visualize.mgr.analyze import update_with_covalent_bonds
+                    atoms = update_with_covalent_bonds(atoms)
+
             return atoms
         except Exception as exc:  # pragma: no cover - file errors
             print(f"Error reading CIF file {cif_path}: {exc}")

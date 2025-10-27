@@ -660,6 +660,12 @@ def plot_framework_as_mesh(ase_atoms, stylize: bool = True, style: str = "mesh",
 def _safe_update_with_covalent_bonds(ase_atoms):
     """Safe version of update_with_covalent_bonds that removes duplicate atoms after bond creation."""
     try:
+        # If covalent bonds already exist, reuse them to avoid duplicating PBC images
+        if 'covalent_bonds' in ase_atoms.info and ase_atoms.info['covalent_bonds'] is not None:
+            mat_updated = ase_atoms.copy()
+            mat_updated.info = dict(ase_atoms.info)
+            return mat_updated
+
         # Use standard update_with_covalent_bonds function as-is
         mat_updated = update_with_covalent_bonds(ase_atoms)
         
