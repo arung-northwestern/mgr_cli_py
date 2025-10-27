@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from io import BytesIO
 
 import plotly.express as px
@@ -65,22 +65,37 @@ def make_uniform_psd_dataframe(bins: np.ndarray, histogram: np.ndarray) -> pd.Da
     )
 
 
-def make_pocket_psd_dataframe(bins: np.ndarray, pocket_psds: Dict[Any, np.ndarray]) -> pd.DataFrame:
-    rows = []
-    bin_starts = bins[:-1]
-    bin_ends = bins[1:]
-    bin_centers = 0.5 * (bin_starts + bin_ends)
-    for label, hist in pocket_psds.items():
-        for start, end, center, count in zip(bin_starts, bin_ends, bin_centers, hist):
+def make_pocket_psd_dataframe(bins: np.ndarray, pocket_psds: Dict[Any, Any]) -> pd.DataFrame:
+    rows: List[Dict[str, Any]] = []
+    if bins is None or len(bins) < 2:
+        return pd.DataFrame(rows)
+
+    bin_edges = np.asarray(bins, dtype=float)
+    bin_starts = bin_edges[:-1]
+    bin_ends = bin_edges[1:]
+    default_centers = 0.5 * (bin_starts + bin_ends)
+
+    for label, psd_data in pocket_psds.items():
+        data_dict = psd_data if isinstance(psd_data, dict) else {"hist": np.asarray(psd_data)}
+        hist = np.asarray(data_dict.get("hist", []), dtype=float)
+        if hist.size == 0:
+            continue
+
+        centers = np.asarray(data_dict.get("bin_centers", default_centers), dtype=float)
+        if centers.size != hist.size:
+            centers = default_centers[: hist.size]
+
+        for start, end, center, count in zip(bin_starts[: hist.size], bin_ends[: hist.size], centers, hist):
             rows.append(
                 {
                     "region_label": int(label),
-                    "bin_start": start,
-                    "bin_end": end,
-                    "bin_center": center,
-                    "count": count,
+                    "bin_start (Å)": float(start),
+                    "bin_end (Å)": float(end),
+                    "bin_center (Å)": float(center),
+                    "count": float(count),
                 }
             )
+
     return pd.DataFrame(rows)
 
 if __package__ is None or __package__ == "":  # pragma: no cover - streamlit entry
