@@ -302,7 +302,7 @@ def compute_auto_parameters(mat_atoms, spacing):
     mask_thickness = float(np.clip(pore_limiting_radius - 0.25, 0.1, 0.5))
 
     # Estimate h_value from percolation history
-    h_value = float(max(estimate_h_from_percolation_history(dgrid) - 0.1, 0.25))
+    h_value = float(max(estimate_h_from_percolation_history(dgrid) - 0.1, 0.2))
 
     # Estimate surface value
     surface_value = float(min(mask_thickness + 0.5, 2.0))
