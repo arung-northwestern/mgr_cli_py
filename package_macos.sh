@@ -179,6 +179,7 @@ cd "$ORIGINAL_DIR"
 # IMPORTANT: Do NOT use -e (editable install) - it creates symlinks to source dir
 # We need a regular install so all packages are copied into the app bundle
 "$VENV_PY" -m pip install --upgrade pip
+"$VENV_PY" -m pip install -r requirements.txt --no-cache-dir
 "$VENV_PY" -m pip install . --force-reinstall --no-cache-dir
 
 # Rewrite pyvenv.cfg to avoid builder-absolute paths
