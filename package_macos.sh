@@ -161,16 +161,8 @@ if ! command -v uv &> /dev/null; then
     pip install uv
 fi
 
-PYTHON_VERSION="3.11"
-
-# Install standalone Python runtime and build a copy-based venv (no symlinks)
-echo "   Installing Python runtime $PYTHON_VERSION..."
-uv python install "$PYTHON_VERSION"
-PYTHON_BIN=$(uv python find "$PYTHON_VERSION")
-if [ -z "$PYTHON_BIN" ]; then
-    echo "❌ Unable to locate Python runtime for $PYTHON_VERSION"
-    exit 1
-fi
+PYTHON_BIN=$(python3 -c "import sys; print(sys.executable)")
+echo "   Using runner Python: $PYTHON_BIN"
 
 # Create venv inside the app bundle using copies for relocatability
 cd "$BUILD_DIR/$PACKAGE_NAME/mgrui.app/Contents/MacOS"
