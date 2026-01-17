@@ -78,14 +78,74 @@ if [ -f "icon.png" ]; then
     fi
 fi
 
-# Copy the app bundle
-if [ -d "install/mgrui.app" ]; then
-    echo "   Copying mgrui.app..."
-    cp -R install/mgrui.app "$BUILD_DIR/$PACKAGE_NAME/"
-else
-    echo "❌ install/mgrui.app not found!"
+# Source app bundle (create a minimal template if missing)
+APP_TEMPLATE="install/mgrui.app"
+if [ ! -d "$APP_TEMPLATE" ]; then
+    echo "   Creating minimal mgrui.app template..."
+    TMP_APP_DIR="$(mktemp -d)/mgrui.app"
+    mkdir -p "$TMP_APP_DIR/Contents/MacOS" "$TMP_APP_DIR/Contents/Resources"
+
+    cat > "$TMP_APP_DIR/Contents/Info.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleExecutable</key><string>mgrui</string>
+    <key>CFBundleIdentifier</key><string>org.mgrui.app</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleName</key><string>mgrui</string>
+    <key>CFBundleDisplayName</key><string>mgrui</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundleVersion</key><string>1.0</string>
+    <key>LSMinimumSystemVersion</key><string>11.0</string>
+</dict>
+</plist>
+EOF
+
+    cat > "$TMP_APP_DIR/Contents/MacOS/mgrui" <<'EOF'
+#!/bin/bash
+# Minimal MGRUI launcher
+
+MACOS_DIR="$(dirname "$0")"
+APP_DIR="$MACOS_DIR"
+MGRUI_ENV="$MACOS_DIR/mgrui_env"
+
+LOG_FILE="$MACOS_DIR/mgrui_launcher.log"
+exec > "$LOG_FILE" 2>&1
+
+echo "=== MGRUI Launcher $(date) ==="
+
+if [ ! -d "$MGRUI_ENV" ]; then
+    echo "ERROR: mgrui_env not found at $MGRUI_ENV"
     exit 1
 fi
+
+PYTHON_BIN="$MGRUI_ENV/bin/python"
+if [ ! -x "$PYTHON_BIN" ]; then
+    echo "ERROR: Python interpreter not found at $PYTHON_BIN"
+    exit 1
+fi
+
+cd "$APP_DIR"
+export PYTHONPATH="$(pwd)/python_cli:$(pwd):$PYTHONPATH"
+export MGRUI_SAMPLE_CIF_DIR="$(pwd)/cifs"
+
+if lsof -i :8501 -sTCP:LISTEN -t > /dev/null 2>&1; then
+    open http://localhost:8501
+else
+    "$PYTHON_BIN" -m streamlit run python_cli/mgrui/interactive_app.py &
+    sleep 3
+    open http://localhost:8501
+fi
+EOF
+    chmod +x "$TMP_APP_DIR/Contents/MacOS/mgrui"
+    APP_TEMPLATE="$TMP_APP_DIR"
+fi
+
+echo "   Copying mgrui.app..."
+cp -R "$APP_TEMPLATE" "$BUILD_DIR/$PACKAGE_NAME/"
 
 # Update Info.plist with current version
 echo "   Updating version in Info.plist..."
