@@ -1,0 +1,72 @@
+name: Build Standalone Packages
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: build-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            label: macos
+            run: bash package_macos.sh
+            artifact: build_package/mgrui-macOS-*.dmg
+          - os: ubuntu-latest
+            label: linux
+            run: bash package_linux.sh
+            artifact: build_package/mgrui-linux-*.tar.gz
+          - os: windows-latest
+            label: windows
+            run: cmd /c package_windows.bat
+            artifact: build_package_windows/mgrui-Windows-*.zip
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ startsWith(matrix.os, 'windows') && 'x86_64-pc-windows-msvc' || '' }}
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Cache uv python downloads (unix)
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('pyproject.toml','setup.py') }}
+
+      - name: Cache uv python downloads (windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: $LOCALAPPDATA\uv
+          key: uv-${{ runner.os }}-${{ hashFiles('pyproject.toml','setup.py') }}
+
+      - name: Build package
+        run: ${{ matrix.run }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mgrui-${{ matrix.label }}-${{ github.ref_name }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
