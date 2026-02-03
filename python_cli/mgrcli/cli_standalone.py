@@ -56,7 +56,7 @@ class MCLIStandalone:
         """Lazily import the Rust library."""
         if self._rust_lib is None:
             try:
-                import mcli_rust
+                import mgrcli_rust
                 self._rust_lib = mcli_rust
             except ImportError as e:
                 print("Error: mcli_rust Rust library not found. Please build the project first.")

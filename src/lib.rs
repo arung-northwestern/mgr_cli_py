@@ -5403,7 +5403,7 @@ fn find_largest_including_sphere(
 
 
 #[pymodule]
-fn mgr_rust(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
+fn mgrcli_rust(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     // Enable better error reporting when the module is imported from Python.
     pyo3_log::init();
 

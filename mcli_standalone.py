@@ -12,7 +12,7 @@ python_cli_dir = os.path.join(current_dir, 'python_cli')
 sys.path.insert(0, python_cli_dir)
 
 # Import and run the CLI
-from mcli.cli import main
+from mgrcli.cli import main
 
 if __name__ == '__main__':
     main()

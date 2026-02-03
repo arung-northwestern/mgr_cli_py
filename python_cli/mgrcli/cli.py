@@ -63,7 +63,7 @@ def compute_dgrid_rust(mat_atoms, spacing):
         except ImportError:
             # Final fallback to direct mcli_rust call
             try:
-                import mcli_rust
+                import mgrcli_rust
                 # Convert ASE atoms to required format
                 fpoints = mat_atoms.get_positions()
                 cell = mat_atoms.get_cell().array.T  # Transpose to match expected format
@@ -137,19 +137,20 @@ def python_do_periodic_segmentation_rust(
 # Note: Import is deferred to avoid immediate failure during CLI help/version commands
 
 
-def compute_pore_diameter_analysis(dgrid, mat_atoms, spacing=None):
+def compute_pore_diameter_analysis(dgrid, mat_atoms, spacing=None, segmentation_results=None):
     """Compute pore diameter and percolation analysis.
 
     This function calculates:
     - Largest Cavity Diameter (LCD)
     - Pore Limiting Diameter (PLD)
     - Distance From Surface Distribution (DFSD)
-    - Percolation history
+    - Percolation history (using winding percolation if segmentation results available)
 
     Parameters:
     - dgrid: 3D distance grid
     - mat_atoms: ASE atoms object
     - spacing: Grid spacing (estimated if None)
+    - segmentation_results: Full segmentation results dict (optional, for winding percolation)
 
     Returns:
     - Dictionary with pore diameter and percolation analysis results
@@ -173,16 +174,54 @@ def compute_pore_diameter_analysis(dgrid, mat_atoms, spacing=None):
         print(f"Warning: Pore diameter calculation failed: {e}")
         lcd, pld, dfsd = 0.0, 0.0, 0.0
 
-    # Compute percolation history
-    try:
-        percolation_history, pld_locations, _, _, _ = mgr.compute_percolation_history(
-            dgrid, mat_atoms
-        )
-        print(f"  Percolation history points: {len(percolation_history)}")
-    except Exception as e:
-        print(f"Warning: Percolation analysis failed: {e}")
-        percolation_history = np.array([])
-        pld_locations = np.array([])
+    # Compute percolation history using winding percolation if available
+    percolation_history = []
+    pld_locations = np.array([])
+
+    if segmentation_results is not None:
+        # Try winding percolation first (requires maxima_info, connections, regions)
+        required_keys = ['maxima_info', 'connections', 'regions']
+        if all(key in segmentation_results for key in required_keys):
+            try:
+                from mgr.winding_percolation import compute_percolation_history_winding, update_results_with_percolation_history_winding
+
+                # Prepare results dict for winding percolation
+                results_for_winding = {
+                    'dgrid': dgrid,
+                    'maxima_info': segmentation_results['maxima_info'],
+                    'connections': segmentation_results['connections'],
+                    'regions': segmentation_results['regions'],
+                    'mask_thickness': segmentation_results.get('kwargs', {}).get('mask_thickness', 1.5),
+                }
+
+                # Compute percolation history using winding percolation
+                percolation_history, pld_locations, _ = compute_percolation_history_winding(
+                    results_for_winding,
+                    step=0.05,
+                    min_threshold=None,
+                    max_threshold=None,
+                )
+                print(f"  Percolation history points (winding): {len(percolation_history)}")
+            except Exception as e:
+                print(f"Warning: Winding percolation failed: {e}")
+                percolation_history = []
+                pld_locations = np.array([])
+        else:
+            print("Warning: Segmentation results incomplete for winding percolation")
+    else:
+        print("Info: No segmentation results provided, using fallback percolation analysis")
+
+    # Fallback to original percolation computation if winding failed or not available
+    if not percolation_history:
+        try:
+            percolation_history, pld_locations, _, _, _ = mgr.compute_percolation_history(
+                dgrid, mat_atoms
+            )
+            print(f"  Percolation history points (fallback): {len(percolation_history)}")
+        except Exception as e:
+            print(f"Warning: Percolation analysis failed: {e}")
+            percolation_history = []
+            pld_locations = np.array([])
 
     # Prepare results
     results = {
@@ -786,8 +825,8 @@ class MCLI:
         """Lazily import the Rust library."""
         if self._rust_lib is None:
             try:
-                import mcli_rust
-                self._rust_lib = mcli_rust
+                import mgrcli_rust
+                self._rust_lib = mgrcli_rust
             except ImportError as e:
                 print("Error: mcli_rust Rust library not found. Please build the project first.")
                 print("Run: pip install -e .")
@@ -835,7 +874,7 @@ Notes:
         # Global options
         parser.add_argument(
             '--version', action='version',
-            version=f'%(prog)s {__import__("mcli").__version__}'
+            version=f'%(prog)s {__import__("mgrcli").__version__}'
         )
         parser.add_argument(
             '--banner', action='store_true',
@@ -1138,7 +1177,8 @@ Notes:
                 # Handle pore diameter analysis if requested
                 if getattr(args, 'pore_dia', False):
                     pore_dia_results = compute_pore_diameter_analysis(
-                        result['dgrid'], atoms, spacing=config['spacing']
+                        result['dgrid'], atoms, spacing=config['spacing'],
+                        segmentation_results=result
                     )
                     if pore_dia_results:
                         # Add to main results

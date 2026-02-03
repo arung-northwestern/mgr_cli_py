@@ -24,7 +24,7 @@ if os.path.exists(readme_path):
         long_description = f.read()
 
 setup(
-    name="mcli",
+    name="mgrcli",
     version="0.1.0",
     author="MOF Analysis Team",
     description="A command-line interface for analyzing Metal-Organic Frameworks (MOFs)",
@@ -55,7 +55,7 @@ setup(
     # Conditionally compile the Rust extension
     rust_extensions=[
         RustExtension(
-            "mcli_rust",
+            "mgrcli_rust",
             path="Cargo.toml",
             binding=Binding.PyO3,
             debug=False,
@@ -65,7 +65,7 @@ setup(
     ] if RustExtension else [],
     entry_points={
         "console_scripts": [
-            "mcli=mcli.cli:main",
+            "mgrcli=mgrcli.cli:main",
         ],
     },
     include_package_data=True,

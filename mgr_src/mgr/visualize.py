@@ -46,6 +46,131 @@ default_mesh_lighting= dict(
     )
 
 import numpy as np
+
+# =============================================================================
+# Cluster-based coloring utilities
+# =============================================================================
+
+def _generate_cluster_shades(base_color_hex: str, num_shades: int):
+    """
+    Generate shades (lighter/darker variations) of a base color.
+
+    Parameters:
+    -----------
+    base_color_hex : str
+        Base color in hex format (e.g., '#FF6B6B') or rgb format (e.g., 'rgb(102, 197, 204)')
+    num_shades : int
+        Number of shades to generate
+
+    Returns:
+    --------
+    List[str]
+        List of hex colors, ranging from lightest to darkest
+    """
+    # Helper function to parse rgb() string
+    def parse_rgb_string(rgb_str):
+        """Parse rgb(r, g, b) string to (r, g, b) tuple"""
+        rgb_str = rgb_str.strip()
+        if rgb_str.startswith('rgb(') and rgb_str.endswith(')'):
+            values = rgb_str[4:-1].split(',')
+            return tuple(int(v.strip()) for v in values)
+        raise ValueError(f"Invalid rgb() string: {rgb_str}")
+
+    # Helper function to convert color string to RGB tuple
+    def color_to_rgb(color_str):
+        """Convert hex or rgb string to (r, g, b) tuple"""
+        color_str = color_str.strip()
+        if color_str.startswith('#'):
+            # Hex format
+            hex_color = color_str.lstrip('#')
+            return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+        elif color_str.startswith('rgb('):
+            # rgb() format
+            return parse_rgb_string(color_str)
+        else:
+            raise ValueError(f"Unsupported color format: {color_str}")
+
+    import colorsys
+    try:
+        from matplotlib.colors import to_hex
+    except ImportError:
+        # Fallback if matplotlib is not available
+        def to_hex(rgba):
+            r, g, b, a = rgba
+            return '#{:02x}{:02x}{:02x}'.format(int(r*255), int(g*255), int(b*255))
+
+    # Convert color string to RGB
+    rgb = color_to_rgb(base_color_hex)
+
+    # Convert to HSV (Hue, Saturation, Value)
+    h, s, v = colorsys.rgb_to_hsv(rgb[0]/255, rgb[1]/255, rgb[2]/255)
+
+    # Generate shades by varying Value (brightness)
+    # Use values from 0.6 to 1.0 for lighter shades
+    if num_shades == 1:
+        values = [1.0]
+    else:
+        values = np.linspace(0.6, 1.0, num_shades)
+
+    shades = []
+    for value in values:
+        # Convert back to RGB
+        r, g, b = colorsys.hsv_to_rgb(h, s, value)
+        # Convert to hex
+        hex_color = to_hex((r, g, b, 1.0))
+        shades.append(hex_color)
+
+    return shades
+
+
+def _create_cluster_color_map(cluster_regions, base_colors):
+    """
+    Create a color map for regions based on their cluster membership.
+
+    Each cluster gets a base color, and regions within that cluster get
+    different shades of that base color.
+
+    Parameters:
+    -----------
+    cluster_regions : List[tuple]
+        List of (cluster_id, region_id) tuples for each region
+
+    base_colors : List[str]
+        List of base hex colors for each cluster
+
+    Returns:
+    --------
+    Dict[int, str]
+        Mapping from region_id to hex color
+    """
+    color_map = {}
+
+    # Group regions by cluster
+    clusters = {}
+    for cluster_id, region_id in cluster_regions:
+        if cluster_id not in clusters:
+            clusters[cluster_id] = []
+        clusters[cluster_id].append(region_id)
+
+    # Assign colors to regions
+    for cluster_id, regions in clusters.items():
+        if cluster_id < len(base_colors):
+            base_color = base_colors[cluster_id]
+        else:
+            # Cycle through colors if more clusters than base colors
+            base_color = base_colors[cluster_id % len(base_colors)]
+
+        # Generate shades for this cluster
+        num_regions = len(regions)
+        shades = _generate_cluster_shades(base_color, num_regions)
+
+        # Assign shades to regions
+        for idx, region_id in enumerate(regions):
+            color_map[region_id] = shades[idx]
+
+    return color_map
+
+
 # def plot_surface_dgrid(dgrid, isovalue, ase_atoms, region_labels=None, select='all', opacity=1.0, cscale=None,
 #                        color='blue', stepsize=1, stylize=False, random_seed=0):
 #     """
@@ -202,11 +327,11 @@ def plot_paths(rag, paths: list, colorscale: str='Pastel', **kwargs) -> list:
     return path_traces
 
 def plot_surface_dgrid(dgrid, isovalue, ase_atoms, region_labels=None, select='all', opacity=1.0, cscale=None,
-                       color='blue', stepsize=1, stylize=False, random_seed=0, hover_label='Region :', **kwargs_mesh):
+                       color='blue', stepsize=1, stylize=False, random_seed=0, hover_label='Region :', region_color_map=None, **kwargs_mesh):
     """
     It takes a 3D grid, an isovalue, an ASE atoms object, and a few other optional parameters and
     returns a plotly mesh3d object that can be plotted using plotly
-    
+
     Args:
       dgrid: the density grid
       isovalue: the value of the isosurface to be plotted
@@ -223,7 +348,10 @@ def plot_surface_dgrid(dgrid, isovalue, ase_atoms, region_labels=None, select='a
     False
       random_seed: This is used to generate the random colors for the regions. If you want to reproduce
     the same colors, use the same random seed. Defaults to 0
-    
+      region_color_map: a dictionary mapping region_id to hex color. If provided, overrides cscale.
+    This is used for cluster-based coloring where each cluster gets a base color and regions
+    within that cluster get different shades.
+
     Returns:
       a plotly mesh3d object.
     """
@@ -301,15 +429,33 @@ def plot_surface_dgrid(dgrid, isovalue, ase_atoms, region_labels=None, select='a
         #  Find the actual coordinates of the vertices for plotting
         hovertext = [hover_label + str(int(c)) for c in colours]
         true_verts = np.dot(cell, (verts / region_labels.shape).T).T
-        
-        # Map colours to the full colorscale range
-        colour_indices = colours.astype(int) - 1  # Adjust for 0-based indexing
-        
-        data_plot = go.Mesh3d(x=true_verts[:, 0], y=true_verts[:, 1], z=true_verts[:, 2], 
-                              intensity=colour_indices, intensitymode='vertex',
-                              hoverinfo='all', hovertext=hovertext, flatshading=False, 
-                              colorscale=cscale, i=faces[:, 0], j=faces[:, 1], k=faces[:, 2], 
-                              opacity=opacity, name=name, showlegend=showlegend, **kwargs_mesh)
+
+        # Use region_color_map if provided, otherwise use cscale
+        if region_color_map is not None:
+            # Use custom color map (for cluster-based coloring)
+            vertex_colors = []
+            for c in colours:
+                region_id = int(c)
+                if region_id in region_color_map:
+                    vertex_colors.append(region_color_map[region_id])
+                else:
+                    # Fallback to gray for unmapped regions
+                    vertex_colors.append(f'rgba(200,200,200,{opacity})')
+
+            data_plot = go.Mesh3d(x=true_verts[:, 0], y=true_verts[:, 1], z=true_verts[:, 2],
+                                  vertexcolor=vertex_colors,
+                                  hoverinfo='all', hovertext=hovertext, flatshading=False,
+                                  i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
+                                  opacity=opacity, name=name, showlegend=showlegend, showscale=False, **kwargs_mesh)
+        else:
+            # Map colours to the full colorscale range
+            colour_indices = colours.astype(int) - 1  # Adjust for 0-based indexing
+
+            data_plot = go.Mesh3d(x=true_verts[:, 0], y=true_verts[:, 1], z=true_verts[:, 2],
+                                  intensity=colour_indices, intensitymode='vertex',
+                                  hoverinfo='all', hovertext=hovertext, flatshading=False,
+                                  colorscale=cscale, i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
+                                  opacity=opacity, name=name, showlegend=showlegend, **kwargs_mesh)
     else:
         true_verts = np.dot(cell, (verts / dgrid.shape).T).T
         data_plot = go.Mesh3d(x=true_verts[:, 0], y=true_verts[:, 1], z=true_verts[:, 2],
@@ -2666,7 +2812,75 @@ def plot_pld_locations(dgrid, pld_locations, ase_atoms, show_spheres=False, sphe
         return scatter, mesh
     else:
         return scatter
-def plot_percolated_cluster_meshes(percolation_history, distance_grid, regions, ase_atoms, probe_radius=None, isovalue=1.6, **kwargs):
+def _shade_from_base(rgb, factor):
+    r, g, b = rgb
+    return (
+        min(255, int(r * factor)),
+        min(255, int(g * factor)),
+        min(255, int(b * factor)),
+    )
+
+
+def _nudge_hue(rgb, delta_deg):
+    import colorsys
+    r, g, b = [x / 255.0 for x in rgb]
+    h, l, s = colorsys.rgb_to_hls(r, g, b)
+    h = (h + delta_deg / 360.0) % 1.0
+    r2, g2, b2 = colorsys.hls_to_rgb(h, l, s)
+    return (int(r2 * 255), int(g2 * 255), int(b2 * 255))
+
+
+def _adjust_hls(rgb, light_factor, sat_factor, hue_deg):
+    import colorsys
+    r, g, b = [x / 255.0 for x in rgb]
+    h, l, s = colorsys.rgb_to_hls(r, g, b)
+    h = (h + hue_deg / 360.0) % 1.0
+    l = max(0.0, min(1.0, l * light_factor))
+    s = max(0.0, min(1.0, s * sat_factor))
+    r2, g2, b2 = colorsys.hls_to_rgb(h, l, s)
+    return (int(r2 * 255), int(g2 * 255), int(b2 * 255))
+
+
+def _with_opacity(color_str, opacity):
+    if isinstance(color_str, str) and color_str.startswith("#") and len(color_str) == 7:
+        r = int(color_str[1:3], 16)
+        g = int(color_str[3:5], 16)
+        b = int(color_str[5:7], 16)
+        return f"rgba({r},{g},{b},{opacity})"
+    if isinstance(color_str, str) and color_str.startswith("rgb"):
+        nums = color_str.strip("rgba()").split(",")
+        nums = [int(float(x)) for x in nums[:3]]
+        return f"rgba({nums[0]},{nums[1]},{nums[2]},{opacity})"
+    return color_str
+
+
+def _parse_color_to_rgb(color, fallback=(99, 110, 250)):
+    if isinstance(color, str):
+        s = color.strip()
+        if s.startswith("#") and len(s) >= 7:
+            try:
+                return tuple(int(s[i : i + 2], 16) for i in (1, 3, 5))
+            except Exception:
+                pass
+        if s.lower().startswith("rgb"):
+            try:
+                import re
+
+                nums = re.findall(r"\d+", s)
+                if len(nums) >= 3:
+                    vals = [int(min(255, max(0, float(x)))) for x in nums[:3]]
+                    return tuple(vals)
+            except Exception:
+                pass
+    elif isinstance(color, (list, tuple)):
+        if len(color) >= 3 and all(isinstance(x, (int, float)) for x in color[:3]):
+            return tuple(int(min(255, max(0, x))) for x in color[:3])
+        if len(color) >= 1 and isinstance(color[0], str):
+            return _parse_color_to_rgb(color[0], fallback)
+    return fallback
+
+
+def plot_percolated_cluster_meshes(percolation_history, distance_grid, regions, ase_atoms, probe_radius=None, isovalue=1.6, cscale=None, **kwargs):
     """
     Generate mesh traces for percolated clusters at a given probe radius.
 
@@ -2684,13 +2898,17 @@ def plot_percolated_cluster_meshes(percolation_history, distance_grid, regions, 
         The probe radius to visualize. If None, use the last entry in percolation_history.
     isovalue : float, optional
         The isovalue for the surface plot. Default is 0.5.
+    cscale : list, str, or None, optional
+        Color scale for clusters. Can be a list of colors, a palette name (e.g., 'Pastel', 'Plotly'),
+        or None for default palette.
     **kwargs : dict
         Additional keyword arguments to pass to plot_surface_dgrid.
 
     Returns:
     --------
     list
-        A list of plotly.graph_objects.Mesh3d objects representing the percolated clusters.
+        A list of plotly.graph_objects.Mesh3d and Scatter3d objects representing the percolated clusters
+        and their boundaries.
     """
     if probe_radius is None:
         entry = percolation_history[-1]
@@ -2712,26 +2930,195 @@ def plot_percolated_cluster_meshes(percolation_history, distance_grid, regions, 
                 unique_components[comp_key] = [axis]
 
     mesh_traces = []
+    opacity = kwargs.get("opacity", 1.0)
+    user_cscale = cscale
+    try:
+        import plotly.express as px
+        default_palette = px.colors.qualitative.Plotly
+    except Exception:
+        default_palette = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A", "#19D3F3"]
+
+    # Optional: boundary styling
+    boundary_line_width = kwargs.pop("boundary_line_width", 1)
+    boundary_line_color = kwargs.pop("boundary_line_color", "black")
 
     # Generate mesh for each unique component
     for i, (comp, axes) in enumerate(unique_components.items(), 1):
         # Get direction labels
         dir_labels = ['x' if 0 in axes else '', 'y' if 1 in axes else '', 'z' if 2 in axes else '']
         dir_str = ''.join(dir_labels)
-        
-        # Generate the mesh
+
+        # Build a per-cluster colorscale: same base color, distinct shades per region
+        max_region = int(regions.max()) if hasattr(regions, "max") else 0
+        # Choose a palette: user-provided if present, otherwise default
+        palette = None
+        if user_cscale is not None:
+            if isinstance(user_cscale, (list, tuple)) and len(user_cscale) > 0:
+                palette = list(user_cscale)
+            elif isinstance(user_cscale, str):
+                try:
+                    import plotly.express as px
+                    palette = list(getattr(px.colors.qualitative, user_cscale))
+                except Exception:
+                    try:
+                        import plotly.express as px
+                        palette = list(getattr(px.colors.sequential, user_cscale))
+                    except Exception:
+                        palette = None
+        if not palette:
+            palette = default_palette
+
+        base_color_raw = palette[(i - 1) % len(palette)]
+        base_rgb = _parse_color_to_rgb(base_color_raw, (99, 110, 250))
+        if not (isinstance(base_rgb, tuple) and len(base_rgb) == 3):
+            base_rgb = (99, 110, 250)
+        comp_sorted = list(sorted(comp))
+
+        # Shade variations (lightness/saturation/hue) without remapping labels
+        shades = {}
+        if comp_sorted:
+            if len(comp_sorted) == 1:
+                shades[comp_sorted[0]] = base_rgb
+            else:
+                import numpy as np
+                n_regions = len(comp_sorted)
+                light_low, light_high = 0.92, 1.06
+                sat_low, sat_high = 0.95, 1.05
+                hue_span = 10.0
+
+                light_factors = np.linspace(light_low, light_high, n_regions)
+                sat_factors = np.linspace(sat_low, sat_high, n_regions)
+                hue_offsets = np.linspace(-hue_span / 2.0, hue_span / 2.0, n_regions)
+                for idx, label in enumerate(comp_sorted):
+                    shaded = _adjust_hls(
+                        base_rgb,
+                        light_factor=light_factors[idx],
+                        sat_factor=sat_factors[idx],
+                        hue_deg=hue_offsets[idx],
+                    )
+                    shades[label] = shaded
+
+        cvals = np.linspace(0, 1, max_region) if max_region > 0 else []
+        cscale = []
+        for reg_idx in range(1, max_region + 1):
+            rgb = shades.get(reg_idx, base_rgb)
+            cscale.append(
+                [
+                    cvals[reg_idx - 1] if len(cvals) > 0 else 0,
+                    f"rgba({rgb[0]},{rgb[1]},{rgb[2]},{opacity})",
+                ]
+            )
+
+        # Generate the mesh using colorscale/intensity path (reference behavior)
         mesh = plot_surface_dgrid(
-            distance_grid, 
-            isovalue, 
-            ase_atoms, 
+            distance_grid,
+            isovalue,
+            ase_atoms,
             region_labels=regions,
             select=comp,
             name=f'Component {i}_{dir_str}',
+            cscale=cscale if cscale else None,
             **kwargs
         )
-        mesh.legendgroup = 'percolated'
-        mesh.legendgrouptitle = dict(text='Percolated Clusters')
+        mesh_name = mesh.name if getattr(mesh, "name", None) else f"Component {i}_{dir_str}"
+        legend_group_name = f"cluster_{i}_{dir_str}"
+        if getattr(mesh, "hovertext", None) is not None:
+            try:
+                mesh.hovertext = [f"{ht}<br>{mesh_name}" for ht in mesh.hovertext]
+                mesh.hovertemplate = "%{hovertext}<br>x:%{x:.2f} y:%{y:.2f} z:%{z:.2f}<extra></extra>"
+            except Exception:
+                mesh.hovertemplate = f"{mesh_name}<br>x:%{{x:.2f}} y:%{{y:.2f}} z:%{{z:.2f}}<extra></extra>"
+        else:
+            mesh.hovertemplate = f"{mesh_name}<br>x:%{{x:.2f}} y:%{{y:.2f}} z:%{{z:.2f}}<extra></extra>"
+        mesh.legendgroup = legend_group_name
+        mesh.legendgrouptitle = dict(text=f'Cluster {i}_{dir_str}')
         mesh_traces.append(mesh)
+
+        # Boundary lines per region pair: highlight seams between different region labels
+        try:
+            from skimage.measure import marching_cubes as mc
+            import numpy as np
+            import plotly.graph_objects as go
+
+            # Re-run marching cubes on the selection to get verts/faces/labels
+            # Build a mask selecting only the desired regions
+            if comp != "all":
+                mask = np.isin(regions, comp)
+                comp_set = set(int(x) for x in comp)
+            else:
+                mask = np.ones_like(regions, dtype=bool)
+                comp_set = None
+            verts, faces, normals, values = mc(distance_grid, isovalue, step_size=1, mask=mask)
+
+            # Interpolate region labels at verts (nearest)
+            xx = np.linspace(0, regions.shape[0] - 1, regions.shape[0])
+            yy = np.linspace(0, regions.shape[1] - 1, regions.shape[1])
+            zz = np.linspace(0, regions.shape[2] - 1, regions.shape[2])
+            from scipy.interpolate import RegularGridInterpolator as RGI
+            # Interpolate over full regions; we filter out-of-cluster edges below
+            rl = RGI((xx, yy, zz), regions, method="nearest", bounds_error=False, fill_value=0)
+            colours = rl(verts)
+
+            # Find boundary edges keyed by region pair
+            boundary_edges = {}
+            for f in faces:
+                vids = [int(v) for v in f]
+                labels = [int(colours[v]) for v in vids]
+                # For each edge of the triangle
+                edges = [(vids[0], vids[1]), (vids[1], vids[2]), (vids[2], vids[0])]
+                edge_labels = [(labels[0], labels[1]), (labels[1], labels[2]), (labels[2], labels[0])]
+                for (u, v), (lu, lv) in zip(edges, edge_labels):
+                    if lu == lv:
+                        continue
+                    if lu <= 0 or lv <= 0:
+                        continue
+                    if comp_set is not None and ((lu not in comp_set) or (lv not in comp_set)):
+                        continue
+                    key = tuple(sorted((lu, lv)))
+                    ekey = tuple(sorted((u, v)))
+                    boundary_edges.setdefault(key, set()).add(ekey)
+
+            if boundary_edges:
+                import ase
+                cell = ase.geometry.complete_cell(ase_atoms.get_cell()).T
+                verts_scaled = verts / np.array(regions.shape)
+                true_verts = np.dot(cell, verts_scaled.T).T
+                for (r1, r2), edgeset in boundary_edges.items():
+                    xs = []
+                    ys = []
+                    zs = []
+                    for (u, v) in edgeset:
+                        xs.extend([true_verts[u, 0], true_verts[v, 0], None])
+                        ys.extend([true_verts[u, 1], true_verts[v, 1], None])
+                        zs.extend([true_verts[u, 2], true_verts[v, 2], None])
+
+                    if xs:
+                        # Ensure legendgrouptitle is a dict or None, not a Legendgrouptitle object
+                        legend_title = None
+                        if getattr(mesh, "legendgrouptitle", None):
+                            # Extract text from Legendgrouptitle object if available
+                            if hasattr(mesh.legendgrouptitle, "text"):
+                                legend_title = dict(text=mesh.legendgrouptitle.text)
+                            elif isinstance(mesh.legendgrouptitle, dict):
+                                legend_title = mesh.legendgrouptitle
+
+                        boundary_trace = go.Scatter3d(
+                            x=xs,
+                            y=ys,
+                            z=zs,
+                            mode="lines",
+                            line=dict(color=boundary_line_color, width=boundary_line_width),
+                            name=f"Boundary {r1}-{r2}",
+                            legendgroup=legend_group_name,
+                            legendgrouptitle=legend_title,
+                            showlegend=False,
+                            hoverinfo="skip",
+                            legendrank=1001,
+                        )
+                        mesh_traces.append(boundary_trace)
+        except Exception:
+            # If boundary extraction fails, skip silently
+            pass
 
     return mesh_traces
 def plot_electrostatic_volume(potential_V, cell, atoms):

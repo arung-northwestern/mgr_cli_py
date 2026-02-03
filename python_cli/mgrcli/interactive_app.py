@@ -102,8 +102,8 @@ if __package__ is None or __package__ == "":  # pragma: no cover - streamlit ent
     import sys
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from python_cli.mcli.cli import compute_dgrid_rust, python_do_periodic_segmentation_rust, get_pbc_groups
-    from python_cli.mcli.plotting import (
+    from python_cli.mgrcli.cli import compute_dgrid_rust, python_do_periodic_segmentation_rust, get_pbc_groups
+    from python_cli.mgrcli.plotting import (
         show_mof,
         STYLIZE_LIGHTING,
         STYLIZE_LIGHTPOSITION,
@@ -135,8 +135,17 @@ def _get_sample_cifs() -> Dict[str, Path]:
     return samples
 
 
-def _auto_parameters(mat_atoms, spacing: float) -> Dict[str, float]:
-    dgrid = compute_dgrid_rust(mat_atoms, spacing)
+def _auto_parameters(mat_atoms, spacing: float, use_aabb_method: bool = False, block_size: int = 50000) -> Dict[str, float]:
+    # Compute distance grid using selected method
+    if use_aabb_method:
+        # Use CPU-based AABB method with dask
+        from mgr.compute import dgrid_from_atoms_cpu
+        dgrid = dgrid_from_atoms_cpu(mat_atoms, spacing=spacing, block_size=block_size)
+        # Convert to float32 as required by Rust segmentation function
+        dgrid = dgrid.astype(np.float32)
+    else:
+        # Use Rust exact method (default)
+        dgrid = compute_dgrid_rust(mat_atoms, spacing)
     pore_limiting_radius = mgr.find_pore_limiting_radius(dgrid)
     mask_thickness = float(np.clip(pore_limiting_radius - 0.25, 0.1, 0.5))
     h_value = float(max(estimate_h_from_percolation_history(dgrid) - 0.1, 0.2))
@@ -185,8 +194,30 @@ def _compute_pld_analysis(
     mat_atoms,
     spacing: float,
     mask_thickness: float,
+    h_value: float,
+    threshold_abs: float,
+    min_distance: float,
+    extra_padding: float,
+    force_cpu_dgrid: bool = True,
 ) -> Dict[str, Any]:
-    prepared = prepare_results_for_plot(results, mat_atoms)
+    # For percolation, use CPU dgrid + fresh segmentation to match reference behavior.
+    if force_cpu_dgrid:
+        dgrid = mgr.dgrid_from_atoms_cpu(mat_atoms, spacing=spacing).astype(np.float32)
+        analysis_results = mgr.do_periodic_segmentation_rust(
+            dgrid,
+            mat_atoms,
+            spacing=spacing,
+            mask_thickness=mask_thickness,
+            h=h_value,
+            threshold_abs=threshold_abs,
+            min_distance=min_distance,
+            extra_padding=extra_padding,
+            return_dgrid=True,
+        )
+        prepared = prepare_results_for_plot(analysis_results, mat_atoms)
+    else:
+        analysis_results = results
+        prepared = prepare_results_for_plot(results, mat_atoms)
 
     dgrid = np.asarray(prepared.get("dgrid"))
     print('Got grid')
@@ -196,14 +227,14 @@ def _compute_pld_analysis(
     if dgrid is None or regions is None or dgrid.size == 0 or regions.size == 0:
         raise ValueError("Segmentation results are missing distance grid or regions.")
 
-    maxima_raw = np.asarray(results.get("all_maxima", []), dtype=int)
+    maxima_raw = np.asarray(analysis_results.get("all_maxima", []), dtype=int)
 
     if maxima_raw.ndim == 1:
         maxima_raw = maxima_raw.reshape(-1, 3) if maxima_raw.size else np.empty((0, 3), dtype=int)
     if maxima_raw.ndim != 2:
         maxima_raw = np.empty((0, 3), dtype=int)
 
-    unique_regions = np.asarray(results.get("unique_regions", []), dtype=int)
+    unique_regions = np.asarray(analysis_results.get("unique_regions", []), dtype=int)
 
     # if unique_regions.size:
     #     max_label = int(unique_regions.max())
@@ -216,16 +247,29 @@ def _compute_pld_analysis(
     # max_label = min(max_label, maxima_raw.shape[0])
     # maxima = maxima_raw[:max_label] if max_label > 0 else np.empty((0, 3), dtype=int)
 
-    lcd, pld, dfsd, _ = mgr.get_pore_dia_mgr(mat_atoms, dgrid=dgrid, kwargs=dict(spacing=spacing))
-    print('got pore dia')
-
-    percolation_history, pld_locations, _, _, _ = mgr.compute_percolation_history(
-        distance_grid=dgrid,
-        regions=regions,
-        maxima=maxima_raw, 
-        kwargs=dict(mask_thickness=mask_thickness, spacing=spacing),
+    # Use winding percolation for pore diameter analysis
+    lcd, pld, dfsd, _ = mgr.winding_percolation.get_pore_dia_mgr_winding(
+        mat_atoms=mat_atoms,
+        dgrid=dgrid,
+        kwargs=dict(
+            spacing=spacing,
+            mask_thickness=mask_thickness,
+            h=h_value,
+            threshold_abs=threshold_abs,
+            min_distance=min_distance,
+            extra_padding=extra_padding,
+        ),
+        results=analysis_results,
     )
-    print('got percolation hist')
+    print('got pore dia (winding)')
+
+    # Use winding percolation for percolation history
+    percolation_history, pld_locations, final_clusters = mgr.winding_percolation.compute_percolation_history_winding(
+        analysis_results,
+        step=0.05,
+        expand_components=False,
+    )
+    print('got percolation hist (winding)')
 
     pld_locations = np.asarray(pld_locations)
 
@@ -240,9 +284,10 @@ def _compute_pld_analysis(
     rag.graph["regions"] = regions
     rag.graph["ase_atoms"] = mat_atoms
 
+    # Match reference behavior: isovalue tracks probe radius with caps.
     percolation_isovalue = float(
         np.clip(
-            np.min([pld / 2.0 - 0.25, mask_thickness + 0.5, 1.75]),
+            np.min([pld / 2.0 - 0.25, 1.75]),
             0.1,
             None,
         )
@@ -261,6 +306,7 @@ def _compute_pld_analysis(
         "regions": regions,
         "connections": connections_filtered,
         "isovalue": percolation_isovalue,
+        "percolation_source": "cpu_dgrid" if force_cpu_dgrid else "segmentation_results",
     }
 
 
@@ -351,6 +397,26 @@ def main() -> None:
         help="Grid spacing in Angstroms. Smaller values increase resolution and runtime.",
     )
 
+    # Distance grid computation method selection
+    use_aabb_method = st.checkbox(
+        "Use Python AABB (CPU) method for distance grid",
+        value=False,
+        help="Use the CPU-based AABB (Axis-Aligned Bounding Box) method with Freud library instead of Rust exact method. "
+             "This uses dask for parallelization and may be useful for very large systems or when Rust is unavailable."
+    )
+
+    block_size = 50000  # Default block size for AABB method
+    if use_aabb_method:
+        block_size = st.number_input(
+            "AABB Block Size (number of grid points per worker)",
+            value=50000,
+            min_value=1000,
+            max_value=200000,
+            step=5000,
+            help="Number of grid points processed by each dask worker. Larger values use more memory but may be faster. "
+                 "Default is 50000. Adjust based on your system's available RAM."
+        )
+
     auto_set_params = st.checkbox("Auto set parameters", value=True)
     
     # Minimum box thickness option
@@ -372,15 +438,22 @@ def main() -> None:
         )
 
     param_state = st.session_state.setdefault("param_cache", {})
-    cache_key = f"{getattr(cif_path, 'name', 'uploaded')}::{spacing:.3f}"
+    # Include method and block_size in cache key to avoid incorrect cache hits
+    cache_key = f"{getattr(cif_path, 'name', 'uploaded')}::{spacing:.3f}::aabb={use_aabb_method}::bs={block_size}"
     if auto_set_params and cache_key not in param_state:
         with st.spinner("Computing suggested parameters..."):
-            param_state[cache_key] = _auto_parameters(atoms, spacing)
+            param_state[cache_key] = _auto_parameters(atoms, spacing, use_aabb_method, block_size)
 
     current_params = param_state.get(cache_key)
     if current_params is None:
+        # Fallback if auto-computation failed
+        if use_aabb_method:
+            from mgr.compute import dgrid_from_atoms_cpu
+            dgrid = dgrid_from_atoms_cpu(atoms, spacing=spacing, block_size=block_size).astype(np.float32)
+        else:
+            dgrid = compute_dgrid_rust(atoms, spacing)
         current_params = {
-            "dgrid": compute_dgrid_rust(atoms, spacing),
+            "dgrid": dgrid,
             "mask_thickness": 1.5,
             "h": 0.4,
             "surface_value": 2.0,
@@ -768,6 +841,10 @@ def main() -> None:
                             atoms,
                             spacing=float(metadata.get("spacing", spacing)),
                             mask_thickness=float(metadata.get("mask_thickness", mask_thickness)),
+                            h_value=float(h_value),
+                            threshold_abs=float(threshold_abs),
+                            min_distance=float(min_distance),
+                            extra_padding=float(extra_padding),
                         )
                     except Exception as exc:
                         st.error(f"Percolation analysis failed: {exc}")
@@ -820,17 +897,24 @@ def main() -> None:
                     try:
                         # Ensure plotly express is accessible for color scale
                         import plotly.express as px
+                        isovalue = min(float(selected_radius) - 0.25, 1.75)
+                        if isovalue <= 0:
+                            raise ValueError(
+                                f"Probe radius {selected_radius:.2f} Å is too small to plot percolated clusters."
+                            )
                         cluster_traces = mgr.plot_percolated_cluster_meshes(
                             analysis["percolation_history"],
                             analysis["dgrid"],
-                        analysis["regions"],
-                        atoms,
-                        probe_radius=selected_radius,
-                        isovalue=analysis["isovalue"],
-                        stylize=True,
-                        opacity=1.0,
-                        cscale = px.colors.qualitative.Pastel,
-                    )
+                            analysis["regions"],
+                            atoms,
+                            probe_radius=selected_radius,
+                            isovalue=isovalue,
+                            stylize=True,
+                            opacity=1.0,
+                            cscale=px.colors.qualitative.Pastel,
+                            boundary_line_width=1,
+                            boundary_line_color="black",
+                        )
                     except ValueError as exc:
                         st.error(str(exc))
                         cluster_traces = []
@@ -1077,6 +1161,10 @@ def main() -> None:
                                 atoms,
                                 spacing=float(metadata.get("spacing", spacing)),
                                 mask_thickness=float(metadata.get("mask_thickness", mask_thickness)),
+                                h_value=float(h_value),
+                                threshold_abs=float(threshold_abs),
+                                min_distance=float(min_distance),
+                                extra_padding=float(extra_padding),
                             )
                             pld_cache[cache_key] = percolation_analysis
 

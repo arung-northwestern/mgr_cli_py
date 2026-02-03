@@ -4,11 +4,11 @@ Test script to compare direct Python usage vs CLI
 """
 import numpy as np
 import time
-import mcli
+import mgrcli
 
 # Import the Rust library directly
-import mcli_rust
-rust_lib = mcli_rust
+import mgrcli_rust
+rust_lib = mgrcli_rust
 
 def test_direct_python():
     """Test calling the Rust function directly from Python"""

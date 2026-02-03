@@ -3,15 +3,16 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "mcli"
+name = "mgrcli"
 version = "0.1.0"
 description = "A command-line interface for analyzing Metal-Organic Frameworks (MOFs)"
-authors = [
-    {name = "MOF Analysis Team"},
-]
 readme = "README.md"
-license = {text = "MIT"}
 requires-python = ">=3.8"
+license = {text = "MIT"}
+keywords = ["mof", "metal-organic-frameworks", "materials-analysis", "cli"]
+authors = [
+    {name = "MOF Analysis Team"}
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -22,27 +23,25 @@ classifiers = [
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Rust",
     "Topic :: Scientific/Engineering :: Chemistry",
     "Topic :: Scientific/Engineering :: Physics",
 ]
-keywords = ["mof", "metal-organic-frameworks", "materials-analysis", "cli"]
 dependencies = [
-    "numpy>=1.20.0",
+    "numpy>=1.20.0,<2.4",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest",
-    "ase",
-    "streamlit",
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
 ]
 
 [project.scripts]
-mcli = "mcli.cli:main"
+mgrcli = "mgrcli.cli:main"
 
 [tool.maturin]
 python-source = "python_cli"
-module-name = "mcli_rust"
-features = ["pyo3/extension-module"]
-cargo-extra-args = ["--release"]
+module-name = "mgrcli_rust"
+bindings = "pyo3"

@@ -133,7 +133,7 @@ cargo --version  # Should show cargo version
 ```bash
 # Clone the repository (replace with actual repository URL)
 git clone https://github.com/your-username/mgr_standalone.git
-cd mgr_standalone/mcli_rust
+cd mgr_standalone/mgrcli_rust
 
 # Install Python dependencies (numpy optional)
 pip install -r requirements.txt
@@ -148,20 +148,20 @@ pip install -e .
 
 ```bash
 # Test the installation
-mcli --help
+mgrcli --help
 
 # Process your first CIF file
-mcli process your_file.cif
+mgrcli process your_file.cif
 ```
 
 **What happens during installation:**
 1. **Rust Compilation**: High-performance segmentation algorithms are compiled
 2. **Python Bindings**: PyO3 creates seamless Python↔Rust interface
-3. **CLI Setup**: `mcli` command becomes available globally
+3. **CLI Setup**: `mgrcli` command becomes available globally
 
 ### 🎯 **Expected Results**
 - Installation time: ~5-10 minutes
-- CLI command: `mcli` (available globally)
+- CLI command: `mgrcli` (available globally)
 - Full functionality: All features available
 - Dependencies: Python + compiled Rust extension
 
@@ -188,15 +188,15 @@ pip install pyinstaller
 
 # Clone and enter the repository (replace with actual repository URL)
 git clone https://github.com/your-username/mgr_standalone.git
-cd mgr_standalone/mcli_rust
+cd mgr_standalone/mgrcli_rust
 
 # Build standalone executable (28MB, numpy-free)
-pyinstaller --onefile --name mcli \
-    --hidden-import=mcli_rust \
-    python_cli/mcli/cli_standalone.py
+pyinstaller --onefile --name mgrcli \
+    --hidden-import=mgrcli_rust \
+    python_cli/mgrcli/cli_standalone.py
 
-# Find your executable in dist/mcli_standalone
-ls -lh dist/mcli_standalone  # Should show ~28MB
+# Find your executable in dist/mgrcli_standalone
+ls -lh dist/mgrcli_standalone  # Should show ~28MB
 ```
 
 > **Note**: Replace `https://github.com/your-username/mgr_standalone.git` with the actual repository URL.
@@ -205,14 +205,14 @@ ls -lh dist/mcli_standalone  # Should show ~28MB
 
 ```bash
 # Make executable (Linux/macOS)
-chmod +x dist/mcli_standalone
+chmod +x dist/mgrcli_standalone
 
 # Test it works
-./dist/mcli_standalone --help
+./dist/mgrcli_standalone --help
 
 # Process your CIF files
-./dist/mcli_standalone process your_structure.cif
-./dist/mcli_standalone process *.cif -o ./results/
+./dist/mgrcli_standalone process your_structure.cif
+./dist/mgrcli_standalone process *.cif -o ./results/
 ```
 
 ### 🎯 **Expected Results**
@@ -240,13 +240,13 @@ chmod +x dist/mcli_standalone
 
 ### Common Issues
 
-**"mcli command not found"**
+**"mgrcli command not found"**
 ```bash
 # Check if installation succeeded
-pip list | grep mcli
+pip list | grep mgrcli
 
 # Try using Python module directly
-python -m mcli.cli --help
+python -m mgrcli.cli --help
 ```
 
 **"Rust compilation failed"**
@@ -255,12 +255,12 @@ python -m mcli.cli --help
 rustup update
 
 # Clear build cache and retry
-pip uninstall mcli
+pip uninstall mgrcli
 rm -rf build/
 pip install -e .
 ```
 
-**"No module named 'mcli_rust'"**
+**"No module named 'mgrcli_rust'"**
 ```bash
 # The Rust extension didn't build properly
 # Check Rust installation and retry
@@ -272,14 +272,14 @@ cargo --version
 
 ```bash
 # Get detailed help
-mcli --help
+mgrcli --help
 
 # See all available commands
-mcli process --help
-mcli generate-config --help
+mgrcli process --help
+mgrcli generate-config --help
 
 # Check version and installation
-mcli --version
+mgrcli --version
 ```
 
 ## Quick Start
@@ -290,23 +290,23 @@ Once installed, MCLI is ready to analyze your CIF files:
 
 ```bash
 # Show the banner
-mcli --banner
+mgrcli --banner
 
 # Process a single CIF file with default settings
-mcli process my_structure.cif
+mgrcli process my_structure.cif
 
 # Process multiple CIF files
-mcli process *.cif -o ./results/
+mgrcli process *.cif -o ./results/
 
 # Process with custom parameters
-mcli process my_mof.cif --spacing 0.3 -H 0.5 --mask-thickness 0.8
+mgrcli process my_mof.cif --spacing 0.3 -H 0.5 --mask-thickness 0.8
 
 # Launch interactive web interface
-mcli interactive
+mgrcli interactive
 
 # Get help and see all options
-mcli --help
-mcli process --help
+mgrcli --help
+mgrcli process --help
 ```
 
 ### Expected Output
@@ -327,23 +327,23 @@ Each command generates:
 MCLI provides several commands for different tasks:
 
 ```bash
-mcli process          # Analyze CIF files with comprehensive segmentation and analysis
-mcli generate-config  # Create configuration files with custom parameters
-mcli config-building  # Interactive configuration builder with guided prompts
-mcli plot            # Generate Plotly visualizations from existing results
-mcli interactive     # Launch interactive Streamlit web application
+mgrcli process          # Analyze CIF files with comprehensive segmentation and analysis
+mgrcli generate-config  # Create configuration files with custom parameters
+mgrcli config-building  # Interactive configuration builder with guided prompts
+mgrcli plot            # Generate Plotly visualizations from existing results
+mgrcli interactive     # Launch interactive Streamlit web application
 ```
 
 ## Configuration
 
 ### Generate Default Config
 ```bash
-mcli generate-config -o config.json
+mgrcli generate-config -o config.json
 ```
 
 ### Customize Parameters
 ```bash
-mcli generate-config \
+mgrcli generate-config \
     --spacing 0.3 \
     -H 0.5 \
     --mask-thickness 0.8 \
@@ -353,7 +353,7 @@ mcli generate-config \
 
 ### Interactive Builder
 ```bash
-mcli config-building
+mgrcli config-building
 # Follow prompts to create custom configuration
 ```
 
@@ -405,7 +405,7 @@ mcli config-building
 ### Plot Command Options
 
 ```bash
-mcli plot results.npz [options]
+mgrcli plot results.npz [options]
 ```
 
 | Option | Description |
@@ -418,7 +418,7 @@ mcli plot results.npz [options]
 ### Interactive Command Options
 
 ```bash
-mcli interactive [options]
+mgrcli interactive [options]
 ```
 
 | Option | Description |
@@ -429,7 +429,7 @@ mcli interactive [options]
 ### Global Options
 
 ```bash
-mcli --banner
+mgrcli --banner
 ```
 
 | Option | Description |
@@ -437,7 +437,7 @@ mcli --banner
 | `--banner` | Display the Mofography CLI banner with developer information |
 | `--version` | Show version information |
 
-**Note**: To learn more about the developer, check out our cool banner with `mcli --banner`!
+**Note**: To learn more about the developer, check out our cool banner with `mgrcli --banner`!
 
 ## Output Format
 
@@ -463,25 +463,25 @@ Results saved as compressed NumPy files (`.npz`) containing:
 ### Basic Processing
 ```bash
 # Single file with defaults
-mcli process ZIF-8.cif
+mgrcli process ZIF-8.cif
 
 # Multiple files with custom output directory
-mcli process *.cif -o ./mof_analysis/
+mgrcli process *.cif -o ./mof_analysis/
 ```
 
 ### Advanced Analysis
 ```
 # High-resolution analysis with distance grid
-mcli process my_mof.cif \
+mgrcli process my_mof.cif \
     --spacing 0.25 \
     --mask-thickness 0.7 \
     --return-dgrid \
     --return-padded-regions
 
 # Detect pocket types and save RAG pickle
-mcli process my_mof.cif --types
+mgrcli process my_mof.cif --types
 # Save RAG pickle only (no clustering)
-mcli process my_mof.cif --rag
+mgrcli process my_mof.cif --rag
 # The RAG will be saved as my_mof_rag_clustered.pkl in the output directory.
 ```
 
@@ -489,13 +489,13 @@ mcli process my_mof.cif --rag
 ### Batch Processing with Config
 ```bash
 # Create optimized config for high-throughput
-mcli generate-config \
+mgrcli generate-config \
     --spacing 0.4 \
     -H 0.3 \
     --min-distance 2.0 > hts_config.json
 
 # Process entire dataset
-mcli process dataset/*.cif \
+mgrcli process dataset/*.cif \
     -c hts_config.json \
     -o ./hts_results/
 ```
@@ -503,13 +503,13 @@ mcli process dataset/*.cif \
 ### Research Workflow
 ```bash
 # 1. Explore with defaults
-mcli process initial_structure.cif
+mgrcli process initial_structure.cif
 
 # 2. Optimize parameters interactively
-mcli config-building > optimized_config.json
+mgrcli config-building > optimized_config.json
 
 # 3. Process with optimized settings
-mcli process all_structures/*.cif \
+mgrcli process all_structures/*.cif \
     -c optimized_config.json \
     -o ./research_results/
 ```
@@ -575,10 +575,10 @@ Test CIF files are available in the `cifs/` directory:
 
 ### Project Structure
 ```
-mcli_rust/
+mgrcli_rust/
 ├── src/lib.rs              # Rust core algorithms
 ├── python_cli/
-│   ├── mcli/
+│   ├── mgrcli/
 │   │   ├── __init__.py     # Package initialization
 │   │   └── cli.py          # CLI implementation
 │   └── tests/              # Python unit tests
@@ -635,11 +635,11 @@ For major changes, please open an issue first to discuss what you would like to 
 If you use MCLI in your research, please cite:
 (not a real citation, yet!)
 ```bibtex
-@software{mcli2024,
+@software{mgrcli2024,
   title={{MCLI: MOF Analysis CLI Tool}},
   author={MOF Analysis Team},
   year={2024},
-  url={https://github.com/your-repo/mcli}
+  url={https://github.com/your-repo/mgrcli}
 }
 ```
 
@@ -661,7 +661,7 @@ For users who want to create single-executable distributions or minimize depende
 The main CLI automatically detects if NumPy is available and falls back to the standalone implementation:
 
 ```python
-# In python_cli/mcli/cli.py
+# In python_cli/mgrcli/cli.py
 if not HAS_NUMPY:
     print("Warning: numpy not available, using standalone implementation")
 ```
@@ -670,7 +670,7 @@ if not HAS_NUMPY:
 Set the flag in the main CLI for guaranteed numpy-free operation:
 
 ```python
-# In python_cli/mcli/cli.py
+# In python_cli/mgrcli/cli.py
 USE_STANDALONE = True  # Forces numpy-free implementation
 ```
 
@@ -679,10 +679,10 @@ Use the completely separate standalone implementation:
 
 ```bash
 # Use the standalone version directly
-python python_cli/mcli/cli_standalone.py --help
+python python_cli/mgrcli/cli_standalone.py --help
 
 # Or create an alias
-alias mcli='python python_cli/mcli/cli_standalone.py'
+alias mgrcli='python python_cli/mgrcli/cli_standalone.py'
 ```
 
 ### Building Standalone Executables
@@ -694,18 +694,18 @@ alias mcli='python python_cli/mcli/cli_standalone.py'
 pip install pyinstaller
 
 # Build numpy-free executable (28MB)
-pyinstaller --onefile --name mcli \
-    --hidden-import=mcli_rust \
-    python_cli/mcli/cli_standalone.py
+pyinstaller --onefile --name mgrcli \
+    --hidden-import=mgrcli_rust \
+    python_cli/mgrcli/cli_standalone.py
 
 # Build numpy-enabled executable (47MB)
-pyinstaller --onefile --name mcli \
-    --hidden-import=mcli_rust \
-    python_cli/mcli/cli_numpy.py
+pyinstaller --onefile --name mgrcli \
+    --hidden-import=mgrcli_rust \
+    python_cli/mgrcli/cli_numpy.py
 
 # Test both executables
-./dist/mcli_standalone --help     # 28MB - numpy-free
-./dist/mcli_numpy --help          # 47MB - full numpy support
+./dist/mgrcli_standalone --help     # 28MB - numpy-free
+./dist/mgrcli_numpy --help          # 47MB - full numpy support
 ```
 
 ### Performance Comparison (Tested Results)
@@ -766,7 +766,7 @@ setuptools-rust
 
 ### CLI Default Configuration
 
-All CLI parameter defaults are defined in `python_cli/mcli/cli.py` lines 41-56:
+All CLI parameter defaults are defined in `python_cli/mgrcli/cli.py` lines 41-56:
 
 ```python
 DEFAULTS = {
@@ -791,10 +791,10 @@ DEFAULTS = {
 ### Key Files for Future Development
 
 - **`src/lib.rs`**: Main Rust backend - all core algorithms and data processing
-- **`python_cli/mcli/cli.py`**: Python CLI interface - argument parsing and result handling
+- **`python_cli/mgrcli/cli.py`**: Python CLI interface - argument parsing and result handling
 - **`setup.py`**: Build configuration - setuptools-rust for Rust/Python interop
 - **`Cargo.toml`**: Rust dependencies and build settings
-- **`python_cli/mcli/__init__.py`**: Package initialization
+- **`python_cli/mgrcli/__init__.py`**: Package initialization
 
 ### Build & Development Tips
 

@@ -38,6 +38,25 @@ Thumbs.db
 # Test outputs
 test_outputs/
 *_results.npz
+*_pore_dia.csv
+*_psd_*.csv
+
+# Test output HTML files
+*.html
+!docs/*.html
+
+# Build packages
+build_package/
+artifacts/
+
+# AI tools and cache
+.serena/
+.claude/
+.cursor/
+
+# Virtual environments
+mcli_env/
+.venv/
 
 # Compiled shared libraries
 *.so

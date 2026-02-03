@@ -22,13 +22,13 @@ fi
 
 # Create environment and install
 echo "🏗️  Creating environment and installing dependencies..."
-uv venv mcli_env
+uv venv mgrcli_env
 if [ $? -ne 0 ]; then
     echo "❌ Failed to create virtual environment"
     exit 1
 fi
 
-source mcli_env/bin/activate
+source mgrcli_env/bin/activate
 if [ $? -ne 0 ]; then
     echo "❌ Failed to activate virtual environment"
     exit 1
@@ -49,46 +49,46 @@ fi
 echo "🚀 Creating command-line launchers..."
 
 # CLI launcher
-cat > mcli << 'EOF'
+cat > mgrcli << 'EOF'
 #!/bin/bash
 cd "$(dirname "$0")"
-source mcli_env/bin/activate
-python python_cli/mcli/cli.py "$@"
+source mgrcli_env/bin/activate
+python python_cli/mgrcli/cli.py "$@"
 EOF
-chmod +x mcli
+chmod +x mgrcli
 
 # GUI launcher
-cat > mcli-gui << 'EOF'
+cat > mgrcli-gui << 'EOF'
 #!/bin/bash
 cd "$(dirname "$0")"
-source mcli_env/bin/activate
-streamlit run python_cli/mcli/interactive_app.py
+source mgrcli_env/bin/activate
+streamlit run python_cli/mgrcli/interactive_app.py
 EOF
-chmod +x mcli
+chmod +x mgrcli
 
 # Create desktop entry for Linux (if possible)
 if command -v desktop-file-install &> /dev/null && [ -d "$HOME/.local/share/applications" ]; then
     echo "🖥️  Creating desktop shortcuts..."
     CURRENT_DIR=$(pwd)
-    cat > ~/.local/share/applications/mcli.desktop << EOF
+    cat > ~/.local/share/applications/mgrcli.desktop << EOF
 [Desktop Entry]
 Version=1.0
 Type=Application
 Name=MCLI CLI
 Comment=Molecular Geometry Analysis CLI
-Exec=$CURRENT_DIR/mcli
+Exec=$CURRENT_DIR/mgrcli
 Icon=applications-utilities
 Terminal=true
 Categories=Science;
 EOF
 
-    cat > ~/.local/share/applications/mcli-gui.desktop << EOF
+    cat > ~/.local/share/applications/mgrcli-gui.desktop << EOF
 [Desktop Entry]
 Version=1.0
 Type=Application
 Name=MCLI GUI
 Comment=Molecular Geometry Analysis Web Interface
-Exec=$CURRENT_DIR/mcli-gui
+Exec=$CURRENT_DIR/mgrcli-gui
 Icon=applications-utilities
 Terminal=false
 Categories=Science;
@@ -99,13 +99,13 @@ echo ""
 echo "✅ Installation completed successfully!"
 echo ""
 echo "📋 Usage:"
-echo "  ./mcli --help                    # Show CLI help"
-echo "  ./mcli process structure.cif     # Process a CIF file"
-echo "  ./mcli-gui                       # Launch web interface"
+echo "  ./mgrcli --help                    # Show CLI help"
+echo "  ./mgrcli process structure.cif     # Process a CIF file"
+echo "  ./mgrcli-gui                       # Launch web interface"
 echo ""
 echo "🧪 Test with sample file:"
-echo "  ./mcli process cifs/ZIF-8-RASPA.cif"
+echo "  ./mgrcli process cifs/ZIF-8-RASPA.cif"
 echo ""
 echo "📚 Documentation: https://github.com/arung-northwestern/mgr_cli_py"
 echo ""
-echo "💡 Tip: Add $(pwd) to your PATH to use 'mcli' and 'mcli-gui' from anywhere"
+echo "💡 Tip: Add $(pwd) to your PATH to use 'mgrcli' and 'mgrcli-gui' from anywhere"

@@ -22,14 +22,14 @@ if errorlevel 1 (
 
 REM Create environment and install
 echo 🏗️  Creating environment and installing dependencies...
-uv venv mcli_env
+uv venv mgrcli_env
 if errorlevel 1 (
     echo ❌ Failed to create virtual environment
     pause
     exit /b 1
 )
 
-call mcli_env\Scripts\activate.bat
+call mgrcli_env\Scripts\activate.bat
 if errorlevel 1 (
     echo ❌ Failed to activate virtual environment
     pause
@@ -52,28 +52,28 @@ REM Create launcher scripts
 echo 🚀 Creating command-line launchers...
 
 REM CLI launcher
-echo @echo off > mcli.bat
-echo call "%%~dp0mcli_env\Scripts\activate.bat" >> mcli.bat
-echo python "%%~dp0python_cli\mcli\cli.py" %%* >> mcli.bat
+echo @echo off > mgrcli.bat
+echo call "%%~dp0mgrcli_env\Scripts\activate.bat" >> mgrcli.bat
+echo python "%%~dp0python_cli\mgrcli\cli.py" %%* >> mgrcli.bat
 
 REM GUI launcher
-echo @echo off > mcli-gui.bat
-echo call "%%~dp0mcli_env\Scripts\activate.bat" >> mcli-gui.bat
-echo streamlit run "%%~dp0python_cli\mcli\interactive_app.py" >> mcli-gui.bat
+echo @echo off > mgrcli-gui.bat
+echo call "%%~dp0mgrcli_env\Scripts\activate.bat" >> mgrcli-gui.bat
+echo streamlit run "%%~dp0python_cli\mgrcli\interactive_app.py" >> mgrcli-gui.bat
 
 REM Create desktop shortcuts using PowerShell
 echo 🖥️  Creating desktop shortcuts...
 powershell -Command ^
 "$WshShell = New-Object -comObject WScript.Shell; ^
 $Shortcut = $WshShell.CreateShortcut('%USERPROFILE%\Desktop\MCLI CLI.lnk'); ^
-$Shortcut.TargetPath = '%CD%\mcli.bat'; ^
+$Shortcut.TargetPath = '%CD%\mgrcli.bat'; ^
 $Shortcut.WorkingDirectory = '%CD%'; ^
 $Shortcut.Save()"
 
 powershell -Command ^
 "$WshShell = New-Object -comObject WScript.Shell; ^
 $Shortcut = $WshShell.CreateShortcut('%USERPROFILE%\Desktop\MCLI GUI.lnk'); ^
-$Shortcut.TargetPath = '%CD%\mcli-gui.bat'; ^
+$Shortcut.TargetPath = '%CD%\mgrcli-gui.bat'; ^
 $Shortcut.WorkingDirectory = '%CD%'; ^
 $Shortcut.Save()"
 
@@ -81,12 +81,12 @@ echo.
 echo ✅ Installation completed successfully!
 echo.
 echo 📋 Usage:
-echo   mcli.bat --help                    # Show CLI help
-echo   mcli.bat process structure.cif     # Process a CIF file
-echo   mcli-gui.bat                       # Launch web interface
+echo   mgrcli.bat --help                    # Show CLI help
+echo   mgrcli.bat process structure.cif     # Process a CIF file
+echo   mgrcli-gui.bat                       # Launch web interface
 echo.
 echo 🧪 Test with sample file:
-echo   mcli.bat process cifs\ZIF-8-RASPA.cif
+echo   mgrcli.bat process cifs\ZIF-8-RASPA.cif
 echo.
 echo 📚 Documentation: https://github.com/arung-northwestern/mgr_cli_py
 echo.

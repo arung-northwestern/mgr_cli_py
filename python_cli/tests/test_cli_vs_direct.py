@@ -4,7 +4,7 @@ Test script to compare CLI vs direct Python usage with identical parameters
 """
 import numpy as np
 import time
-import mcli_rust
+import mgrcli_rust
 from pathlib import Path
 
 def test_direct_python_exact():
@@ -13,7 +13,7 @@ def test_direct_python_exact():
 
     start_time = time.time()
 
-    result = mcli_rust.do_periodic_segmentation_rust(
+    result = mgrcli_rust.do_periodic_segmentation_rust(
         path_to_struct_file="cifs/LTA96.cif",
         spacing=0.5,
         mask_thickness=0.5,
