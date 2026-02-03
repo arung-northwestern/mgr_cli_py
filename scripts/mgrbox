@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+IMAGE_NAME="${IMAGE_NAME:-mgrcli:local}"
+DEFAULT_OUTPUT_DIR="${DEFAULT_OUTPUT_DIR:-$HOME/MGR_Results}"
+OUTPUT_DIR="${MGR_RESULTS_DIR:-$DEFAULT_OUTPUT_DIR}"
+
+mkdir -p "$OUTPUT_DIR"
+
+if [[ -z "${RAYON_NUM_THREADS:-}" ]]; then
+  if [[ -n "${MGR_RAYON_THREADS:-}" ]]; then
+    RAYON_NUM_THREADS="$MGR_RAYON_THREADS"
+  else
+    MEM_TOTAL_BYTES="$(docker info --format '{{.MemTotal}}' 2>/dev/null || true)"
+    GIB=$((1024 * 1024 * 1024))
+    if [[ -n "$MEM_TOTAL_BYTES" ]]; then
+      if (( MEM_TOTAL_BYTES <= 6 * GIB )); then
+        RAYON_NUM_THREADS=2
+      elif (( MEM_TOTAL_BYTES <= 10 * GIB )); then
+        RAYON_NUM_THREADS=4
+      elif (( MEM_TOTAL_BYTES <= 14 * GIB )); then
+        RAYON_NUM_THREADS=6
+      elif (( MEM_TOTAL_BYTES <= 20 * GIB )); then
+        RAYON_NUM_THREADS=8
+      else
+        RAYON_NUM_THREADS=10
+      fi
+    else
+      RAYON_NUM_THREADS=4
+    fi
+  fi
+fi
+
+docker run --rm \
+  -v "${PWD}:/work" \
+  -v "${OUTPUT_DIR}:/results" \
+  -w /work \
+  -e MGR_RESULTS_DIR=/results \
+  -e RAYON_NUM_THREADS="${RAYON_NUM_THREADS}" \
+  "$IMAGE_NAME" \
+  python -m mgrcli.cli "$@"

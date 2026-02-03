@@ -282,6 +282,42 @@ mgrcli generate-config --help
 mgrcli --version
 ```
 
+## Docker (Local)
+
+This provides a GUI-only path for the Streamlit app plus a short CLI wrapper.
+
+### Build + Run Streamlit
+```bash
+./scripts/docker_build_run.sh
+```
+You will be prompted to choose an output folder. The app runs at `http://localhost:8501`.
+
+### CLI Wrapper (`mgrbox`)
+The wrapper avoids conflicts with any pip-installed `mgrcli`.
+```bash
+# macOS/Linux
+./scripts/mgrbox --help
+
+# Windows (PowerShell)
+./scripts/mgrbox.ps1 --help
+```
+
+### Environment Overrides
+```bash
+# Image name
+IMAGE_NAME=mgrcli:local ./scripts/mgrbox --help
+
+# Output folder
+MGR_RESULTS_DIR="$HOME/MGR_Results" ./scripts/mgrbox process *.cif -o /results
+```
+
+### GUI Launcher Behavior (Spec)
+- Check Docker Desktop is installed/running
+- Prompt user to select output folder (default per OS)
+- Pull latest image on launch (auto-update)
+- Start container with bind mount to output folder
+- Open browser to `http://localhost:8501`
+
 ## Quick Start
 
 Once installed, MCLI is ready to analyze your CIF files:

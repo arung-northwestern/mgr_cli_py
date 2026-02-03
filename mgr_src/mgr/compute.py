@@ -3275,7 +3275,7 @@ def connections_from_regions_and_dgrid(
     from icecream import ic
     from sklearn.cluster import AgglomerativeClustering
     from sklearn.decomposition import PCA
-    from mofography import interpolate_labels, get_fractional_coordinates
+    from .helper import interpolate_labels, get_fractional_coordinates
     import dask.bag as db
 
     A_unit = ase.geometry.complete_cell(ase_atoms.get_cell()).T

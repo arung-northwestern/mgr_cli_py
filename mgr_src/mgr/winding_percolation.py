@@ -34,7 +34,8 @@ from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
 import networkx as nx
 import numpy as np
-import mofography as mgr
+from . import compute as mgr_compute
+from . import rust_fun as mgr_rust
 
 Offset = Tuple[int, int, int]
 
@@ -893,8 +894,10 @@ def get_pore_dia_mgr_winding(
         if dgrid is None:
             if mat_atoms is None:
                 raise ValueError("mat_atoms or results must be provided.")
-            dgrid = mgr.dgrid_from_atoms_cpu(mat_atoms, spacing=spacing, block_size=50000)
-        results = mgr.do_periodic_segmentation_rust(
+            dgrid = mgr_compute.dgrid_from_atoms_cpu(
+                mat_atoms, spacing=spacing, block_size=50000
+            )
+        results = mgr_rust.do_periodic_segmentation_rust(
             dgrid,
             mat_atoms,
             mask_thickness=kwargs.get("mask_thickness", 1.5),

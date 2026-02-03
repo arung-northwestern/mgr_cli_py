@@ -2517,7 +2517,6 @@ def draw_framework(ase_atoms, bond_orders=None, show_aromatics=True, show_atom_l
 
 
     # from ase.io import read
-    import mofography as mgr
     from ase import neighborlist
     from  .analyze import update_with_covalent_bonds
     # from ase.data import covalent_radii

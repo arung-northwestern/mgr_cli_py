@@ -59,15 +59,13 @@ def egrid_from_atoms_rust(
     :rtype: numpy.ndarray
     """
     import mcli_rust
-    import mofography as mgr
+    from .data import mix_lorentz_berthelot, repeat_to_meet_cutoff
     from ase.geometry import cellpar_to_cell
     from .compute import get_repetitions_to_meet_cutoff
     logger.info(f"Using {mcli_rust.rayon_num_threads()} threads for parallel processing")
     if forcefield_mixed is None:
-        forcefield_mixed = mgr.mix_lorentz_berthelot(
-            ase_atoms, probe_symbol=probe_symbol
-        )
-    mat_atoms_repeat, ff_repeat = mgr.repeat_to_meet_cutoff(
+        forcefield_mixed = mix_lorentz_berthelot(ase_atoms, probe_symbol=probe_symbol)
+    mat_atoms_repeat, ff_repeat = repeat_to_meet_cutoff(
         ase_atoms, forcefield_mixed=forcefield_mixed, cutoff=cutoff
     )
     eps, sig = ff_repeat[:, 0], ff_repeat[:, 1]
@@ -153,7 +151,7 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
 
     logger.info(f"Using {mcli_rust.rayon_num_threads()} threads for parallel processing")
     start_time = time()
-    from mofography import (
+    from .helper import (
         compute_wall_cells,
         move_maximum_to_peak,
         process_wall_maxima,
@@ -164,6 +162,8 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
         find_end_channel_pairs,
         merge_small_regions,
         merge_small_regions_pbc,
+    )
+    from .compute import (
         find_pore_limiting_radius,
         calculate_padding_thickness,
         detect_periodic_maxima_direct,
@@ -192,9 +192,9 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     plr = find_pore_limiting_radius(dgrid)
 
     logger.info(
-        f"time(s): {np.round(time() - start_time, decimals=2)} pore limiting radius is {
-            np.round(plr, decimals=2)
-        }\n"
+        "time(s): %s pore limiting radius is %s\n",
+        np.round(time() - start_time, decimals=2),
+        np.round(plr, decimals=2),
     )
     if (plr - 0.25) < mask_thickness:
         logger.warning(
@@ -234,9 +234,8 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     temp = np.ceil(merged_maxima)
     # compute wall cells
     logger.info(
-        f"time(s): {
-            np.round(time() - start_time, decimals=2)
-        } computing maxima with pbc\n"
+        "time(s): %s computing maxima with pbc\n",
+        np.round(time() - start_time, decimals=2),
     )
     # computed merged maxima nad regions_pbc!
     # padding_thickness=5
@@ -279,9 +278,8 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     )
 
     logger.info(
-        f"time(s): {
-            np.round(time() - start_time, decimals=2)
-        } computing regions with pbc \n"
+        "time(s): %s computing regions with pbc \n",
+        np.round(time() - start_time, decimals=2),
     )
     # compactness = 0
     # compute markers for padded, periodic segmentation
@@ -316,9 +314,9 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     )
 
     logger.info(
-        f"TIME(s): {
-            np.round(time() - start_time, decimals=2)
-        } Looking to remove regions smaller than {min_region_size} * dgrid.size"
+        "TIME(s): %s Looking to remove regions smaller than %s * dgrid.size",
+        np.round(time() - start_time, decimals=2),
+        min_region_size,
     )
     # clean up the regions_pbc from small regions, remove less than 0.1% of the total size, this is trickier than one would think. We want to find the volume % of just the box, then make our selection to remove, and then pad back up to get the cleaned padded grid.
     padded_regions_box_trimmed = padded_regions[
@@ -342,9 +340,8 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
         ~np.isin(unique_padded_regions, unique_padded_regions_cleaned)
     ]
     logger.info(
-        f"Found that labels are too small within the box even with pbc {
-            removed_labels_pbc
-        }"
+        "Found that labels are too small within the box even with pbc %s",
+        removed_labels_pbc,
     )
 
     # TODO: is this necesary? isnt' everytihng an original maxima this point.
@@ -361,9 +358,8 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
 
     if len(removed_maxima_labels) > 0:
         logger.info(
-            f"TIME(s): {
-                np.round(time() - start_time, decimals=2)
-            } Redoing segmentation for clean sequential labels in regions pbc"
+            "TIME(s): %s Redoing segmentation for clean sequential labels in regions pbc",
+            np.round(time() - start_time, decimals=2),
         )
         markers = np.zeros_like(dgrid, dtype=int)
         if len(merged_maxima) > 0:
@@ -399,9 +395,8 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
 
     #
     logger.info(
-        f"time(s): {
-            np.round(time() - start_time, decimals=2)
-        } computing maxima and regions without pbc\n"
+        "time(s): %s computing maxima and regions without pbc\n",
+        np.round(time() - start_time, decimals=2),
     )
 
     # step 2: get unmerged maxima info using valid maxima
@@ -476,9 +471,8 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     ]
 
     logger.info(
-        f"time(s): {
-            np.round(time() - start_time, decimals=2)
-        } computed regions without pbc\n"
+        "time(s): %s computed regions without pbc\n",
+        np.round(time() - start_time, decimals=2),
     )
     endchannel_pairs = find_end_channel_pairs(
         regions_pbc, unmerged_regions, size_ratio=0.3
@@ -525,7 +519,10 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     # unmerged_regions = unmerged_regions_cleaned
     #
     # set_trace()
-    logger.info(f"time(s):', {np.round(time() - start_time, decimals=2)} ,'reindexng\n")
+    logger.info(
+        "time(s): %s reindexng\n",
+        np.round(time() - start_time, decimals=2),
+    )
 
     # note: we need to reindex here,
     # index mapping for the merged_maxima in unmerged parts
@@ -563,9 +560,9 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
             # check if the target index is already used
             if target_index in used_indices:
                 logger.info(
-                    f"conflict: maxima {info[0]} maps to already-used index {
-                        target_index
-                    }"
+                    "conflict: maxima %s maps to already-used index %s",
+                    info[0],
+                    target_index,
                 )
             else:
                 remap_dict[info[0]] = target_index
@@ -628,9 +625,8 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     maxima_info_copy = maxima_info_copy[maxima_info_copy[:, 0].argsort()]
     # maxima_info[:10, :], maxima_info_copy[:10, :]
     logger.info(
-        f"time(s): {
-            np.round(time() - start_time, decimals=2)
-        }.  done with reindexing-1/2\n"
+        "time(s): %s.  done with reindexing-1/2\n",
+        np.round(time() - start_time, decimals=2),
     )
     # print('remap_dict is ', remap_dict)
 
@@ -669,31 +665,26 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
             dgrid.shape
         )
         logger.info(
-            f"time(s): {
-                np.round(time() - start_time, decimals=2)
-            } compute_connections is set to False. No connections computed. Calculations Ending! :) \n"
+            "time(s): %s compute_connections is set to False. No connections computed. Calculations Ending! :) \n",
+            np.round(time() - start_time, decimals=2),
         )
         logger.info(
-            f"TIME(s): {
-                np.round(time() - start_time, decimals=2)
-            } Checking indexing consistency,"
+            "TIME(s): %s Checking indexing consistency,",
+            np.round(time() - start_time, decimals=2),
         )
         logger.info(
-            f"regions w pbc: {
-                np.unique(regions_pbc, return_counts=False).shape[0] - 1
-                == regions_pbc.max()
-            }"
+            "regions w pbc: %s",
+            np.unique(regions_pbc, return_counts=False).shape[0] - 1
+            == regions_pbc.max(),
         )
         logger.info(
-            f"regions w/o pbc: {
-                np.unique(regions, return_counts=False).shape[0] - 1 == regions.max()
-            }"
+            "regions w/o pbc: %s",
+            np.unique(regions, return_counts=False).shape[0] - 1 == regions.max(),
         )
         logger.info(
-            f"regions w/ padding: {
-                np.unique(regions_padded, return_counts=False).shape[0] - 1
-                == regions_padded.max()
-            }"
+            "regions w/ padding: %s",
+            np.unique(regions_padded, return_counts=False).shape[0] - 1
+            == regions_padded.max(),
         )
         missing_regions = set(range(0, regions.max())) - set(np.unique(regions))
         missing_regions_pbc = set(range(0, regions_pbc.max())) - set(
@@ -736,9 +727,8 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
             outputs["regions_padded"] = regions_padded
     else:
         logger.info(
-            f"time(s): {
-                np.round(time() - start_time, decimals=2)
-            } compute_connections is True--this might take a while! \n"
+            "time(s): %s compute_connections is True--this might take a while! \n",
+            np.round(time() - start_time, decimals=2),
         )
 
         # def compute_boundary(reg):
@@ -761,9 +751,8 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
         # dinterp = interpolate_labels(dgrid)
 
         logger.info(
-            f"TIME(s): {
-                np.round(time() - start_time, decimals=2)
-            } Adjusting for periodic connections\n"
+            "TIME(s): %s Adjusting for periodic connections\n",
+            np.round(time() - start_time, decimals=2),
         )
 
         connections_list = mcli_rust.window_connections(
@@ -783,14 +772,12 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
                 # print(f"This connection is {c[0]}")
                 c[2] = "periodic"
         logger.info(
-            f"TIME(s): {
-                np.round(time() - start_time, decimals=2)
-            } Done with computing connections\n"
+            "TIME(s): %s Done with computing connections\n",
+            np.round(time() - start_time, decimals=2),
         )
         logger.info(
-            f"TIME(s): {
-                np.round(time() - start_time, decimals=2)
-            } Reindexing part 2/2-- Connected nodes getting priority\n"
+            "TIME(s): %s Reindexing part 2/2-- Connected nodes getting priority\n",
+            np.round(time() - start_time, decimals=2),
         )
 
         # NOTE: if padded regions are in the connections list, we need to prioritize those in the indexing over other regions in regions padded
@@ -833,26 +820,22 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
             maxima_info_copy_copy[:, 0].argsort()
         ]
         logger.info(
-            f"TIME(s): {
-                np.round(time() - start_time, decimals=2)
-            } Checking indexing consistency,"
+            "TIME(s): %s Checking indexing consistency,",
+            np.round(time() - start_time, decimals=2),
         )
         logger.info(
-            f"regions w pbc: {
-                np.unique(regions_pbc, return_counts=False).shape[0] - 1
-                == regions_pbc.max()
-            }"
+            "regions w pbc: %s",
+            np.unique(regions_pbc, return_counts=False).shape[0] - 1
+            == regions_pbc.max(),
         )
         logger.info(
-            f"regions w/o pbc: {
-                np.unique(regions, return_counts=False).shape[0] - 1 == regions.max()
-            }"
+            "regions w/o pbc: %s",
+            np.unique(regions, return_counts=False).shape[0] - 1 == regions.max(),
         )
         logger.info(
-            f"regions w/ padding: {
-                np.unique(regions_padded, return_counts=False).shape[0] - 1
-                == regions_padded.max()
-            }"
+            "regions w/ padding: %s",
+            np.unique(regions_padded, return_counts=False).shape[0] - 1
+            == regions_padded.max(),
         )
         missing_regions = set(range(0, regions.max())) - set(np.unique(regions))
         missing_regions_pbc = set(range(0, regions_pbc.max())) - set(
@@ -902,9 +885,8 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     if return_dgrid:
         outputs["dgrid"] = dgrid
     logger.info(
-        f"TIME(s): {
-            np.round(time() - start_time, decimals=2)
-        } Padded segmentation workflow complete :) \n"
+        "TIME(s): %s Padded segmentation workflow complete :) \n",
+        np.round(time() - start_time, decimals=2),
     )
     return outputs
 

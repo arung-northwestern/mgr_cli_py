@@ -25,13 +25,8 @@ if str(MGR_SRC_PATH) not in sys.path:
     sys.path.insert(0, str(MGR_SRC_PATH))
 
 # Import the reference MGR library from mgr_src/mgr
-try:
-    import mgr as mgr
-    from mgr.helper import estimate_h_from_percolation_history
-except ImportError:
-    # Fallback to mgr_visualize if mgr_src is not available
-    import mgr_visualize.mgr as mgr
-    from mgr_visualize.mgr.helper import estimate_h_from_percolation_history
+import mgr as mgr
+from mgr.helper import estimate_h_from_percolation_history
 
 
 def results_data_to_npz(results: Dict[str, Any]) -> bytes:
@@ -372,15 +367,9 @@ def main() -> None:
 
     # Compute bonds immediately after loading CIF
     if atoms is not None:
-        try:
-            import mgr as mgr
-            from mgr.analyze import update_with_covalent_bonds
-            atoms = update_with_covalent_bonds(atoms)
-        except ImportError:
-            # Fallback to mgr_visualize if mgr_src is not available
-            import mgr_visualize.mgr as mgr
-            from mgr_visualize.mgr.analyze import update_with_covalent_bonds
-            atoms = update_with_covalent_bonds(atoms)
+        import mgr as mgr
+        from mgr.analyze import update_with_covalent_bonds
+        atoms = update_with_covalent_bonds(atoms)
 
     if atoms is None:
         st.info("Upload a CIF file or pick a sample to begin.")

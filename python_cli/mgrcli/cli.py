@@ -35,11 +35,7 @@ if str(MGR_SRC_PATH) not in sys.path:
     sys.path.insert(0, str(MGR_SRC_PATH))
 
 # Import the reference MGR library from mgr_src/mgr
-try:
-    import mgr as mgr
-except ImportError:
-    # Fallback to mgr_visualize if mgr_src is not available
-    import mgr_visualize.mgr as mgr
+import mgr as mgr
 
 # Optional numpy import - only needed for numpy-based .npz saving
 try:
