@@ -8784,7 +8784,10 @@ def compute_surface_area_from_results(
     # Extract required data from results
     distance_grid = results_dict['distance_grid']
     pbc_groups = results_dict['pbc_groups']
-    regions_pbc = results_dict['regions_pbc']
+    regions = results_dict.get('regions')
+    regions_pbc = results_dict.get('regions_pbc')
+    if regions is None:
+        raise ValueError("Surface area analysis requires 'regions' in results_dict.")
 
     # Convert pbc_groups to dictionary format if it's a list (from Rust backend)
     if isinstance(pbc_groups, list):
@@ -8835,13 +8838,13 @@ def compute_surface_area_from_results(
 
     # Step 3: Get surface area meshes for each region
     submeshes = get_isosurface_submeshes(
-        distance_grid, probe_radius, mat_atoms, regions_pbc
+        distance_grid, probe_radius, mat_atoms, regions
     )
 
     # Step 4: Calculate surface area by individual region
     region_areas = {}
     accessible_region_areas = {}
-    region_ids = np.unique(regions_pbc)[1:]  # Skip background (0)
+    region_ids = np.unique(regions)[1:]  # Skip background (0)
 
     for i, region_id in enumerate(region_ids):
         if i < len(submeshes):
@@ -9052,7 +9055,10 @@ def compute_void_volume_from_results(
     # Extract required data from results
     distance_grid = results_dict['distance_grid']
     pbc_groups = results_dict['pbc_groups']
-    regions_pbc = results_dict['regions_pbc']
+    regions = results_dict.get('regions')
+    regions_pbc = results_dict.get('regions_pbc')
+    if regions is None:
+        raise ValueError("Void volume analysis requires 'regions' in results_dict.")
 
     # Convert pbc_groups to dictionary format if it's a list (from Rust backend)
     if isinstance(pbc_groups, list):
@@ -9104,13 +9110,13 @@ def compute_void_volume_from_results(
 
     # Step 4: Calculate void volume by individual region
     # Create boolean mask for regions
-    region_ids = np.unique(regions_pbc)[1:]  # Skip background (0)
+    region_ids = np.unique(regions)[1:]  # Skip background (0)
     region_volumes = {}
     accessible_region_volumes = {}
 
     for region_id in region_ids:
         # Mask for this specific region
-        region_mask = (regions_pbc == region_id)
+        region_mask = (regions == region_id)
 
         # Calculate void volume for this region
         region_void_mask = region_mask & (distance_grid > probe_radius)

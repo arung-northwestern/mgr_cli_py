@@ -419,9 +419,54 @@ def plot_surface_dgrid(dgrid, isovalue, ase_atoms, region_labels=None, select='a
             faces_to_keep = np.where(face_mask)[0]
             
             # Use submesh with the face indices
+            if faces_to_keep.size == 0:
+                # No faces for this selection; return empty mesh
+                return go.Mesh3d(
+                    x=[],
+                    y=[],
+                    z=[],
+                    i=[],
+                    j=[],
+                    k=[],
+                    opacity=opacity,
+                    name=name,
+                    showlegend=showlegend,
+                    **kwargs_mesh,
+                )
+
             submesh = mesh.submesh([faces_to_keep], append=True)
-            
-            # submesh is now a Trimesh object, so we can directly access its vertices and faces
+
+            # submesh can be a list or empty depending on trimesh behavior
+            if isinstance(submesh, (list, tuple)):
+                if not submesh:
+                    return go.Mesh3d(
+                        x=[],
+                        y=[],
+                        z=[],
+                        i=[],
+                        j=[],
+                        k=[],
+                        opacity=opacity,
+                        name=name,
+                        showlegend=showlegend,
+                        **kwargs_mesh,
+                    )
+                submesh = trimesh.util.concatenate(submesh)
+
+            if not hasattr(submesh, "vertices") or not hasattr(submesh, "faces"):
+                return go.Mesh3d(
+                    x=[],
+                    y=[],
+                    z=[],
+                    i=[],
+                    j=[],
+                    k=[],
+                    opacity=opacity,
+                    name=name,
+                    showlegend=showlegend,
+                    **kwargs_mesh,
+                )
+
             verts, faces = submesh.vertices, submesh.faces
         
         #* Generate values to color by using the interpolated region labels

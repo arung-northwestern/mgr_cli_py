@@ -292,6 +292,13 @@ This provides a GUI-only path for the Streamlit app plus a short CLI wrapper.
 ```
 You will be prompted to choose an output folder. The app runs at `http://localhost:8501`.
 
+### Prebuilt Image (When Published)
+```bash
+docker pull <your-org>/mgrcli:latest
+docker run --rm -p 8501:8501 <your-org>/mgrcli:latest
+```
+Open `http://localhost:8501`.
+
 ### CLI Wrapper (`mgrbox`)
 The wrapper avoids conflicts with any pip-installed `mgrcli`.
 ```bash
@@ -309,6 +316,14 @@ IMAGE_NAME=mgrcli:local ./scripts/mgrbox --help
 
 # Output folder
 MGR_RESULTS_DIR="$HOME/MGR_Results" ./scripts/mgrbox process *.cif -o /results
+
+# Optional: override Rayon thread count
+MGR_RAYON_THREADS=4 ./scripts/mgrbox process *.cif -o /results
+```
+
+### Multi-Arch Build (No Push)
+```bash
+./scripts/docker_buildx.sh
 ```
 
 ### GUI Launcher Behavior (Spec)

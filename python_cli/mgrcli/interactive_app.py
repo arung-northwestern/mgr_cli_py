@@ -856,25 +856,94 @@ def main() -> None:
                 else:
                     history_rows = []
                     for radius, components in history:
+                        axis_map = {0: "Along a", 1: "Along b", 2: "Along c", "x": "Along a", "y": "Along b", "z": "Along c"}
+                        axis_counts = {"Along a": 0, "Along b": 0, "Along c": 0}
+                        for axis_key, comps in components.items():
+                            label = axis_map.get(axis_key)
+                            if label is not None:
+                                axis_counts[label] = len(comps or [])
                         history_rows.append(
                             {
-                                "Probe radius (Å)": round(float(radius), 3),
-                                "Along a": len(components.get(0, [])),
-                                "Along b": len(components.get(1, [])),
-                                "Along c": len(components.get(2, [])),
+                                "Probe radius / threshold (Å)": round(float(radius), 3),
+                                "Percolated clusters (a)": axis_counts["Along a"],
+                                "Percolated clusters (b)": axis_counts["Along b"],
+                                "Percolated clusters (c)": axis_counts["Along c"],
                             }
                         )
+                    st.markdown(
+                        "Percolation history: probe radius (threshold) and **non-unique** percolated clusters "
+                        "along each lattice direction."
+                    )
                     st.dataframe(history_rows, use_container_width=True)
 
                     radius_options = sorted({float(entry[0]) for entry in history})
-                    prev_radius = st.session_state.get("percolation_radius")
-                    selected_radius = st.select_slider(
-                        "Probe radius for visualization (Å)",
-                        options=radius_options,
-                        value=prev_radius if prev_radius in radius_options else radius_options[-1],
-                        format_func=lambda r: f"{r:.2f}",
-                        key="percolation_radius",
-                    )
+                    min_radius = min(radius_options)
+                    max_radius = max(radius_options)
+                    prev_radius = st.session_state.get("percolation_radius", max_radius)
+                    if "percolation_radius_value" not in st.session_state:
+                        st.session_state["percolation_radius_value"] = float(prev_radius)
+                    # Clamp to available range when material changes.
+                    if st.session_state["percolation_radius_value"] < min_radius:
+                        st.session_state["percolation_radius_value"] = float(min_radius)
+                    if st.session_state["percolation_radius_value"] > max_radius:
+                        st.session_state["percolation_radius_value"] = float(max_radius)
+
+                    desired_radius = float(st.session_state["percolation_radius_value"])
+                    selected_radius = min(radius_options, key=lambda r: abs(r - desired_radius))
+                    st.session_state["percolation_radius"] = selected_radius
+                    st.session_state["percolation_radius_value"] = float(selected_radius)
+                    st.session_state["percolation_radius_slider"] = float(selected_radius)
+                    st.session_state["percolation_radius_input"] = float(selected_radius)
+
+                    def _sync_radius_from_slider() -> None:
+                        st.session_state["percolation_radius_value"] = st.session_state["percolation_radius_slider"]
+
+                    def _sync_radius_from_input() -> None:
+                        st.session_state["percolation_radius_value"] = st.session_state["percolation_radius_input"]
+
+                    coarse_col, exact_col = st.columns(2)
+                    with coarse_col:
+                        st.slider(
+                            "Probe radius (Å) coarse",
+                            min_value=float(min_radius),
+                            max_value=float(max_radius),
+                            value=float(st.session_state["percolation_radius_value"]),
+                            step=0.5,
+                            format="%.2f",
+                            key="percolation_radius_slider",
+                            on_change=_sync_radius_from_slider,
+                        )
+                    with exact_col:
+                        st.number_input(
+                            "Probe radius (Å) exact",
+                            min_value=float(min_radius),
+                            max_value=float(max_radius),
+                            value=float(st.session_state["percolation_radius_value"]),
+                            step=0.05,
+                            format="%.2f",
+                            key="percolation_radius_input",
+                            on_change=_sync_radius_from_input,
+                        )
+
+                    if abs(selected_radius - desired_radius) > 1e-6:
+                        st.caption(f"Using nearest available radius: {selected_radius:.2f} Å")
+
+                    boundary_col, width_col = st.columns(2)
+                    with boundary_col:
+                        boundary_line_color = st.color_picker(
+                            "Boundary color",
+                            value="#000000",
+                            key="percolation_boundary_color",
+                        )
+                    with width_col:
+                        boundary_line_width = st.slider(
+                            "Boundary width",
+                            min_value=1,
+                            max_value=6,
+                            value=6,
+                            step=1,
+                            key="percolation_boundary_width",
+                        )
 
                     st.markdown(
                         f"Selected probe radius: **{selected_radius:.2f} Å** (diameter {2*selected_radius:.2f} Å)"
@@ -891,19 +960,31 @@ def main() -> None:
                             raise ValueError(
                                 f"Probe radius {selected_radius:.2f} Å is too small to plot percolated clusters."
                             )
-                        cluster_traces = mgr.plot_percolated_cluster_meshes(
-                            analysis["percolation_history"],
-                            analysis["dgrid"],
-                            analysis["regions"],
-                            atoms,
-                            probe_radius=selected_radius,
-                            isovalue=isovalue,
-                            stylize=True,
-                            opacity=1.0,
-                            cscale=px.colors.qualitative.Pastel,
-                            boundary_line_width=1,
-                            boundary_line_color="black",
+                        plot_cache = st.session_state.setdefault("percolation_plot_cache", {})
+                        plot_key = (
+                            analysis_key,
+                            float(selected_radius),
+                            float(isovalue),
+                            boundary_line_color,
+                            int(boundary_line_width),
                         )
+                        if plot_key in plot_cache:
+                            cluster_traces = plot_cache[plot_key]
+                        else:
+                            cluster_traces = mgr.plot_percolated_cluster_meshes(
+                                analysis["percolation_history"],
+                                analysis["dgrid"],
+                                analysis["regions"],
+                                atoms,
+                                probe_radius=selected_radius,
+                                isovalue=isovalue,
+                                stylize=True,
+                                opacity=1.0,
+                                cscale=px.colors.qualitative.Pastel,
+                                boundary_line_width=boundary_line_width,
+                                boundary_line_color=boundary_line_color,
+                            )
+                            plot_cache[plot_key] = cluster_traces
                     except ValueError as exc:
                         st.error(str(exc))
                         cluster_traces = []
@@ -1229,24 +1310,24 @@ def main() -> None:
                 # Create breakdown data
                 breakdown_data = []
 
-                # Region-wise breakdown
+                # Region-wise breakdown (non-PBC)
                 by_region = sa_results.get('by_region', {})
                 if by_region:
                     for region_id, area in by_region.items():
                         breakdown_data.append({
-                            'Type': 'Region',
-                            'Category': 'Individual',
+                            'Type': 'Region (non-PBC)',
+                            'Category': 'Segmented',
                             'Label': f'region_{region_id}',
                             'Surface Area (m²/g)': area
                         })
 
-                # Pocket-wise breakdown
+                # Pocket-wise breakdown (PBC groups)
                 by_pocket = sa_results.get('by_pocket', {})
                 if by_pocket:
                     for pocket_id, area in by_pocket.items():
                         breakdown_data.append({
-                            'Type': 'Pocket',
-                            'Category': 'Complete',
+                            'Type': 'Pocket (PBC)',
+                            'Category': 'Grouped',
                             'Label': str(pocket_id),
                             'Surface Area (m²/g)': area
                         })
@@ -1256,8 +1337,8 @@ def main() -> None:
                 if by_percolated_cluster:
                     for cluster_id, area in by_percolated_cluster.items():
                         breakdown_data.append({
-                            'Type': 'Cluster',
-                            'Category': 'Percolated',
+                            'Type': 'Cluster (percolated)',
+                            'Category': 'Accessible',
                             'Label': str(cluster_id),
                             'Surface Area (m²/g)': area
                         })
@@ -1309,24 +1390,24 @@ def main() -> None:
                 # Create breakdown data
                 breakdown_data = []
 
-                # Region-wise breakdown
+                # Region-wise breakdown (non-PBC)
                 by_region = vol_results.get('by_region', {})
                 if by_region:
                     for region_id, volume in by_region.items():
                         breakdown_data.append({
-                            'Type': 'Region',
-                            'Category': 'Individual',
+                            'Type': 'Region (non-PBC)',
+                            'Category': 'Segmented',
                             'Label': f'region_{region_id}',
                             'Void Volume (cm³/g)': volume
                         })
 
-                # Pocket-wise breakdown
+                # Pocket-wise breakdown (PBC groups)
                 by_pocket = vol_results.get('by_pocket', {})
                 if by_pocket:
                     for pocket_id, volume in by_pocket.items():
                         breakdown_data.append({
-                            'Type': 'Pocket',
-                            'Category': 'Complete',
+                            'Type': 'Pocket (PBC)',
+                            'Category': 'Grouped',
                             'Label': str(pocket_id),
                             'Void Volume (cm³/g)': volume
                         })
@@ -1336,8 +1417,8 @@ def main() -> None:
                 if by_percolated_cluster:
                     for cluster_id, volume in by_percolated_cluster.items():
                         breakdown_data.append({
-                            'Type': 'Cluster',
-                            'Category': 'Percolated',
+                            'Type': 'Cluster (percolated)',
+                            'Category': 'Accessible',
                             'Label': str(cluster_id),
                             'Void Volume (cm³/g)': volume
                         })
