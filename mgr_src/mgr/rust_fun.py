@@ -1072,3 +1072,382 @@ def compute_psds_pocketwise_rust(
         return pocket_psds, fig
     else:
         return pocket_psds
+
+
+def compute_accessible_psd_from_results(
+    results,
+    mat_atoms,
+    probe_radius,
+    bin_edges,
+    samples_per_region=10000,
+    accessible_only=True,
+    pb_normalization=False,
+):
+    """
+    Compute a PoreBlazer-style accessible PSD by:
+    1) identifying percolating pockets at the given probe_radius via winding-number percolation,
+    2) sampling pore sizes pocketwise (fixed samples per region),
+    3) weighting each pocket's PDF by its voxel fraction to recover a volume-weighted global PSD.
+
+    Parameters
+    ----------
+    results : dict
+        Segmentation results from do_periodic_segmentation_rust (needs regions_pbc, maxima_info, regions, connections, etc.).
+        If results does not contain 'dgrid', you must have passed return_dgrid=True when generating it, or supply dgrid separately.
+    mat_atoms : ase.Atoms
+        ASE Atoms with the simulation cell (used only to build the cell matrix for sampling).
+    probe_radius : float
+        Probe radius (Å) used as the percolation threshold.
+    bin_edges : array-like
+        Bin edges for diameters (Å). Use PB-style bins for direct comparison.
+    samples_per_region : int
+        Fixed number of samples per pocket for the pocketwise sampler.
+    accessible_only : bool
+        If True, restrict to percolating (accessible) regions; if False, include all regions.
+
+    Returns
+    -------
+    dict with keys:
+        - pdf: global volume-weighted PDF over bin centers
+        - cum: cumulative (descending) of pdf
+        - psd: finite-difference derivative of cum
+        - bin_centers: centers from bin_edges
+        - per_region: dict of per-pocket PDFs (unweighted), voxel counts, and weights
+        - accessible_region_ids: list of region ids used
+    """
+    import mgrcli_rust
+    from ase.geometry import cellpar_to_cell
+    from .winding_percolation import percolation_all_axes_winding
+
+    regions_pbc = np.asarray(results["regions_pbc"])
+    dgrid = np.asarray(results.get("dgrid", None))
+    if dgrid is None:
+        raise ValueError("results does not include 'dgrid'; rerun segmentation with return_dgrid=True or supply dgrid.")
+
+    # Determine accessible region ids
+    if accessible_only:
+        _, _, cluster_metadata = percolation_all_axes_winding(
+            results,
+            threshold=probe_radius,
+            node_radius_attr="pocket_radius",
+            edge_radius_attr="window_radius",
+        )
+        accessible_region_ids = set()
+        for meta in cluster_metadata.values():
+            region_list = meta.get("regions_full") or meta.get("regions") or []
+            accessible_region_ids.update(region_list)
+        accessible_region_ids = {int(r) for r in accessible_region_ids if int(r) != 0}
+    else:
+        accessible_region_ids = set(int(x) for x in np.unique(regions_pbc) if int(x) != 0)
+
+    if not accessible_region_ids:
+        return {
+            "pdf": np.zeros(len(bin_edges) - 1),
+            "cum": np.zeros(len(bin_edges) - 1),
+            "psd": np.zeros(len(bin_edges) - 1),
+            "bin_centers": 0.5 * (bin_edges[1:] + bin_edges[:-1]),
+            "per_region": {},
+            "accessible_region_ids": [],
+        }
+
+    # Mask regions to accessible only
+    mask = np.isin(regions_pbc, list(accessible_region_ids))
+    regions_accessible = np.where(mask, regions_pbc, 0)
+
+    # Per-region voxel counts (all voxels have same volume)
+    region_ids_present = np.unique(regions_accessible)
+    region_ids_present = [int(r) for r in region_ids_present if int(r) != 0]
+    voxel_counts = {rid: int((regions_accessible == rid).sum()) for rid in region_ids_present}
+    total_voxels = sum(voxel_counts.values())
+    if total_voxels == 0:
+        return {
+            "pdf": np.zeros(len(bin_edges) - 1),
+            "cum": np.zeros(len(bin_edges) - 1),
+            "psd": np.zeros(len(bin_edges) - 1),
+            "bin_centers": 0.5 * (bin_edges[1:] + bin_edges[:-1]),
+            "per_region": {},
+            "accessible_region_ids": [],
+        }
+
+    # Sample pocketwise on the accessible mask
+    cell = cellpar_to_cell(mat_atoms.cell.cellpar()).T
+    sample_points, pore_sizes, region_labels = mgrcli_rust.compute_pore_sizes_for_psd_pocketwise(
+        dgrid,
+        regions_accessible,
+        cell,
+        samples_per_region=int(samples_per_region),
+    )
+
+    bin_edges = np.asarray(bin_edges)
+    bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
+    per_region = {}
+    pdf_global = np.zeros(len(bin_edges) - 1, dtype=float)
+
+    # Accumulate weighted PDFs
+    for rid in region_ids_present:
+        mask_r = region_labels == rid
+        diam_r = pore_sizes[mask_r] * 2.0
+        counts, _ = np.histogram(diam_r, bins=bin_edges)
+        total_counts = counts.sum()
+        if total_counts > 0:
+            pdf_r = counts / total_counts
+        else:
+            pdf_r = np.zeros_like(pdf_global)
+        weight = voxel_counts[rid] / total_voxels
+        pdf_global += weight * pdf_r
+        per_region[rid] = {
+            "pdf": pdf_r,
+            "voxel_count": voxel_counts[rid],
+            "weight": weight,
+        }
+
+    # Cumulative (descending) and PSD derivative
+    cum = np.cumsum(pdf_global[::-1])[::-1]
+    psd = np.zeros_like(cum)
+    if cum.size > 2:
+        bin_widths = np.diff(bin_edges)
+        mid_width = bin_widths[0] if np.allclose(bin_widths, bin_widths[0]) else None
+        if mid_width is not None:
+            psd[1:-1] = -(cum[2:] - cum[:-2]) / (2.0 * mid_width)
+        else:
+            psd[1:-1] = -(
+                (cum[2:] - cum[1:-1]) / bin_widths[1:]
+                - (cum[1:-1] - cum[:-2]) / bin_widths[:-1]
+            ) / 2.0
+
+    pdf_pb = None
+    cum_pb = None
+    psd_pb = None
+    if pb_normalization:
+        cum_pb = np.cumsum(pdf_global[::-1])[::-1]
+        if cum_pb.size > 0 and cum_pb[0] > 0:
+            cum_pb = cum_pb / cum_pb[0]
+        psd_pb = np.zeros_like(cum_pb)
+        if cum_pb.size > 2:
+            bin_widths = np.diff(bin_edges)
+            mid_width = bin_widths[0] if np.allclose(bin_widths, bin_widths[0]) else None
+            if mid_width is not None:
+                psd_pb[1:-1] = -(cum_pb[2:] - cum_pb[:-2]) / (2.0 * mid_width)
+            else:
+                psd_pb[1:-1] = -(
+                    (cum_pb[2:] - cum_pb[1:-1]) / bin_widths[1:]
+                    - (cum_pb[1:-1] - cum_pb[:-2]) / bin_widths[:-1]
+                ) / 2.0
+        pdf_pb = psd_pb
+
+    return {
+        "pdf": pdf_global,
+        "cum": cum,
+        "psd": psd,
+        "bin_centers": bin_centers,
+        "per_region": per_region,
+        "accessible_region_ids": sorted(region_ids_present),
+        "pdf_pb": pdf_pb,
+        "cum_pb": cum_pb,
+        "psd_pb": psd_pb,
+    }
+
+
+def compute_psd_global_accessible(
+    results,
+    mat_atoms,
+    probe_radius,
+    bins=None,
+    samples_per_region=10000,
+    density=False,
+    return_fig=False,
+    material="Material",
+):
+    """Compute global accessible PSD (volume-weighted from percolating regions only).
+
+    Thin wrapper around compute_accessible_psd_from_results that returns the same
+    format as compute_psd_uniform_rust for app compatibility: psd_hist or (psd_hist, fig).
+
+    Only void space that percolates at the given probe_radius is included.
+
+    :param results: Segmentation results from do_periodic_segmentation_rust with return_dgrid=True
+    :type results: dict
+    :param mat_atoms: ASE Atoms with the simulation cell
+    :type mat_atoms: ase.Atoms
+    :param probe_radius: Probe radius (Å) for percolation threshold
+    :type probe_radius: float
+    :param bins: Bin edges for histogram. If None, uses np.linspace(0, 50, 200)
+    :type bins: numpy.ndarray or None
+    :param samples_per_region: Samples per pocket for pocketwise sampler
+    :type samples_per_region: int
+    :param density: Whether to normalize the histogram (matches compute_psd_uniform_rust)
+    :type density: bool
+    :param return_fig: Whether to return a plotly figure
+    :type return_fig: bool
+    :param material: Name of the material for plot title
+    :type material: str
+    :return: psd_hist or (psd_hist, fig) - same shape as compute_psd_uniform_rust
+    :rtype: numpy.ndarray or tuple[numpy.ndarray, plotly.graph_objects.Figure]
+    """
+    import plotly.graph_objects as go
+
+    if bins is None:
+        bins = np.linspace(0, 50, 200)
+    bin_edges = np.asarray(bins)
+
+    out = compute_accessible_psd_from_results(
+        results,
+        mat_atoms,
+        probe_radius,
+        bin_edges=bin_edges,
+        samples_per_region=samples_per_region,
+        accessible_only=True,
+        pb_normalization=False,
+    )
+
+    pdf = out["pdf"]
+    bin_centers = out["bin_centers"]
+    accessible_region_ids = out["accessible_region_ids"]
+
+    # Convert pdf to histogram for consistency with compute_psd_uniform_rust
+    n_regions = len(accessible_region_ids)
+    total_samples = samples_per_region * n_regions if n_regions > 0 else 1
+    if density:
+        bin_widths = np.diff(bin_edges)
+        psd_hist = np.where(bin_widths > 0, pdf / bin_widths, 0.0)
+    else:
+        psd_hist = pdf * total_samples
+
+    if return_fig:
+        print("\nCreating accessible global PSD plot...")
+        print(f"  Accessible regions at probe_radius={probe_radius} Å: {n_regions}")
+        trace = go.Scatter(
+            x=bin_centers,
+            y=psd_hist,
+            mode="lines",
+            name="Accessible PSD",
+            line=dict(width=2),
+        )
+        fig = go.Figure()
+        fig.add_trace(trace)
+        fig.update_layout(
+            title=f"Accessible Pore Size Distribution (probe {probe_radius} Å) - {material}",
+            xaxis_title="Pore Diameter (Å)",
+            yaxis_title="Counts" if not density else "Density",
+            legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+            width=1000,
+            height=600,
+        )
+        return psd_hist, fig
+    return psd_hist
+
+
+def compute_psds_pocketwise_accessible(
+    results,
+    mat_atoms,
+    probe_radius,
+    num_samples_per_region=1000,
+    bins=None,
+    return_fig=False,
+    material="Material",
+):
+    """Compute pocket-wise PSD restricted to accessible (percolating) regions only.
+
+    Returns the same dict structure as compute_psds_pocketwise_rust for app compatibility:
+    {region_id: {'hist', 'bin_centers', 'num_samples', 'mean_pore_size', 'std_pore_size'}}
+
+    :param results: Segmentation results from do_periodic_segmentation_rust with return_dgrid=True
+    :type results: dict
+    :param mat_atoms: ASE Atoms with the simulation cell
+    :type mat_atoms: ase.Atoms
+    :param probe_radius: Probe radius (Å) for percolation threshold
+    :type probe_radius: float
+    :param num_samples_per_region: Samples per pocket
+    :type num_samples_per_region: int
+    :param bins: Bin edges for histogram. If None, uses np.linspace(0, 50, 200)
+    :type bins: numpy.ndarray or None
+    :param return_fig: Whether to return a plotly figure
+    :type return_fig: bool
+    :param material: Name of the material for plot title
+    :type material: str
+    :return: pocket_psds or (pocket_psds, fig) - same shape as compute_psds_pocketwise_rust
+    :rtype: dict or tuple[dict, plotly.graph_objects.Figure]
+    """
+    from .visualize import plot_pocket_psds
+
+    if bins is None:
+        bins = np.linspace(0, 50, 200)
+    bin_edges = np.asarray(bins)
+
+    out = compute_accessible_psd_from_results(
+        results,
+        mat_atoms,
+        probe_radius,
+        bin_edges=bin_edges,
+        samples_per_region=num_samples_per_region,
+        accessible_only=True,
+        pb_normalization=False,
+    )
+
+    per_region = out["per_region"]
+    bin_centers = out["bin_centers"]
+
+    # Convert to same format as compute_psds_pocketwise_rust
+    pocket_psds = {}
+    for rid, data in per_region.items():
+        pdf_r = data["pdf"]
+        n_samples = num_samples_per_region
+        hist = pdf_r * n_samples
+        mean_pore_size = np.sum(pdf_r * bin_centers)
+        var = np.sum(pdf_r * (bin_centers - mean_pore_size) ** 2)
+        std_pore_size = np.sqrt(var) if var > 0 else 0.0
+        pocket_psds[rid] = {
+            "hist": hist,
+            "bin_centers": bin_centers,
+            "num_samples": n_samples,
+            "mean_pore_size": mean_pore_size,
+            "std_pore_size": std_pore_size,
+        }
+
+    if return_fig:
+        if pocket_psds:
+            pore_sizes_list = []
+            region_labels_list = []
+            for rid, psd_data in pocket_psds.items():
+                hist = psd_data["hist"]
+                bc = psd_data["bin_centers"]
+                for i, count in enumerate(hist):
+                    n = int(round(count))
+                    if n > 0:
+                        pore_sizes_list.extend([bc[i]] * n)
+                        region_labels_list.extend([rid] * n)
+            if pore_sizes_list:
+                pore_sizes_arr = np.array(pore_sizes_list)
+                region_labels_arr = np.array(region_labels_list)
+                fig = plot_pocket_psds(
+                    pore_sizes_arr,
+                    region_labels_arr,
+                    pocket_psds,
+                    bins,
+                    material_name=material,
+                )
+                fig.update_layout(
+                    title=f"Accessible Pore Size Distribution (probe {probe_radius} Å) - {material}",
+                )
+                return pocket_psds, fig
+        import plotly.graph_objects as go
+
+        fig = go.Figure()
+        fig.update_layout(
+            title=f"Accessible Pore Size Distribution (probe {probe_radius} Å) - {material}",
+            xaxis_title="Pore Diameter (Å)",
+            yaxis_title="Counts",
+            annotations=[
+                dict(
+                    text="No percolating regions at this probe radius",
+                    xref="paper",
+                    yref="paper",
+                    x=0.5,
+                    y=0.5,
+                    showarrow=False,
+                )
+            ],
+        )
+        return pocket_psds, fig
+
+    return pocket_psds
