@@ -18,3 +18,9 @@ env/
 node_modules/
 *.html
 interactive_plot.html
+# Archive / image export files (keep out of build context and image)
+*.tar
+*.tar.gz
+*.tar.zst
+*.zst
+*.gz

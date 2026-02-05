@@ -45,7 +45,11 @@ RUN pip install --no-cache-dir uv \
     && uv pip install --system -r /app/requirements.docker.lock
 
 COPY --from=builder /app/target/wheels/*.whl /app/target/wheels/
-COPY . /app
+# Only copy runtime source and data (see docs/docker_exclude_candidates.md for full list of exclusions)
+COPY python_cli /app/python_cli
+COPY mgr_src /app/mgr_src
+COPY cifs /app/cifs
+COPY scripts/docker_entrypoint.sh /app/scripts/docker_entrypoint.sh
 
 RUN uv pip install --system /app/target/wheels/*.whl \
     && chmod +x /app/scripts/docker_entrypoint.sh
