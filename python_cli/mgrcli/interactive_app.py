@@ -1064,7 +1064,25 @@ def main() -> None:
             psd_cache = st.session_state.setdefault("psd_cache", {})
             effective_key = analysis_key or cache_key
             regions_pbc = results_data.get("regions_pbc")
+            has_connections = results_data.get("connections") is not None
+
             with st.form("psd_settings"):
+                psd_domain = st.radio(
+                    "Domain",
+                    options=["Occupiable only", "Accessible only", "Both"],
+                    index=0,
+                    help="Occupiable = all pore space; Accessible = only percolating regions at the probe radius.",
+                )
+                probe_radius_psd = st.number_input(
+                    "Probe radius (Å)",
+                    value=1.2,
+                    min_value=0.1,
+                    max_value=10.0,
+                    step=0.05,
+                    format="%.2f",
+                    help="Used for accessible PSD (percolation threshold). Any value is valid; percolation uses this threshold directly. Default is helium radius (1.2 Å).",
+                )
+
                 st.subheader("Global PSD (uniform sampling)")
                 num_samples_total = st.number_input(
                     "Total samples",
@@ -1109,83 +1127,159 @@ def main() -> None:
 
                 compute_psd = st.form_submit_button("Compute PSDs")
 
-            psd_entry = psd_cache.get(effective_key)
+            need_occupiable = psd_domain in ("Occupiable only", "Both")
+            need_accessible = psd_domain in ("Accessible only", "Both")
+
+            key_occupiable = (
+                effective_key,
+                "occupiable",
+                int(num_samples_total),
+                int(uniform_num_bins),
+                float(uniform_max_diameter),
+                int(num_samples_per_region),
+                int(pocket_num_bins),
+                float(pocket_max_diameter),
+            )
+            key_accessible = (
+                effective_key,
+                "accessible",
+                round(float(probe_radius_psd), 3),
+                int(num_samples_total),
+                int(uniform_num_bins),
+                float(uniform_max_diameter),
+                int(num_samples_per_region),
+                int(pocket_num_bins),
+                float(pocket_max_diameter),
+            )
+
+            if need_accessible and not has_connections:
+                st.warning(
+                    "Accessible PSD requires segmentation with connections (percolation graph). "
+                    "Re-run the main computation to enable accessible PSD."
+                )
 
             if compute_psd:
                 bins_uniform = np.linspace(0, float(uniform_max_diameter), int(uniform_num_bins) + 1)
                 bins_pocket = np.linspace(0, float(pocket_max_diameter), int(pocket_num_bins) + 1)
-                with st.spinner("Computing pore size distributions..."):
-                    uniform_hist, uniform_fig = mgr.compute_psd_uniform_rust(
-                        results_data["dgrid"],
-                        results_data["ase_atoms"],
-                        num_samples_total=int(num_samples_total),
-                        bins=bins_uniform,
-                        density=False,
-                        return_fig=True,
-                        material=getattr(cif_path, "stem", "Material"),
-                    )
-                    uniform_df = make_uniform_psd_dataframe(bins_uniform, uniform_hist)
+                material_name = getattr(cif_path, "stem", "Material")
 
-                    pocket_results = None
-                    if regions_pbc is not None:
-                        pocket_psds, pocket_fig = mgr.compute_psds_pocketwise_rust(
+                if need_occupiable:
+                    with st.spinner("Computing occupiable PSDs..."):
+                        uniform_hist, uniform_fig = mgr.compute_psd_uniform_rust(
                             results_data["dgrid"],
-                            regions_pbc,
                             results_data["ase_atoms"],
-                            num_samples_per_region=int(num_samples_per_region),
-                            bins=bins_pocket,
+                            num_samples_total=int(num_samples_total),
+                            bins=bins_uniform,
+                            density=False,
                             return_fig=True,
-                            material=getattr(cif_path, "stem", "Material"),
+                            material=material_name,
                         )
-                        pocket_df = make_pocket_psd_dataframe(bins_pocket, pocket_psds)
-                        pocket_results = {
-                            "psds": pocket_psds,
-                            "fig": pocket_fig,
-                            "bins": bins_pocket,
-                            "df": pocket_df,
-                        }
-                    else:
-                        st.warning("Pocket-wise PSD requires segmented regions; skipping pocket computation.")
+                        uniform_df = make_uniform_psd_dataframe(bins_uniform, uniform_hist)
                         pocket_results = None
+                        if regions_pbc is not None:
+                            pocket_psds, pocket_fig = mgr.compute_psds_pocketwise_rust(
+                                results_data["dgrid"],
+                                regions_pbc,
+                                results_data["ase_atoms"],
+                                num_samples_per_region=int(num_samples_per_region),
+                                bins=bins_pocket,
+                                return_fig=True,
+                                material=material_name,
+                            )
+                            pocket_df = make_pocket_psd_dataframe(bins_pocket, pocket_psds)
+                            pocket_results = {
+                                "psds": pocket_psds,
+                                "fig": pocket_fig,
+                                "bins": bins_pocket,
+                                "df": pocket_df,
+                            }
+                        else:
+                            st.warning("Pocket-wise PSD requires segmented regions; skipping pocket computation.")
+                        occ_entry = {
+                            "uniform": {"hist": uniform_hist, "fig": uniform_fig, "bins": bins_uniform, "df": uniform_df},
+                            "pocket": pocket_results,
+                        }
+                        psd_cache[str(key_occupiable)] = occ_entry
 
-                psd_entry = {
-                    "uniform": {
-                        "hist": uniform_hist,
-                        "fig": uniform_fig,
-                        "bins": bins_uniform,
-                        "df": uniform_df,
-                    },
-                    "pocket": pocket_results,
-                }
-                psd_cache[effective_key] = psd_entry
+                if need_accessible and has_connections:
+                    with st.spinner("Computing accessible PSDs..."):
+                        try:
+                            acc_uniform_hist, acc_uniform_fig = mgr.compute_psd_global_accessible(
+                                results_data,
+                                results_data["ase_atoms"],
+                                probe_radius=float(probe_radius_psd),
+                                bins=bins_uniform,
+                                samples_per_region=int(num_samples_per_region),
+                                return_fig=True,
+                                material=material_name,
+                            )
+                            acc_uniform_df = make_uniform_psd_dataframe(bins_uniform, acc_uniform_hist)
+                            acc_pocket_psds, acc_pocket_fig = mgr.compute_psds_pocketwise_accessible(
+                                results_data,
+                                results_data["ase_atoms"],
+                                probe_radius=float(probe_radius_psd),
+                                num_samples_per_region=int(num_samples_per_region),
+                                bins=bins_pocket,
+                                return_fig=True,
+                                material=material_name,
+                            )
+                            acc_pocket_df = make_pocket_psd_dataframe(bins_pocket, acc_pocket_psds)
+                            acc_entry = {
+                                "uniform": {
+                                    "hist": acc_uniform_hist,
+                                    "fig": acc_uniform_fig,
+                                    "bins": bins_uniform,
+                                    "df": acc_uniform_df,
+                                },
+                                "pocket": {
+                                    "psds": acc_pocket_psds,
+                                    "fig": acc_pocket_fig,
+                                    "bins": bins_pocket,
+                                    "df": acc_pocket_df,
+                                },
+                            }
+                            psd_cache[str(key_accessible)] = acc_entry
+                        except Exception as e:
+                            st.error(f"Accessible PSD failed: {e}")
+
                 st.success("Pore size distributions computed. Scroll down to view results.")
 
-            if psd_entry:
-                uniform_data = psd_entry.get("uniform")
-                if uniform_data:
-                    st.markdown("### Global PSD")
-                    st.plotly_chart(uniform_data["fig"], use_container_width=True)
-                    uniform_csv = uniform_data["df"].to_csv(index=False).encode("utf-8")
+            def _render_psd_section(entry, section_title: str, file_suffix: str):
+                if not entry:
+                    return
+                st.markdown(f"### {section_title}")
+                u = entry.get("uniform")
+                if u:
+                    st.markdown("**Global PSD**")
+                    st.plotly_chart(u["fig"], use_container_width=True)
                     st.download_button(
                         label="Download global PSD (CSV)",
-                        data=uniform_csv,
-                        file_name=f"{getattr(cif_path, 'stem', 'analysis')}_psd_uniform.csv",
+                        data=u["df"].to_csv(index=False).encode("utf-8"),
+                        file_name=f"{getattr(cif_path, 'stem', 'analysis')}_psd_uniform{file_suffix}.csv",
                         mime="text/csv",
+                        key=f"psd_dl_uniform_{file_suffix}_{section_title[:20]}",
                     )
-                    st.dataframe(uniform_data["df"], use_container_width=True)
-
-                pocket_data = psd_entry.get("pocket")
-                if pocket_data:
-                    st.markdown("### Pocket-wise PSD")
-                    st.plotly_chart(pocket_data["fig"], use_container_width=True)
-                    pocket_csv = pocket_data["df"].to_csv(index=False).encode("utf-8")
+                    st.dataframe(u["df"], use_container_width=True)
+                p = entry.get("pocket")
+                if p:
+                    st.markdown("**Pocket-wise PSD**")
+                    st.plotly_chart(p["fig"], use_container_width=True)
                     st.download_button(
                         label="Download pocket-wise PSDs (CSV)",
-                        data=pocket_csv,
-                        file_name=f"{getattr(cif_path, 'stem', 'analysis')}_psd_pockets.csv",
+                        data=p["df"].to_csv(index=False).encode("utf-8"),
+                        file_name=f"{getattr(cif_path, 'stem', 'analysis')}_psd_pockets{file_suffix}.csv",
                         mime="text/csv",
+                        key=f"psd_dl_pocket_{file_suffix}_{section_title[:20]}",
                     )
-                    st.dataframe(pocket_data["df"], use_container_width=True)
+                    st.dataframe(p["df"], use_container_width=True)
+
+            if need_occupiable:
+                occ_entry = psd_cache.get(str(key_occupiable))
+                _render_psd_section(occ_entry, "Occupiable (probe center)", "")
+
+            if need_accessible and has_connections:
+                acc_entry = psd_cache.get(str(key_accessible))
+                _render_psd_section(acc_entry, f"Accessible (probe radius {probe_radius_psd:.2f} Å)", "_accessible")
 
     with sa_vol_tab:
         if results_data is None:
