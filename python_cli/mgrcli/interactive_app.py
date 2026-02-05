@@ -308,7 +308,7 @@ def _compute_pld_analysis(
 def _make_plot(results: Dict[str, Any], *, stylize: bool, projection: str, layout: str,
                framework_style: str, show_surface: bool, show_surface_pbc: bool,
                surface_value: float, surface_opacity: float, surface_pbc_opacity: float, surface_types_opacity: float,
-               show_connections: bool, show_maxima_spheres: bool) -> go.Figure:
+               show_connections: bool, show_windows: bool = True, show_maxima_spheres: bool = False) -> go.Figure:
     options = {
         "plot_framework_style": framework_style,
         "plot_surface": show_surface,
@@ -318,6 +318,7 @@ def _make_plot(results: Dict[str, Any], *, stylize: bool, projection: str, layou
         "plot_surface_pbc_opacity": surface_pbc_opacity,
         "plot_surface_types_opacity": surface_types_opacity,
         "plot_connections": show_connections,
+        "plot_windows": show_windows,
         "plot_maxima_show_spheres": show_maxima_spheres,
         "plot_projection": projection,
         "plot_layout": layout,
@@ -502,8 +503,8 @@ def main() -> None:
     st.markdown("### 🎨 Visualization Options")
     col_vis1, col_vis2 = st.columns(2)
     with col_vis1:
-        mesh_framework = st.checkbox("Show framework as mesh", value=True)
-        simple_framework = st.checkbox("Show simple framework scatter", value=False)
+        mesh_framework = st.checkbox("Show framework as mesh", value=False)
+        simple_framework = st.checkbox("Show simple framework scatter", value=True)
         if mesh_framework and simple_framework:
             st.warning("Select either mesh or simple framework.")
         projection_choice = st.selectbox("Projection", ["perspective", "orthographic"], index=0)
@@ -515,6 +516,7 @@ def main() -> None:
         show_surface = st.checkbox(f"Show pore surface at {surface_value:.2f} Å", value=True)
         show_surface_pbc = st.checkbox("Show periodic pore surface", value=True)
         show_connections = st.checkbox("Show pore graph", value=True)
+        show_windows = st.checkbox("Show windows (internal)", value=True)
         show_maxima_spheres = st.checkbox("Show maxima spheres", value=False)
         detect_pocket_types = st.checkbox("Detect Pocket Types", value=False)
 
@@ -722,6 +724,7 @@ def main() -> None:
                     plot_surface_pbc_opacity=surface_pbc_opacity,
                     plot_surface_types_opacity=surface_types_opacity,
                     plot_connections=show_connections,
+                    plot_windows=show_windows,
                     plot_maxima_show_spheres=show_maxima_spheres,
                     plot_projection=projection_choice,
                     plot_layout=layout_choice,
