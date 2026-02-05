@@ -35,7 +35,7 @@ class TestMGRCLI(unittest.TestCase):
 
         try:
             # Generate default config
-            cmd = [sys.executable, "-m", "mgrcli.cli"", "generate-config", "-o", config_file]
+            cmd = [sys.executable, "-m", "mgrcli.cli", "generate-config", "-o", config_file]
             result = subprocess.run(cmd, capture_output=True, text=True, cwd=self.test_dir.parent)
 
             self.assertEqual(result.returncode, 0, f"Command failed: {result.stderr}")
@@ -66,7 +66,7 @@ class TestMGRCLI(unittest.TestCase):
         try:
             # Generate config with custom parameters
             cmd = [
-                sys.executable, "-m", "mgrcli.cli"", "generate-config",
+                sys.executable, "-m", "mgrcli.cli", "generate-config",
                 "-o", config_file,
                 "--spacing", "0.4",
                 "--mask-thickness", "0.8",
@@ -101,7 +101,7 @@ class TestMGRCLI(unittest.TestCase):
 
             # Process the CIF file
             cmd = [
-                sys.executable, "-m", "mgrcli.cli"", "process",
+                sys.executable, "-m", "mgrcli.cli", "process",
                 str(cif_file),
                 "-o", temp_dir
             ]
@@ -131,14 +131,14 @@ class TestMGRCLI(unittest.TestCase):
 
     def test_config_building_interactive(self):
         """Test that config-building command exists (cannot test interactive fully)."""
-        cmd = [sys.executable, "-m", "mgrcli.cli"", "config-building", "--help"]
+        cmd = [sys.executable, "-m", "mgrcli.cli", "config-building", "--help"]
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=self.test_dir.parent)
 
         self.assertEqual(result.returncode, 0, f"Command failed: {result.stderr}")
 
     def test_cli_help(self):
         """Test that CLI help works."""
-        cmd = [sys.executable, "-m", "mgrcli.cli"", "--help"]
+        cmd = [sys.executable, "-m", "mgrcli.cli", "--help"]
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=self.test_dir.parent)
 
         self.assertEqual(result.returncode, 0, f"Command failed: {result.stderr}")

@@ -57,9 +57,9 @@ class MCLIStandalone:
         if self._rust_lib is None:
             try:
                 import mgrcli_rust
-                self._rust_lib = mcli_rust
+                self._rust_lib = mgrcli_rust
             except ImportError as e:
-                print("Error: mcli_rust Rust library not found. Please build the project first.")
+                print("Error: mgrcli_rust Rust library not found. Please build the project first.")
                 print("Run: pip install -e .")
                 print(f"Original error: {e}")
                 sys.exit(1)
@@ -192,11 +192,11 @@ Developed by © Dr. Arun Gopalan
             formatter_class=argparse.RawDescriptionHelpFormatter,
             epilog="""
 Examples:
-  mcli process my_structure.cif
-  mcli process *.cif -o ./results/
-  mcli generate-config -o config.json
-  mcli config-building
-  mcli --banner
+  mgrcli process my_structure.cif
+  mgrcli process *.cif -o ./results/
+  mgrcli generate-config -o config.json
+  mgrcli config-building
+  mgrcli --banner
             """
         )
         

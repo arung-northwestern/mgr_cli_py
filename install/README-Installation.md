@@ -1,6 +1,6 @@
-# MCLI Installation Guide
+# MGRCLI Installation Guide
 
-This directory contains installation scripts for MCLI (Molecular Geometry Analysis Tool) that make it easy for non-technical users to get started.
+This directory contains installation scripts for MGRCLI that create a virtual environment and install the CLI (and optional local GUI launcher). **For CLI:** use terminal after pip/uv install. **For GUI only (no terminal):** use the Docker image and Docker Desktop instead (see main README Docker section).
 
 ## Quick Start
 
@@ -30,31 +30,31 @@ Both scripts perform the following steps:
 
 ## After Installation
 
-### Using MCLI
+### Using MGRCLI
 
 **Command Line Interface:**
 ```bash
 # Linux/macOS
-./mcli --help
-./mcli process cifs/ZIF-8-RASPA.cif
+./mgrcli --help
+./mgrcli process cifs/ZIF-8-RASPA.cif
 
 # Windows
-mcli.bat --help
-mcli.bat process cifs\ZIF-8-RASPA.cif
+mgrcli.bat --help
+mgrcli.bat process cifs\ZIF-8-RASPA.cif
 ```
 
 **Web Interface:**
 ```bash
 # Linux/macOS
-./mcli-gui
+./mgrcli-gui
 
 # Windows
-mcli-gui.bat
+mgrcli-gui.bat
 ```
 
 ### Desktop Shortcuts
 
-- **Windows**: Desktop shortcuts created automatically as "MCLI CLI" and "MCLI GUI"
+- **Windows**: Desktop shortcuts created automatically as "MGRCLI CLI" and "MGRCLI GUI"
 - **Linux**: Application menu entries created (if supported)
 - **macOS**: You can manually create aliases or use the launch scripts
 

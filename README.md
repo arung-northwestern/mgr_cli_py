@@ -284,7 +284,7 @@ mgrcli --version
 
 ## Docker (Local)
 
-This provides a GUI-only path for the Streamlit app plus a short CLI wrapper.
+**CLI** = use the terminal with a pip/uv install (`mgrcli`). **GUI only** (no terminal) = run the Docker image via Docker Desktop; the image serves the Streamlit app. This section covers the Docker (GUI) path.
 
 ### Build + Run Streamlit
 ```bash

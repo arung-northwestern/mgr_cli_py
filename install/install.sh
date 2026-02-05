@@ -4,7 +4,7 @@
 
 set -e
 
-echo "🔬 MCLI - Molecular Geometry Analysis Tool Installation"
+echo "🔬 MGRCLI - MOF Analysis CLI Installation"
 echo "======================================================"
 echo ""
 
@@ -41,19 +41,19 @@ export RUSTFLAGS="-C target-cpu=native -C opt-level=3 -C lto=true -C codegen-uni
 
 uv pip install -e . --force-reinstall --no-cache-dir
 if [ $? -ne 0 ]; then
-    echo "❌ Failed to install MCLI"
+    echo "❌ Failed to install MGRCLI"
     exit 1
 fi
 
 # Create launcher scripts
 echo "🚀 Creating command-line launchers..."
 
-# CLI launcher
+# CLI launcher (uses installed mgrcli entry point)
 cat > mgrcli << 'EOF'
 #!/bin/bash
 cd "$(dirname "$0")"
 source mgrcli_env/bin/activate
-python python_cli/mgrcli/cli.py "$@"
+mgrcli "$@"
 EOF
 chmod +x mgrcli
 
@@ -64,7 +64,7 @@ cd "$(dirname "$0")"
 source mgrcli_env/bin/activate
 streamlit run python_cli/mgrcli/interactive_app.py
 EOF
-chmod +x mgrcli
+chmod +x mgrcli-gui
 
 # Create desktop entry for Linux (if possible)
 if command -v desktop-file-install &> /dev/null && [ -d "$HOME/.local/share/applications" ]; then
@@ -74,8 +74,8 @@ if command -v desktop-file-install &> /dev/null && [ -d "$HOME/.local/share/appl
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=MCLI CLI
-Comment=Molecular Geometry Analysis CLI
+Name=MGRCLI CLI
+Comment=MOF Analysis CLI
 Exec=$CURRENT_DIR/mgrcli
 Icon=applications-utilities
 Terminal=true
@@ -86,8 +86,8 @@ EOF
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=MCLI GUI
-Comment=Molecular Geometry Analysis Web Interface
+Name=MGRCLI GUI
+Comment=MOF Analysis Web Interface
 Exec=$CURRENT_DIR/mgrcli-gui
 Icon=applications-utilities
 Terminal=false

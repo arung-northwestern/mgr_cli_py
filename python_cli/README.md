@@ -27,29 +27,29 @@ pip install -e .
 
 ```bash
 # Process a single CIF file
-mcli process structure.cif
+mgrcli process structure.cif
 
 # Process multiple CIF files
-mcli process *.cif
+mgrcli process *.cif
 
 # Specify output directory
-mcli process structure.cif -o ./results/
+mgrcli process structure.cif -o ./results/
 
 # Use custom configuration
-mcli process structure.cif -c config.json
+mgrcli process structure.cif -c config.json
 ```
 
 ### Configuration
 
 ```bash
 # Generate default configuration
-mcli generate-config > config.json
+mgrcli generate-config > config.json
 
 # Generate configuration with custom parameters
-mcli generate-config -mt 1.0 -ta 2.0 > config.json
+mgrcli generate-config -mt 1.0 -ta 2.0 > config.json
 
 # Interactive configuration builder
-mcli config-building
+mgrcli config-building
 ```
 
 ### Parameters
@@ -104,16 +104,16 @@ Results are saved as compressed NumPy files (`.npz`) containing:
 ### Process with custom parameters
 
 ```bash
-mcli process ZIF-8.cif \
+mgrcli process ZIF-8.cif \
     --spacing 0.4 \
     --mask-thickness 0.8 \
     --threshold-abs 2.0 \
     --return-dgrid
 
 # Detect pocket types and save RAG pickle
-mcli process ZIF-8.cif --types
+mgrcli process ZIF-8.cif --types
 # Save RAG pickle only (no clustering)
-mcli process ZIF-8.cif --rag
+mgrcli process ZIF-8.cif --rag
 # The RAG will be saved as ZIF-8_rag_clustered.pkl in the output directory.
 ```
 
@@ -121,13 +121,13 @@ mcli process ZIF-8.cif --rag
 
 ```bash
 # Create configuration
-mcli generate-config \
+mgrcli generate-config \
     --spacing 0.3 \
     --h 0.3 \
     --mask-thickness 0.7 > analysis_config.json
 
 # Process all CIF files in directory
-mcli process *.cif \
+mgrcli process *.cif \
     -c analysis_config.json \
     -o ./batch_results/
 ```
@@ -135,7 +135,7 @@ mcli process *.cif \
 ### Interactive configuration
 
 ```bash
-mcli config-building
+mgrcli config-building
 # Follow the prompts to create a custom configuration
 ```
 
