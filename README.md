@@ -292,6 +292,16 @@ This provides a GUI-only path for the Streamlit app plus a short CLI wrapper.
 ```
 You will be prompted to choose an output folder. The app runs at `http://localhost:8501`.
 
+### Docker Desktop (GUI-only) Run Steps
+1. Open Docker Desktop → Images
+2. Find `mgrcli:local` → Click Run
+3. In Optional settings:
+   - Ports: set Host `8501` → Container `8501`
+   - Volumes: mount a host folder to `/results`
+4. Click Run, then open `http://localhost:8501`
+
+For non-terminal users, see `docs/GUI_ONLY_QUICKSTART.md`.
+
 ### Prebuilt Image (When Published)
 ```bash
 docker pull <your-org>/mgrcli:latest
@@ -299,14 +309,14 @@ docker run --rm -p 8501:8501 <your-org>/mgrcli:latest
 ```
 Open `http://localhost:8501`.
 
-### CLI Wrapper (`mgrbox`)
-The wrapper avoids conflicts with any pip-installed `mgrcli`.
+### CLI (Terminal Users)
+If you prefer the CLI, install it from the repo using `uv` (builds the Rust backend and installs the Python CLI):
 ```bash
-# macOS/Linux
-./scripts/mgrbox --help
+# Install uv (macOS/Linux)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Windows (PowerShell)
-./scripts/mgrbox.ps1 --help
+# From the repo root
+uv pip install -e .
 ```
 
 ### Environment Overrides
