@@ -57,7 +57,7 @@ def compute_dgrid_rust(mat_atoms, spacing):
             from mgr_visualize.mgr.rust_fun import dgrid_from_atoms_rust
             return dgrid_from_atoms_rust(mat_atoms, spacing)
         except ImportError:
-            # Final fallback to direct mcli_rust call
+            # Final fallback to direct mgrcli_rust call
             try:
                 import mgrcli_rust
                 # Convert ASE atoms to required format
@@ -68,9 +68,9 @@ def compute_dgrid_rust(mat_atoms, spacing):
                 # Get grid dimensions
                 nx, ny, nz = int(np.round(cell[0,0] / spacing)), int(np.round(cell[1,1] / spacing)), int(np.round(cell[2,2] / spacing))
 
-                return mcli_rust.dgrid_from_atoms(fpoints, cell, radii, nx, ny, nz)
+                return mgrcli_rust.dgrid_from_atoms(fpoints, cell, radii, nx, ny, nz)
             except ImportError as e:
-                print("Error: mcli_rust Rust library not found. Please build the project first.")
+                print("Error: mgrcli_rust Rust library not found. Please build the project first.")
                 print("Run: maturin build --release && pip install --force-reinstall target/wheels/*.whl")
                 sys.exit(1)
 
@@ -107,7 +107,7 @@ def python_do_periodic_segmentation_rust(
             print("Error: do_periodic_segmentation_rust function not found. Please ensure MGR library is available.")
             sys.exit(1)
 
-    # Call the reference implementation using mcli_rust
+    # Call the reference implementation (mgr.rust_fun)
     result = do_periodic_segmentation_rust(
         dgrid=dgrid,
         mat_atoms=mat_atoms,
@@ -824,7 +824,7 @@ class MCLI:
                 import mgrcli_rust
                 self._rust_lib = mgrcli_rust
             except ImportError as e:
-                print("Error: mcli_rust Rust library not found. Please build the project first.")
+                print("Error: mgrcli_rust Rust library not found. Please build the project first.")
                 print("Run: pip install -e .")
                 print(f"Original error: {e}")
                 sys.exit(1)
@@ -1007,6 +1007,10 @@ Notes:
             '--vol', action='store_true',
             help='Compute void volume analysis with percolation accessibility'
         )
+        flag_group.add_argument(
+            '--psd-accessible', action='store_true',
+            help='Compute accessible (percolation-based) PSD at --probe-radius; use with or without --psd. Saves *_psd_accessible_psd_uniform.csv and *_psd_accessible_psd_pockets.csv'
+        )
 
         # Analysis parameters
         analysis_group = process_parser.add_argument_group('analysis options')
@@ -1133,9 +1137,9 @@ Notes:
         if not cif_files:
             print("Error: No CIF files specified. Use -i flag or positional arguments.")
             print("Examples:")
-            print("  mcli process structure.cif")
-            print("  mcli process -i structure.cif")
-            print("  mcli process *.cif")
+            print("  mgrcli process structure.cif")
+            print("  mgrcli process -i structure.cif")
+            print("  mgrcli process *.cif")
             sys.exit(1)
 
         print(f"Found {len(cif_files)} CIF file(s) to process")
@@ -1199,6 +1203,69 @@ Notes:
                         # Save CSV files for PSD analysis
                         psd_csv_base_file = output_dir / f"{cif_file.stem}_psd"
                         save_psd_csv(psd_results, psd_csv_base_file, material_name=cif_file.stem)
+
+                # Handle accessible PSD if requested (percolation-based, at probe_radius)
+                if getattr(args, 'psd_accessible', False):
+                    if result.get('connections') is None:
+                        print("Warning: Accessible PSD requires segmentation with connections. Enable compute_connections and re-run.")
+                    else:
+                        probe_radius = getattr(args, 'probe_radius', None)
+                        if probe_radius is None:
+                            from ase.data import vdw_radii
+                            probe_radius = vdw_radii[2]  # helium radius
+                            print(f"  Using default probe radius for accessible PSD: {probe_radius:.3f} Å")
+                        else:
+                            print(f"  Using probe radius for accessible PSD: {probe_radius:.3f} Å")
+                        print("Computing accessible PSD (percolating regions only)...")
+                        try:
+                            uniform_max_diameter = 50.0
+                            uniform_num_bins = 200
+                            pocket_max_diameter = 50.0
+                            pocket_num_bins = 200
+                            num_samples_total = 10000
+                            num_samples_per_region = 1000
+                            bins_uniform = np.linspace(0, uniform_max_diameter, uniform_num_bins + 1)
+                            bins_pocket = np.linspace(0, pocket_max_diameter, pocket_num_bins + 1)
+
+                            acc_uniform = mgr.compute_psd_global_accessible(
+                                result,
+                                atoms,
+                                probe_radius,
+                                bins=bins_uniform,
+                                samples_per_region=num_samples_per_region,
+                                return_fig=False,
+                            )
+                            uniform_hist = acc_uniform if isinstance(acc_uniform, (list, np.ndarray)) else acc_uniform[0]
+                            acc_pocket_psds = mgr.compute_psds_pocketwise_accessible(
+                                result,
+                                atoms,
+                                probe_radius,
+                                num_samples_per_region=num_samples_per_region,
+                                bins=bins_pocket,
+                                return_fig=False,
+                            )
+                            pocket_psds = acc_pocket_psds if isinstance(acc_pocket_psds, dict) else acc_pocket_psds[0]
+
+                            acc_psd_results = {
+                                'psd_uniform': {
+                                    'bins': bins_uniform,
+                                    'histogram': uniform_hist,
+                                    'bin_centers': 0.5 * (bins_uniform[:-1] + bins_uniform[1:]),
+                                    'num_samples': num_samples_per_region * (len(pocket_psds) if pocket_psds else 0) or 1,
+                                },
+                                'psd_pocket': {
+                                    'bins': bins_pocket,
+                                    'bin_centers': 0.5 * (bins_pocket[:-1] + bins_pocket[1:]),
+                                    'pocket_psds': pocket_psds,
+                                    'num_samples_per_region': num_samples_per_region,
+                                    'num_regions': len(pocket_psds) if pocket_psds else 0,
+                                },
+                            }
+                            psd_accessible_base = output_dir / f"{cif_file.stem}_psd_accessible"
+                            save_psd_csv(acc_psd_results, psd_accessible_base, material_name=cif_file.stem)
+                            print("  Accessible PSD CSVs saved.")
+                        except Exception as e:
+                            print(f"Warning: Accessible PSD calculation failed: {e}")
 
                 # Handle surface area analysis if requested
                 if getattr(args, 'sa', False):
@@ -1638,13 +1705,14 @@ Notes:
             if value is not None:
                 result[config_key] = value
 
-        # Ensure return_dgrid is enabled if sa or vol analysis is requested
-        if (hasattr(args, 'sa') and args.sa) or (hasattr(args, 'vol') and args.vol):
+        # Ensure return_dgrid and compute_connections are enabled if sa, vol, or psd_accessible is requested
+        if (hasattr(args, 'sa') and args.sa) or (hasattr(args, 'vol') and args.vol) or (hasattr(args, 'psd_accessible') and args.psd_accessible):
             if not result.get('return_dgrid', False):
                 result['return_dgrid'] = True
-                print("Info: Automatically enabled distance grid (--return-dgrid) for surface area and/or void volume analysis")
-            else:
-                print("Info: Distance grid (--return-dgrid) is enabled for surface area and/or void volume analysis")
+                print("Info: Automatically enabled distance grid (--return-dgrid) for surface area / void volume / accessible PSD analysis")
+            if not result.get('compute_connections', False):
+                result['compute_connections'] = True
+                print("Info: Automatically enabled compute_connections for accessible PSD / percolation analysis")
 
         # Handle boolean flags
         if hasattr(args, 'no_connections') and args.no_connections:
