@@ -874,6 +874,7 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         "plot_maxima": True,
         "plot_maxima_show_spheres": False,
         "plot_connections": True,
+        "plot_windows": True,
         "plot_surface": True,
         "plot_surface_pbc": True,
         "plot_surface_isovalue": 0.75,
@@ -887,7 +888,7 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         defaults.update({k: v for k, v in options.items() if v is not None})
 
     if not defaults.get("plot_enable", True):
-        for key in ("plot_cell", "plot_framework", "plot_maxima", "plot_connections", "plot_surface", "plot_surface_pbc"):
+        for key in ("plot_cell", "plot_framework", "plot_maxima", "plot_connections", "plot_windows", "plot_surface", "plot_surface_pbc"):
             defaults[key] = False
 
     projection = str(defaults.get("plot_projection", "perspective")).lower()
@@ -977,6 +978,22 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
     if defaults.get("plot_connections", True) and connections_trimmed:
         connections_traces = mgr_visualize.plot_connections_as_it_is(connections_trimmed, all_maxima, dgrid.shape, mat_atoms)
         traces.extend(connections_traces)
+
+    # Windows for internal connections only (same reference as connections: unique_regions via connections_trimmed)
+    if defaults.get("plot_windows", True) and connections_trimmed:
+        internal_for_windows = [
+            c for c in connections_trimmed
+            if c[1] and c[2] == "internal" and len(c) > 3 and c[3] is not None and np.asarray(c[3]).size >= 3
+        ]
+        if internal_for_windows:
+            window_trace = mgr_visualize.plot_windows(
+                internal_for_windows,
+                name="windows (internal)",
+                marker_color="red",
+                marker_size=10,
+                opacity=0.6,
+            )
+            traces.append(window_trace)
 
     if defaults.get("plot_maxima", True) and len(maxima):
         maxima_trace = plot_maxima(
