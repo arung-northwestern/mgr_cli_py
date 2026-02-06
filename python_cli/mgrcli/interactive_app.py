@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -326,6 +327,377 @@ def _make_plot(results: Dict[str, Any], *, stylize: bool, projection: str, layou
     return show_mof(results, stylize=stylize, options=options)
 
 
+def _hts_one_material(
+    cif_path: Any,
+    out_dir: Any,
+    params: Dict[str, Any],
+    options: Dict[str, Any],
+) -> tuple:
+    """
+    Run segmentation and optional outputs for one CIF. Designed to run inside a Dask worker.
+    Returns (material_name, output_folder_path_or_none, success, error_message_or_none).
+    """
+    import re
+    import pickle as pkl
+    from pathlib import Path as P
+
+    out_dir = P(out_dir)
+    if isinstance(cif_path, (str, P)):
+        cif_path = P(cif_path)
+        atoms = read(str(cif_path))
+        material_name = cif_path.stem or "material"
+    else:
+        atoms = cif_path
+        material_name = getattr(atoms, "info", {}).get("name", "material") or "material"
+
+    if atoms is None:
+        return (material_name, None, False, "Failed to load CIF or atoms is None.")
+
+    def sanitize(s: str) -> str:
+        return re.sub(r"[^\w\-.]", "_", s)[:120]
+
+    try:
+        from mgr.analyze import update_with_covalent_bonds
+        atoms = update_with_covalent_bonds(atoms)
+    except Exception:
+        pass
+
+    try:
+        min_box = params.get("min_box_thickness")
+        if min_box is not None and min_box > 0:
+            cell_lengths = atoms.get_cell_lengths_and_angles()[:3]
+            if min(cell_lengths) < min_box:
+                repetitions = mgr.get_repetitions_to_meet_cutoff(atoms, min_box)
+                atoms = atoms * repetitions
+    except Exception:
+        pass
+
+    try:
+        spacing = float(params.get("spacing", 0.5))
+        use_aabb = bool(params.get("use_aabb_method", False))
+        block_size = int(params.get("block_size", 50000))
+
+        if use_aabb:
+            from mgr.compute import dgrid_from_atoms_cpu
+            dgrid = dgrid_from_atoms_cpu(atoms, spacing=spacing, block_size=block_size).astype(np.float32)
+        else:
+            if __package__ and "mgrcli" in __package__:
+                from mgrcli.cli import compute_dgrid_rust
+            else:
+                import sys
+                _root = P(__file__).resolve().parents[2]
+                if str(_root) not in sys.path:
+                    sys.path.insert(0, str(_root))
+                from python_cli.mgrcli.cli import compute_dgrid_rust
+            dgrid = compute_dgrid_rust(atoms, spacing)
+
+        mask_thickness = float(params.get("mask_thickness", 1.5))
+        h_value = float(params.get("h_value", 0.4))
+        min_distance = float(params.get("min_distance", 1.5))
+        threshold_abs = float(params.get("threshold_abs", 1.5))
+        extra_padding = float(params.get("extra_padding", 5.0))
+
+        if __package__ and "mgrcli" in __package__:
+            from mgrcli.cli import python_do_periodic_segmentation_rust
+        else:
+            import sys
+            _root = P(__file__).resolve().parents[2]
+            if str(_root) not in sys.path:
+                sys.path.insert(0, str(_root))
+            from python_cli.mgrcli.cli import python_do_periodic_segmentation_rust
+
+        results = python_do_periodic_segmentation_rust(
+            dgrid=dgrid,
+            mat_atoms=atoms,
+            mask_thickness=mask_thickness,
+            h=h_value,
+            min_distance=min_distance,
+            threshold_abs=threshold_abs,
+            return_padded_regions=False,
+            spacing=spacing,
+            minimum_window_separation=None,
+            wall_thickness=0.05,
+            extra_padding=extra_padding,
+            compactness=0,
+            min_region_size=0.001,
+            disable_tqdm=True,
+            compute_connections=True,
+            return_dgrid=True,
+        )
+        results["ase_atoms"] = atoms
+        results["dgrid"] = results.get("dgrid", dgrid)
+
+        dgrid_r = results.get("dgrid")
+        regions = results.get("regions")
+        maxima_info = results.get("maxima_info")
+        all_maxima = results.get("all_maxima", np.empty((0, 3)))
+        if dgrid_r is not None and regions is not None and regions.max() > 0 and len(all_maxima) > 0:
+            if maxima_info is not None and hasattr(maxima_info, "shape") and len(maxima_info.shape) == 2 and maxima_info.shape[1] >= 4:
+                all_maxima_radii = dgrid_r[tuple(maxima_info[:, 1:4].T)]
+            else:
+                all_maxima_radii = dgrid_r[tuple(all_maxima.T)] if len(all_maxima) else np.empty(0)
+            final_maxima = all_maxima[: int(regions.max())]
+            results["maxima"] = final_maxima
+            results["maxima_radii"] = all_maxima_radii[: len(final_maxima)]
+        else:
+            results["maxima"] = np.empty((0, 3), dtype=int)
+            results["maxima_radii"] = np.empty(0, dtype=float)
+
+        material_folder = out_dir / sanitize(material_name)
+        material_folder.mkdir(parents=True, exist_ok=True)
+
+        if options.get("save_npz", True):
+            npz_bytes = results_data_to_npz(results)
+            if npz_bytes:
+                (material_folder / "results.npz").write_bytes(npz_bytes)
+
+        if options.get("save_rag"):
+            if __package__ and "mgrcli" in __package__:
+                from mgrcli.cli import get_pbc_groups
+            else:
+                import sys
+                _root = P(__file__).resolve().parents[2]
+                if str(_root) not in sys.path:
+                    sys.path.insert(0, str(_root))
+                from python_cli.mgrcli.cli import get_pbc_groups
+            connections = results.get("connections")
+            maxima = results.get("maxima")
+            maxima_radii = results.get("maxima_radii")
+            unique_regions = results.get("unique_regions")
+            maxima_info_r = results.get("maxima_info")
+            if all(x is not None for x in (connections, maxima, maxima_radii, dgrid_r, unique_regions, maxima_info_r)):
+                pbc_groups_dict = get_pbc_groups(unique_regions, maxima_info_r)
+                pbc_groups = [v for k, v in pbc_groups_dict.items()]
+                rag = mgr.rag_from_connections(connections, maxima)
+                rag = mgr.add_pbc_to_rag(rag, pbc_groups)
+                rag = mgr.add_maxima_to_rag(rag, maxima, maxima_radii, dgrid_r.shape, atoms)
+                with open(material_folder / "rag.pkl", "wb") as f:
+                    pkl.dump(rag, f)
+
+        if options.get("detect_pocket_types"):
+            try:
+                if __package__ and "mgrcli" in __package__:
+                    from mgrcli.cli import get_pbc_groups
+                else:
+                    import sys
+                    _root = P(__file__).resolve().parents[2]
+                    if str(_root) not in sys.path:
+                        sys.path.insert(0, str(_root))
+                    from python_cli.mgrcli.cli import get_pbc_groups
+                from skimage.measure import regionprops
+                unique_regions = results.get("unique_regions")
+                maxima_info = results.get("maxima_info")
+                connections = results.get("connections")
+                maxima = results.get("maxima")
+                maxima_radii = results.get("maxima_radii")
+                pbc_groups_dict = get_pbc_groups(unique_regions, maxima_info)
+                pbc_groups = [v for k, v in pbc_groups_dict.items()]
+                connections_trimmed = [c for c in connections if np.any(np.isin(c[0], unique_regions))]
+                rag = mgr.rag_from_connections(connections_trimmed, maxima)
+                rag = mgr.add_pbc_to_rag(rag, pbc_groups)
+                rag = mgr.add_maxima_to_rag(rag, maxima, maxima_radii, dgrid_r.shape, atoms)
+                props = regionprops(results["regions"])
+                bins = np.linspace(0, 30, 50)
+                rag = mgr.add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, atoms, dgrid_r.shape)
+                js_threshold = float(options.get("js_threshold", 0.2))
+                rag = mgr.add_clustering_to_rag_geometry_js(rag, props, pbc_groups, atoms, dgrid_r.shape, use_pbc=True, js_threshold=js_threshold)
+                results["regions_cluster"] = mgr.clustering_grid_from_regions(results["regions"], rag, cluster_key="cluster_geom_pbc")
+                results["pocket_types_detected"] = True
+            except Exception:
+                pass
+
+        if options.get("save_html"):
+            if __package__ and "mgrcli" in __package__:
+                from mgrcli.plotting import show_mof
+            else:
+                import sys
+                _root = P(__file__).resolve().parents[2]
+                if str(_root) not in sys.path:
+                    sys.path.insert(0, str(_root))
+                from python_cli.mgrcli.plotting import show_mof
+            viz_opts = options.get("viz_options") or {}
+            stylize = options.get("stylize", False)
+            fig = show_mof(results, stylize=stylize, options=viz_opts)
+            fig.write_html(str(material_folder / "plot.html"))
+
+        if options.get("do_pore_dia"):
+            if __package__ and "mgrcli" in __package__:
+                from mgrcli.cli import compute_pore_diameter_analysis, save_pore_diameter_csv
+            else:
+                import sys
+                _root = P(__file__).resolve().parents[2]
+                if str(_root) not in sys.path:
+                    sys.path.insert(0, str(_root))
+                from python_cli.mgrcli.cli import compute_pore_diameter_analysis, save_pore_diameter_csv
+            try:
+                pore_dia_results = compute_pore_diameter_analysis(
+                    results["dgrid"], atoms, spacing=spacing, segmentation_results=results
+                )
+                if options.get("save_pore_dia_csv") and pore_dia_results:
+                    save_pore_diameter_csv(pore_dia_results, material_folder / f"{material_name}_pore_dia.csv")
+            except Exception:
+                pass
+
+        if options.get("do_psd"):
+            if __package__ and "mgrcli" in __package__:
+                from mgrcli.cli import compute_psd_analysis, save_psd_csv
+            else:
+                import sys
+                _root = P(__file__).resolve().parents[2]
+                if str(_root) not in sys.path:
+                    sys.path.insert(0, str(_root))
+                from python_cli.mgrcli.cli import compute_psd_analysis, save_psd_csv
+            try:
+                regions_pbc = results.get("regions_pbc")
+                domain = str(options.get("psd_domain", "Occupiable only"))
+                do_occupiable = domain in ("Occupiable only", "Both")
+                do_accessible = domain in ("Accessible only", "Both")
+                n_total = int(options.get("psd_num_samples_total", 10000))
+                n_per_region = int(options.get("psd_num_samples_per_region", 1000))
+                unif_bins = int(options.get("psd_uniform_num_bins", 200))
+                pock_bins = int(options.get("psd_pocket_num_bins", 200))
+                unif_max_d = float(options.get("psd_uniform_max_diameter", 50.0))
+                pock_max_d = float(options.get("psd_pocket_max_diameter", 50.0))
+                probe_psd = float(options.get("probe_radius_psd", 1.2))
+                psd_results = {}
+                if do_occupiable:
+                    out = compute_psd_analysis(
+                        results["dgrid"], atoms, regions_pbc=regions_pbc, spacing=spacing,
+                        num_samples_total=n_total, num_samples_per_region=n_per_region,
+                        uniform_max_diameter=unif_max_d, pocket_max_diameter=pock_max_d,
+                        uniform_num_bins=unif_bins, pocket_num_bins=pock_bins,
+                    )
+                    if out:
+                        psd_results.update(out)
+                if do_accessible and results.get("connections") is not None:
+                    try:
+                        percol = _compute_pld_analysis(results, atoms, spacing, mask_thickness, h_value, threshold_abs, min_distance, extra_padding, force_cpu_dgrid=True)
+                        mod = dict(results)
+                        mod.update(percol)
+                        mod.setdefault("distance_grid", mod.get("dgrid"))
+                        bins_unif = np.linspace(0, unif_max_d, unif_bins + 1)
+                        bins_pock = np.linspace(0, pock_max_d, pock_bins + 1)
+                        acc_uniform = mgr.compute_psd_global_accessible(mod, atoms, probe_radius=probe_psd, bins=bins_unif, samples_per_region=n_total)
+                        acc_pocket = mgr.compute_psds_pocketwise_accessible(mod, atoms, probe_radius=probe_psd, num_samples_per_region=n_per_region, bins=bins_pock)
+                        bc_unif = 0.5 * (bins_unif[:-1] + bins_unif[1:])
+                        bc_pock = 0.5 * (bins_pock[:-1] + bins_pock[1:])
+                        if do_occupiable and psd_results:
+                            psd_results["psd_accessible_uniform"] = {"bins": bins_unif, "histogram": acc_uniform, "bin_centers": bc_unif}
+                            psd_results["psd_accessible_pocket"] = {"bins": bins_pock, "bin_centers": bc_pock, "pocket_psds": acc_pocket}
+                        else:
+                            psd_results["psd_uniform"] = {"bins": bins_unif, "histogram": acc_uniform, "bin_centers": bc_unif, "num_samples": n_total}
+                            pocket_psds_list = [acc_pocket[rid]["hist"] for rid in sorted(acc_pocket)]
+                            psd_results["psd_pocket"] = {"bins": bins_pock, "bin_centers": bc_pock, "pocket_psds": pocket_psds_list, "num_regions": len(pocket_psds_list)}
+                    except Exception:
+                        pass
+                if options.get("save_psd_csv") and psd_results:
+                    save_psd_csv(psd_results, material_folder / f"{material_name}_psd", material_name=material_name)
+                if options.get("save_psd_plot") and psd_results:
+                    try:
+                        import plotly.graph_objects as go
+                        u = psd_results.get("psd_uniform")
+                        if u and u.get("histogram") is not None:
+                            hist = np.asarray(u["histogram"])
+                            bins_arr = np.asarray(u.get("bins", np.linspace(0, 50, len(hist) + 1)))
+                            centers = 0.5 * (bins_arr[:-1] + bins_arr[1:]) if len(bins_arr) > 1 else bins_arr[: len(hist)]
+                            if len(centers) > len(hist):
+                                centers = centers[: len(hist)]
+                            fig_psd = go.Figure(data=[go.Scatter(x=centers, y=hist, mode="lines", name="PSD", line=dict(width=2))])
+                            fig_psd.update_layout(
+                                title=f"Pore Size Distribution with uniform sampling across box - {material_name}",
+                                xaxis_title="Pore Diameter (Å)",
+                                yaxis_title="Counts",
+                                legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+                                width=1000,
+                                height=600,
+                            )
+                            fig_psd.write_html(str(material_folder / f"{material_name}_psd_plot.html"))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        if options.get("do_sa_vol"):
+            if __package__ and "mgrcli" in __package__:
+                from mgrcli.cli import save_surface_area_csv, save_void_volume_csv
+            else:
+                import sys
+                _root = P(__file__).resolve().parents[2]
+                if str(_root) not in sys.path:
+                    sys.path.insert(0, str(_root))
+                from python_cli.mgrcli.cli import save_surface_area_csv, save_void_volume_csv
+            try:
+                percolation_analysis = _compute_pld_analysis(
+                    results, atoms, spacing, mask_thickness, h_value,
+                    threshold_abs, min_distance, extra_padding, force_cpu_dgrid=True,
+                )
+                modified_results = dict(results)
+                modified_results.update(percolation_analysis)
+                if "distance_grid" not in modified_results:
+                    modified_results["distance_grid"] = modified_results.get("dgrid")
+                probe = float(options.get("probe_radius_sa_vol", 1.2))
+                from mgr.compute import compute_surface_area_from_results, compute_void_volume_from_results
+                sa_results = compute_surface_area_from_results(modified_results, atoms, probe)
+                vol_results = compute_void_volume_from_results(modified_results, atoms, probe)
+                if options.get("save_sa_vol_csv"):
+                    if sa_results:
+                        save_surface_area_csv(sa_results, material_folder / material_name)
+                    if vol_results:
+                        save_void_volume_csv(vol_results, material_folder / material_name, material_name=material_name)
+                if options.get("save_sa_plot") and sa_results:
+                    try:
+                        import plotly.express as px
+                        breakdown_data = []
+                        for region_id, area in sa_results.get("by_region", {}).items():
+                            breakdown_data.append({"Type": "Region (non-PBC)", "Category": "Segmented", "Label": f"region_{region_id}", "Surface Area (m²/g)": area})
+                        for pocket_id, area in sa_results.get("by_pocket", {}).items():
+                            breakdown_data.append({"Type": "Pocket (PBC)", "Category": "Grouped", "Label": str(pocket_id), "Surface Area (m²/g)": area})
+                        for cluster_id, area in sa_results.get("by_percolated_cluster", {}).items():
+                            breakdown_data.append({"Type": "Cluster (percolated)", "Category": "Accessible", "Label": str(cluster_id), "Surface Area (m²/g)": area})
+                        if not breakdown_data:
+                            total_sa = sa_results.get("total_surface_area", 0)
+                            acc_sa = sa_results.get("accessible_surface_area", 0)
+                            breakdown_data = [
+                                {"Type": "Global", "Category": "Total", "Label": "Total", "Surface Area (m²/g)": total_sa},
+                                {"Type": "Global", "Category": "Accessible", "Label": "Accessible", "Surface Area (m²/g)": acc_sa},
+                                {"Type": "Global", "Category": "Inaccessible", "Label": "Inaccessible", "Surface Area (m²/g)": total_sa - acc_sa},
+                            ]
+                        sa_df = __import__("pandas").DataFrame(breakdown_data)
+                        fig_sa = px.bar(sa_df, x="Label", y="Surface Area (m²/g)", color="Type", barmode="group", title="Surface Area Breakdown by Category")
+                        fig_sa.write_html(str(material_folder / f"{material_name}_surface_area_plot.html"))
+                    except Exception:
+                        pass
+                if options.get("save_vol_plot") and vol_results:
+                    try:
+                        import plotly.express as px
+                        breakdown_data = []
+                        for region_id, volume in vol_results.get("by_region", {}).items():
+                            breakdown_data.append({"Type": "Region (non-PBC)", "Category": "Segmented", "Label": f"region_{region_id}", "Void Volume (cm³/g)": volume})
+                        for pocket_id, volume in vol_results.get("by_pocket", {}).items():
+                            breakdown_data.append({"Type": "Pocket (PBC)", "Category": "Grouped", "Label": str(pocket_id), "Void Volume (cm³/g)": volume})
+                        for cluster_id, volume in vol_results.get("by_percolated_cluster", {}).items():
+                            breakdown_data.append({"Type": "Cluster (percolated)", "Category": "Accessible", "Label": str(cluster_id), "Void Volume (cm³/g)": volume})
+                        if not breakdown_data:
+                            total_vol = vol_results.get("total_void_volume", 0)
+                            acc_vol = vol_results.get("accessible_void_volume", 0)
+                            breakdown_data = [
+                                {"Type": "Global", "Category": "Total", "Label": "Total", "Void Volume (cm³/g)": total_vol},
+                                {"Type": "Global", "Category": "Accessible", "Label": "Accessible", "Void Volume (cm³/g)": acc_vol},
+                                {"Type": "Global", "Category": "Inaccessible", "Label": "Inaccessible", "Void Volume (cm³/g)": total_vol - acc_vol},
+                            ]
+                        vol_df = __import__("pandas").DataFrame(breakdown_data)
+                        fig_vol = px.bar(vol_df, x="Label", y="Void Volume (cm³/g)", color="Type", barmode="group", title="Void Volume Breakdown by Category")
+                        fig_vol.write_html(str(material_folder / f"{material_name}_void_volume_plot.html"))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        return (material_name, str(material_folder), True, None)
+    except Exception as e:
+        return (material_name, None, False, str(e))
+
+
 def main() -> None:
     st.set_page_config(
         layout="wide",
@@ -337,8 +709,21 @@ def main() -> None:
 {ASCII_LOGO}
 ```
 """)
-    st.markdown("## Pore Analysis & Visualization Web App 📹")
+    st.markdown("## Pore Analysis & Visualization Web App")
 
+    app_mode = st.radio(
+        "Mode",
+        ["Single material", "High-Throughput (HTS)"],
+        index=0,
+        horizontal=True,
+        key="app_mode",
+    )
+
+    if "HTS" in app_mode:
+        _render_hts_mode()
+        return
+
+    st.markdown("### Single material")
     samples = _get_sample_cifs()
 
     sample_choice = None
@@ -700,7 +1085,9 @@ def main() -> None:
     metadata = st.session_state.get("latest_metadata", {})
     analysis_key = st.session_state.get("analysis_key")
 
-    visualization_tab, percolation_tab, psd_tab, sa_vol_tab = st.tabs(["Visualization", "PLD & Percolation", "Pore Size Distribution", "Surface Areas & Void Volumes"])
+    visualization_tab, percolation_tab, psd_tab, sa_vol_tab = st.tabs([
+        "Visualization", "PLD & Percolation", "Pore Size Distribution", "Surface Areas & Void Volumes",
+    ])
 
     with visualization_tab:
         if results_data is None:
@@ -1542,6 +1929,292 @@ def main() -> None:
                         file_name=f"{getattr(cif_path, 'stem', 'analysis')}_void_volume.csv",
                         mime="text/csv",
                     )
+
+
+def _render_hts_mode() -> None:
+    """Render the full High-Throughput mode UI (CIF source, options, run, results)."""
+    st.markdown("## High-Throughput Characterization")
+    st.caption("Process many CIFs in parallel. Options below mirror single-material mode.")
+
+    samples = _get_sample_cifs()
+    use_default_set = st.checkbox(
+        "Test HTS using included default set of materials",
+        value=False,
+        key="hts_use_default_set",
+        help="Use the built-in sample CIFs for exploring the app. Leave unchecked to use your own folder or uploads.",
+    )
+    n_default = len(samples) if samples else 0
+    if use_default_set and n_default:
+        st.caption(f"Default test set: {n_default} materials.")
+    hts_folder = ""
+    hts_uploads = []
+    if not use_default_set:
+        hts_folder = st.text_input(
+            "Path to folder containing CIFs",
+            value="",
+            help="For Docker, use a mounted path. Leave empty to use uploads below.",
+            key="hts_folder",
+        )
+        hts_uploads = st.file_uploader(
+            "Or upload CIF files",
+            type=["cif"],
+            accept_multiple_files=True,
+            key="hts_upload",
+        )
+
+    col_left, col_right = st.columns(2)
+    with col_left:
+        st.markdown("#### Dgrid options")
+        hts_spacing = st.number_input("Grid spacing (Å)", value=0.5, min_value=0.1, step=0.1, key="hts_spacing")
+        hts_use_aabb = st.checkbox("Use Python AABB (CPU) method for distance grid", value=False, key="hts_aabb")
+        hts_block_size = 50000
+        if hts_use_aabb:
+            hts_block_size = st.number_input("AABB block size (grid points per worker)", value=50000, min_value=1000, max_value=200000, step=5000, key="hts_bs")
+
+        st.markdown("#### Segmentation options")
+        hts_mask = st.number_input("Mask thickness (Å)", value=1.5, min_value=0.05, key="hts_mask")
+        hts_h = st.number_input("h (Å)", value=0.4, min_value=0.05, key="hts_h")
+        hts_surface_value = st.number_input("Surface value (Å)", value=2.0, min_value=0.1, key="hts_surface_value")
+        hts_min_dist, hts_threshold, hts_extra_pad = 1.5, 1.5, 5.0
+        with st.expander("Advanced segmentation", expanded=False):
+            hts_min_dist = st.number_input("Min distance (Å)", value=1.5, key="hts_md")
+            hts_threshold = st.number_input("Threshold abs (Å)", value=1.5, key="hts_thr")
+            hts_extra_pad = st.number_input("Extra padding (Å)", value=5.0, key="hts_epad")
+        hts_min_box_enabled = st.checkbox("Ensure minimum box thickness", value=False, key="hts_minbox")
+        hts_min_box = 6.0
+        if hts_min_box_enabled:
+            hts_min_box = st.number_input("Minimum box thickness (Å)", value=6.0, min_value=1.0, max_value=50.0, step=0.5, key="hts_minbox_val")
+
+        with st.expander("Visualization options (for HTML plot)", expanded=False):
+            hts_plot_framework = st.checkbox("Show framework", value=True, key="hts_plot_fw")
+            hts_framework_mesh = st.checkbox("Show framework as mesh", value=False, key="hts_fw_mesh")
+            hts_framework_scatter = st.checkbox("Show simple framework scatter", value=True, key="hts_fw_scatter")
+            hts_show_rings = st.checkbox("Show rings in framework", value=True, key="hts_show_rings")
+            hts_plot_cell = st.checkbox("Show cell", value=True, key="hts_plot_cell")
+            hts_plot_maxima = st.checkbox("Show maxima", value=True, key="hts_plot_maxima")
+            hts_projection = st.selectbox("Projection", ["perspective", "orthographic"], index=0, key="hts_proj")
+            hts_stylize = st.checkbox("Stylize plot", value=True, disabled=(hts_projection == "orthographic"), key="hts_stylize")
+            hts_layout = st.selectbox("Background", ["dark", "white"], index=0, key="hts_layout")
+            hts_show_surface = st.checkbox("Show pore surface", value=True, key="hts_show_surf")
+            hts_show_surface_pbc = st.checkbox("Show periodic pore surface", value=True, key="hts_show_surf_pbc")
+            hts_show_connections = st.checkbox("Show pore graph", value=True, key="hts_show_conn")
+            hts_show_maxima_spheres = st.checkbox("Show maxima spheres", value=False, key="hts_show_max_sph")
+            hts_plot_pocket_types = st.checkbox("Plot pocket types on surface", value=False, key="hts_plot_pocket_types")
+            hts_surface_types_opacity = st.slider("Pocket types surface opacity", 0.0, 1.0, 1.0, 0.1, key="hts_surf_types_opacity")
+            hts_surface_opacity = st.slider("Surface opacity", 0.0, 1.0, 1.0, 0.1, key="hts_surf_opacity")
+            hts_surface_pbc_opacity = st.slider("Periodic surface opacity", 0.0, 1.0, 1.0, 0.1, key="hts_surf_pbc_opacity")
+
+        with st.expander("Optional analyses", expanded=False):
+            hts_do_pore_dia = st.checkbox("Compute pore diameter and percolation", value=False, key="hts_pore_dia")
+            hts_save_pore_dia_csv = st.checkbox("Save pore diameter CSV", value=False, key="hts_save_pore_dia")
+            hts_detect_pocket_types = st.checkbox("Detect pocket types", value=False, key="hts_detect_pocket_types")
+            if hts_detect_pocket_types or hts_plot_pocket_types:
+                hts_js_threshold = st.slider("Jensen–Shannon threshold for pocket clustering", 0.05, 0.5, 0.2, 0.01, key="hts_js_threshold")
+            else:
+                hts_js_threshold = 0.2
+            hts_do_psd = st.checkbox("Compute PSD", value=False, key="hts_psd")
+            hts_psd_domain = st.radio("PSD domain", ["Occupiable only", "Accessible only", "Both"], index=0, key="hts_psd_domain")
+            if hts_psd_domain in ("Accessible only", "Both"):
+                hts_probe_psd = st.number_input("PSD probe radius (Å)", value=1.2, min_value=0.1, step=0.05, key="hts_probe_psd", help="Probe radius for accessible PSD (percolation threshold).")
+            else:
+                hts_probe_psd = 1.2
+            hts_save_psd_csv = st.checkbox("Save PSD CSVs", value=False, key="hts_save_psd")
+            if hts_do_psd:
+                hts_psd_samples_total = st.number_input("PSD total samples", value=10000, min_value=1000, step=1000, key="hts_psd_n_total")
+                hts_psd_uniform_bins = st.number_input("PSD uniform bins", value=200, min_value=10, step=10, key="hts_psd_unif_bins")
+                hts_psd_uniform_max_d = st.number_input("PSD uniform max diameter (Å)", value=50.0, min_value=5.0, step=5.0, key="hts_psd_unif_max")
+                hts_psd_per_region = st.number_input("PSD samples per region", value=1000, min_value=100, step=100, key="hts_psd_per_reg")
+                hts_psd_pocket_bins = st.number_input("PSD pocket bins", value=200, min_value=10, step=10, key="hts_psd_pock_bins")
+                hts_psd_pocket_max_d = st.number_input("PSD pocket max diameter (Å)", value=50.0, min_value=5.0, step=5.0, key="hts_psd_pock_max")
+            else:
+                hts_psd_samples_total, hts_psd_uniform_bins = 10000, 200
+                hts_psd_uniform_max_d, hts_psd_per_region = 50.0, 1000
+                hts_psd_pocket_bins, hts_psd_pocket_max_d = 200, 50.0
+            hts_do_sa_vol = st.checkbox("Compute surface area and void volume", value=False, key="hts_sa_vol")
+            hts_save_sa_vol_csv = st.checkbox("Save SA/Vol CSVs", value=False, key="hts_save_sa_vol")
+            hts_probe_sa_vol = st.number_input("SA/Vol probe radius (Å)", value=1.2, min_value=0.1, step=0.1, key="hts_probe_sa_vol")
+
+        st.markdown("#### Output options")
+        hts_save_npz = st.checkbox("Save results NPZ", value=True, key="hts_npz")
+        hts_save_rag = st.checkbox("Save pore graph (RAG .pkl)", value=False, key="hts_rag")
+        hts_save_html = st.checkbox("Generate interactive HTML plot", value=False, key="hts_html")
+        with st.expander("Images to output", expanded=False):
+            hts_save_psd_plot = st.checkbox("Save PSD plot (HTML)", value=False, key="hts_out_psd_plot")
+            hts_save_sa_plot = st.checkbox("Save surface area breakdown plot (HTML)", value=False, key="hts_out_sa_plot")
+            hts_save_vol_plot = st.checkbox("Save void volume breakdown plot (HTML)", value=False, key="hts_out_vol_plot")
+        hts_out_dir = st.text_input("Output directory", value="./hts_output", key="hts_out")
+        hts_tar = st.checkbox("Compress output to single tar when done", value=False, key="hts_tar")
+
+    with col_right:
+        hts_run = st.button("Run HTS", key="hts_run")
+        hts_results_key = "hts_run_results"
+        hts_status = st.empty()
+
+        def _collect_hts_cifs():
+            if use_default_set and samples:
+                return list(samples.values())
+            cif_paths = []
+            folder_path = str(hts_folder).strip() if hts_folder else ""
+            if folder_path and Path(folder_path).exists():
+                for p in Path(folder_path).rglob("*.cif"):
+                    cif_paths.append(p)
+            if not cif_paths and hts_uploads:
+                import tempfile
+                tmp = tempfile.mkdtemp(prefix="hts_cifs_")
+                for u in hts_uploads:
+                    path = Path(tmp) / (u.name or "upload.cif")
+                    path.write_bytes(u.getvalue())
+                    cif_paths.append(path)
+            return cif_paths
+
+        if hts_run:
+            cif_list = _collect_hts_cifs()
+            if not cif_list:
+                hts_status.warning("Enable default set, provide a folder path with CIFs, or upload CIF files.")
+            else:
+                try:
+                    from dask.distributed import Client, LocalCluster
+                    from dask import delayed
+                except ImportError:
+                    hts_status.error("Install dask[distributed] to use High-Throughput (e.g. pip install 'dask[distributed]').")
+                else:
+                    hts_status.info(f"Starting HTS for {len(cif_list)} CIFs…")
+                    out_dir = Path(hts_out_dir)
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    framework_style = "scatter" if hts_framework_scatter and not hts_framework_mesh else "mesh"
+                    viz_options = {
+                        "plot_framework": hts_plot_framework,
+                        "plot_framework_style": framework_style,
+                        "plot_framework_show_rings": hts_show_rings,
+                        "plot_cell": hts_plot_cell,
+                        "plot_maxima": hts_plot_maxima,
+                        "plot_surface": hts_show_surface,
+                        "plot_surface_pbc": hts_show_surface_pbc,
+                        "plot_surface_isovalue": hts_surface_value,
+                        "plot_surface_opacity": hts_surface_opacity,
+                        "plot_surface_pbc_opacity": hts_surface_pbc_opacity,
+                        "plot_surface_types_opacity": hts_surface_types_opacity,
+                        "plot_connections": hts_show_connections,
+                        "plot_windows": True,
+                        "plot_maxima_show_spheres": hts_show_maxima_spheres,
+                        "plot_projection": hts_projection,
+                        "plot_layout": hts_layout,
+                    }
+                    params = {
+                        "spacing": hts_spacing,
+                        "use_aabb_method": hts_use_aabb,
+                        "block_size": hts_block_size,
+                        "mask_thickness": hts_mask,
+                        "h_value": hts_h,
+                        "surface_value": hts_surface_value,
+                        "min_distance": hts_min_dist,
+                        "threshold_abs": hts_threshold,
+                        "extra_padding": hts_extra_pad,
+                        "min_box_thickness": float(hts_min_box) if hts_min_box_enabled else None,
+                    }
+                    options = {
+                        "save_npz": hts_save_npz,
+                        "save_rag": hts_save_rag,
+                        "save_html": hts_save_html,
+                        "viz_options": viz_options,
+                        "stylize": hts_stylize and hts_projection != "orthographic",
+                        "do_pore_dia": hts_do_pore_dia,
+                        "save_pore_dia_csv": hts_save_pore_dia_csv,
+                        "do_psd": hts_do_psd,
+                        "save_psd_csv": hts_save_psd_csv,
+                        "probe_radius_psd": float(hts_probe_psd),
+                        "do_sa_vol": hts_do_sa_vol,
+                        "save_sa_vol_csv": hts_save_sa_vol_csv,
+                        "probe_radius_sa_vol": float(hts_probe_sa_vol),
+                        "psd_num_samples_total": int(hts_psd_samples_total),
+                        "psd_num_samples_per_region": int(hts_psd_per_region),
+                        "psd_uniform_num_bins": int(hts_psd_uniform_bins),
+                        "psd_pocket_num_bins": int(hts_psd_pocket_bins),
+                        "psd_uniform_max_diameter": float(hts_psd_uniform_max_d),
+                        "psd_pocket_max_diameter": float(hts_psd_pocket_max_d),
+                        "psd_domain": hts_psd_domain,
+                        "detect_pocket_types": hts_detect_pocket_types or hts_plot_pocket_types,
+                        "plot_pocket_types": hts_plot_pocket_types,
+                        "js_threshold": float(hts_js_threshold),
+                        "save_psd_plot": hts_save_psd_plot,
+                        "save_sa_plot": hts_save_sa_plot,
+                        "save_vol_plot": hts_save_vol_plot,
+                    }
+                    cluster = LocalCluster(n_workers=4, threads_per_worker=1)
+                    client = Client(cluster)
+                    dashboard_url = getattr(cluster, "dashboard_link", None) or getattr(client, "dashboard_link", None)
+                    if dashboard_url:
+                        hts_status.markdown(f"**HTS running.** Monitor workers: [Open Dask Dashboard]({dashboard_url})")
+                    log_file = out_dir / "hts_run.log"
+                    hts_logger = logging.getLogger("mgrcli.hts")
+                    file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+                    file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+                    file_handler.setLevel(logging.INFO)
+                    hts_logger.addHandler(file_handler)
+                    hts_logger.setLevel(logging.INFO)
+                    try:
+                        import time
+                        t0 = time.time()
+                        hts_logger.info("HTS started with %d materials (output: %s)", len(cif_list), str(out_dir))
+                        delayed_list = [delayed(_hts_one_material)(str(p), str(out_dir), params, options) for p in cif_list]
+                        futures = client.compute(delayed_list)
+                        total = len(futures)
+                        progress_placeholder = st.empty()
+                        with st.spinner("HTS running… This may take several minutes."):
+                            while True:
+                                done = sum(1 for f in futures if f.status == "finished")
+                                progress_placeholder.caption(f"Progress: {done}/{total} materials completed")
+                                if done >= total:
+                                    break
+                                time.sleep(1)
+                            results_list = []
+                            for f in futures:
+                                try:
+                                    r = f.result()
+                                    results_list.append(r if isinstance(r, tuple) and len(r) == 4 else ("?", None, False, str(r)))
+                                except Exception as e:
+                                    results_list.append(("?", None, False, str(e)))
+                            elapsed = time.time() - t0
+                            n_ok = sum(1 for r in results_list if r[2])
+                            n_err = total - n_ok
+                            progress_placeholder.caption(
+                                f"**Summary:** Completed: {n_ok}, Errored: {n_err}, Total: {total} · Time: {elapsed:.1f}s"
+                            )
+                            st.session_state[hts_results_key] = results_list
+                            hts_status.success(f"HTS finished: {n_ok} completed, {n_err} errored, total {elapsed:.1f}s.")
+                            hts_logger.info(
+                                "HTS finished: completed=%d errored=%d total=%d time=%.1fs",
+                                n_ok, n_err, total, elapsed,
+                            )
+                            for r in results_list:
+                                if not r[2] and r[3]:
+                                    hts_logger.warning("Material %s failed: %s", r[0], r[3])
+                    finally:
+                        hts_logger.removeHandler(file_handler)
+                        file_handler.close()
+                        client.close()
+                        cluster.close()
+
+        if hts_results_key in st.session_state:
+            rows = st.session_state[hts_results_key]
+            df = pd.DataFrame(
+                [
+                    {"Material": r[0], "Status": "OK" if r[2] else "Failed", "Output path": r[1] or "—", "Error": r[3] or ""}
+                    for r in rows
+                ]
+            )
+            st.dataframe(df, use_container_width=True)
+            if hts_tar and rows and any(r[2] for r in rows):
+                import tarfile
+                import io
+                out_dir = Path(hts_out_dir)
+                buf = io.BytesIO()
+                with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+                    for r in rows:
+                        if r[2] and r[1]:
+                            tar.add(r[1], arcname=Path(r[1]).name)
+                buf.seek(0)
+                st.download_button("Download results.tar.gz", data=buf.getvalue(), file_name="hts_results.tar.gz", mime="application/gzip", key="hts_tar_dl")
 
 
 if __name__ == "__main__":
