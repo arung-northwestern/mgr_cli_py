@@ -7,6 +7,7 @@ ase>=3.22
 pyvista>=0.43
 matplotlib>=3.3
 streamlit>=1.32
+dask[distributed]>=2023.0
 
 # Build requirements
 setuptools-rust
