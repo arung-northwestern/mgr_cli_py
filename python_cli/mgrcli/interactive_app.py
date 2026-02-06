@@ -713,7 +713,7 @@ def main() -> None:
 
     app_mode = st.radio(
         "Mode",
-        ["Single material", "High-Throughput (HTS)"],
+        ["Single material", "High-Throughput (HTS) (experimental)"],
         index=0,
         horizontal=True,
         key="app_mode",
@@ -1964,6 +1964,20 @@ def _render_hts_mode() -> None:
 
     col_left, col_right = st.columns(2)
     with col_left:
+        hts_select_all = st.checkbox(
+            "Select all (all calculations, both PSD types, all outputs & images)",
+            value=False,
+            key="hts_select_all",
+            help="Enable all optional analyses, outputs, and image exports. You can still tweak individual options below.",
+        )
+        hts_global_probe = st.number_input(
+            "Global probe radius (Å)",
+            value=1.2,
+            min_value=0.1,
+            step=0.05,
+            key="hts_global_probe",
+            help="Default probe radius for PSD (accessible) and SA/Vol. Override individually below if needed.",
+        )
         st.markdown("#### Dgrid options")
         hts_spacing = st.number_input("Grid spacing (Å)", value=0.5, min_value=0.1, step=0.1, key="hts_spacing")
         hts_use_aabb = st.checkbox("Use Python AABB (CPU) method for distance grid", value=False, key="hts_aabb")
@@ -1972,9 +1986,9 @@ def _render_hts_mode() -> None:
             hts_block_size = st.number_input("AABB block size (grid points per worker)", value=50000, min_value=1000, max_value=200000, step=5000, key="hts_bs")
 
         st.markdown("#### Segmentation options")
-        hts_mask = st.number_input("Mask thickness (Å)", value=1.5, min_value=0.05, key="hts_mask")
-        hts_h = st.number_input("h (Å)", value=0.4, min_value=0.05, key="hts_h")
-        hts_surface_value = st.number_input("Surface value (Å)", value=2.0, min_value=0.1, key="hts_surface_value")
+        hts_mask = st.number_input("Mask thickness (Å)", value=0.5, min_value=0.05, key="hts_mask")
+        hts_h = st.number_input("h (Å)", value=0.2, min_value=0.05, key="hts_h")
+        hts_surface_value = st.number_input("Surface value (Å)", value=1.0, min_value=0.1, key="hts_surface_value")
         hts_min_dist, hts_threshold, hts_extra_pad = 1.5, 1.5, 5.0
         with st.expander("Advanced segmentation", expanded=False):
             hts_min_dist = st.number_input("Min distance (Å)", value=1.5, key="hts_md")
@@ -2015,9 +2029,9 @@ def _render_hts_mode() -> None:
             hts_do_psd = st.checkbox("Compute PSD", value=False, key="hts_psd")
             hts_psd_domain = st.radio("PSD domain", ["Occupiable only", "Accessible only", "Both"], index=0, key="hts_psd_domain")
             if hts_psd_domain in ("Accessible only", "Both"):
-                hts_probe_psd = st.number_input("PSD probe radius (Å)", value=1.2, min_value=0.1, step=0.05, key="hts_probe_psd", help="Probe radius for accessible PSD (percolation threshold).")
+                hts_probe_psd = st.number_input("PSD probe radius (Å)", value=float(hts_global_probe), min_value=0.1, step=0.05, key="hts_probe_psd", help="Overrides global probe for accessible PSD.")
             else:
-                hts_probe_psd = 1.2
+                hts_probe_psd = float(hts_global_probe)
             hts_save_psd_csv = st.checkbox("Save PSD CSVs", value=False, key="hts_save_psd")
             if hts_do_psd:
                 hts_psd_samples_total = st.number_input("PSD total samples", value=10000, min_value=1000, step=1000, key="hts_psd_n_total")
@@ -2032,7 +2046,7 @@ def _render_hts_mode() -> None:
                 hts_psd_pocket_bins, hts_psd_pocket_max_d = 200, 50.0
             hts_do_sa_vol = st.checkbox("Compute surface area and void volume", value=False, key="hts_sa_vol")
             hts_save_sa_vol_csv = st.checkbox("Save SA/Vol CSVs", value=False, key="hts_save_sa_vol")
-            hts_probe_sa_vol = st.number_input("SA/Vol probe radius (Å)", value=1.2, min_value=0.1, step=0.1, key="hts_probe_sa_vol")
+            hts_probe_sa_vol = st.number_input("SA/Vol probe radius (Å)", value=float(hts_global_probe), min_value=0.1, step=0.1, key="hts_probe_sa_vol", help="Overrides global probe for SA/Vol.")
 
         st.markdown("#### Output options")
         hts_save_npz = st.checkbox("Save results NPZ", value=True, key="hts_npz")
@@ -2046,7 +2060,28 @@ def _render_hts_mode() -> None:
         hts_tar = st.checkbox("Compress output to single tar when done", value=False, key="hts_tar")
 
     with col_right:
-        hts_run = st.button("Run HTS", key="hts_run")
+        st.markdown(
+            """
+            <style>
+            div[data-testid="column"]:nth-of-type(2) .stButton > button {
+                background: linear-gradient(135deg, #1565C0 0%, #0D47A1 100%);
+                color: white;
+                font-weight: 700;
+                font-size: 1.1rem;
+                padding: 0.6rem 1.2rem;
+                border: none;
+                border-radius: 8px;
+                width: 100%;
+            }
+            div[data-testid="column"]:nth-of-type(2) .stButton > button:hover {
+                background: linear-gradient(135deg, #1976D2 0%, #1565C0 100%);
+                color: white;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+        hts_run = st.button("⚡ Run HTS", key="hts_run")
         hts_results_key = "hts_run_results"
         hts_status = st.empty()
 
@@ -2112,19 +2147,20 @@ def _render_hts_mode() -> None:
                         "extra_padding": hts_extra_pad,
                         "min_box_thickness": float(hts_min_box) if hts_min_box_enabled else None,
                     }
+                    _all = hts_select_all
                     options = {
                         "save_npz": hts_save_npz,
-                        "save_rag": hts_save_rag,
-                        "save_html": hts_save_html,
+                        "save_rag": hts_save_rag or _all,
+                        "save_html": hts_save_html or _all,
                         "viz_options": viz_options,
                         "stylize": hts_stylize and hts_projection != "orthographic",
-                        "do_pore_dia": hts_do_pore_dia,
-                        "save_pore_dia_csv": hts_save_pore_dia_csv,
-                        "do_psd": hts_do_psd,
-                        "save_psd_csv": hts_save_psd_csv,
+                        "do_pore_dia": hts_do_pore_dia or _all,
+                        "save_pore_dia_csv": hts_save_pore_dia_csv or _all,
+                        "do_psd": hts_do_psd or _all,
+                        "save_psd_csv": hts_save_psd_csv or _all,
                         "probe_radius_psd": float(hts_probe_psd),
-                        "do_sa_vol": hts_do_sa_vol,
-                        "save_sa_vol_csv": hts_save_sa_vol_csv,
+                        "do_sa_vol": hts_do_sa_vol or _all,
+                        "save_sa_vol_csv": hts_save_sa_vol_csv or _all,
                         "probe_radius_sa_vol": float(hts_probe_sa_vol),
                         "psd_num_samples_total": int(hts_psd_samples_total),
                         "psd_num_samples_per_region": int(hts_psd_per_region),
@@ -2132,13 +2168,13 @@ def _render_hts_mode() -> None:
                         "psd_pocket_num_bins": int(hts_psd_pocket_bins),
                         "psd_uniform_max_diameter": float(hts_psd_uniform_max_d),
                         "psd_pocket_max_diameter": float(hts_psd_pocket_max_d),
-                        "psd_domain": hts_psd_domain,
-                        "detect_pocket_types": hts_detect_pocket_types or hts_plot_pocket_types,
-                        "plot_pocket_types": hts_plot_pocket_types,
+                        "psd_domain": "Both" if _all else hts_psd_domain,
+                        "detect_pocket_types": hts_detect_pocket_types or hts_plot_pocket_types or _all,
+                        "plot_pocket_types": hts_plot_pocket_types or _all,
                         "js_threshold": float(hts_js_threshold),
-                        "save_psd_plot": hts_save_psd_plot,
-                        "save_sa_plot": hts_save_sa_plot,
-                        "save_vol_plot": hts_save_vol_plot,
+                        "save_psd_plot": hts_save_psd_plot or _all,
+                        "save_sa_plot": hts_save_sa_plot or _all,
+                        "save_vol_plot": hts_save_vol_plot or _all,
                     }
                     cluster = LocalCluster(n_workers=4, threads_per_worker=1)
                     client = Client(cluster)
@@ -2161,33 +2197,48 @@ def _render_hts_mode() -> None:
                         total = len(futures)
                         progress_placeholder = st.empty()
                         with st.spinner("HTS running… This may take several minutes."):
+                            last_done = -1
+                            no_progress_sec = 0
                             while True:
-                                done = sum(1 for f in futures if f.status == "finished")
-                                progress_placeholder.caption(f"Progress: {done}/{total} materials completed")
+                                done = sum(1 for f in futures if (hasattr(f, "done") and f.done()) or (getattr(f, "status", None) in ("finished", "error", "cancelled", "lost")))
+                                if done == last_done:
+                                    no_progress_sec += 1
+                                    if no_progress_sec >= 600:
+                                        hts_logger.warning("No progress for 10 min; stopping wait.")
+                                        break
+                                else:
+                                    no_progress_sec = 0
+                                    last_done = done
+                                progress_placeholder.caption(f"Progress: {done}/{total} materials finished")
                                 if done >= total:
                                     break
                                 time.sleep(1)
                             results_list = []
-                            for f in futures:
+                            result_timeout = 120
+                            for i, f in enumerate(futures):
                                 try:
-                                    r = f.result()
-                                    results_list.append(r if isinstance(r, tuple) and len(r) == 4 else ("?", None, False, str(r)))
+                                    r = f.result(timeout=result_timeout)
+                                    if r is None or not (isinstance(r, tuple) and len(r) == 4):
+                                        results_list.append(("?", None, False, "No result (worker returned None)"))
+                                    else:
+                                        results_list.append(r)
                                 except Exception as e:
                                     results_list.append(("?", None, False, str(e)))
                             elapsed = time.time() - t0
-                            n_ok = sum(1 for r in results_list if r[2])
+                            n_ok = sum(1 for r in results_list if isinstance(r, tuple) and len(r) >= 3 and r[2])
                             n_err = total - n_ok
+                            n_no_result = sum(1 for r in results_list if isinstance(r, tuple) and len(r) >= 2 and r[1] is None and not (r[2] if len(r) > 2 else False))
                             progress_placeholder.caption(
-                                f"**Summary:** Completed: {n_ok}, Errored: {n_err}, Total: {total} · Time: {elapsed:.1f}s"
+                                f"**Summary:** Completed: {n_ok}, Errored: {n_err} ({n_no_result} no result), Total: {total} · Time: {elapsed:.1f}s"
                             )
                             st.session_state[hts_results_key] = results_list
-                            hts_status.success(f"HTS finished: {n_ok} completed, {n_err} errored, total {elapsed:.1f}s.")
+                            hts_status.success(f"HTS finished: {n_ok} completed, {n_err} errored ({n_no_result} no result), total {elapsed:.1f}s.")
                             hts_logger.info(
-                                "HTS finished: completed=%d errored=%d total=%d time=%.1fs",
-                                n_ok, n_err, total, elapsed,
+                                "HTS finished: completed=%d errored=%d no_result=%d total=%d time=%.1fs",
+                                n_ok, n_err, n_no_result, total, elapsed,
                             )
                             for r in results_list:
-                                if not r[2] and r[3]:
+                                if isinstance(r, tuple) and len(r) >= 4 and not r[2] and r[3]:
                                     hts_logger.warning("Material %s failed: %s", r[0], r[3])
                     finally:
                         hts_logger.removeHandler(file_handler)
@@ -2197,21 +2248,20 @@ def _render_hts_mode() -> None:
 
         if hts_results_key in st.session_state:
             rows = st.session_state[hts_results_key]
-            df = pd.DataFrame(
-                [
-                    {"Material": r[0], "Status": "OK" if r[2] else "Failed", "Output path": r[1] or "—", "Error": r[3] or ""}
-                    for r in rows
-                ]
-            )
+            def _row(r):
+                if r is None or not (isinstance(r, tuple) and len(r) >= 4):
+                    return {"Material": "?", "Status": "Failed", "Output path": "—", "Error": "No result"}
+                return {"Material": r[0], "Status": "OK" if r[2] else "Failed", "Output path": r[1] or "—", "Error": (r[3] or "")}
+            df = pd.DataFrame([_row(r) for r in rows])
             st.dataframe(df, use_container_width=True)
-            if hts_tar and rows and any(r[2] for r in rows):
+            if hts_tar and rows and any((r[2] if isinstance(r, tuple) and len(r) >= 3 else False) for r in rows):
                 import tarfile
                 import io
                 out_dir = Path(hts_out_dir)
                 buf = io.BytesIO()
                 with tarfile.open(fileobj=buf, mode="w:gz") as tar:
                     for r in rows:
-                        if r[2] and r[1]:
+                        if isinstance(r, tuple) and len(r) >= 2 and r[2] and r[1]:
                             tar.add(r[1], arcname=Path(r[1]).name)
                 buf.seek(0)
                 st.download_button("Download results.tar.gz", data=buf.getvalue(), file_name="hts_results.tar.gz", mime="application/gzip", key="hts_tar_dl")
