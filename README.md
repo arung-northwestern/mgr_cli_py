@@ -331,10 +331,26 @@ MGR_RESULTS_DIR="$HOME/MGR_Results" ./scripts/mgrbox process *.cif -o /results
 MGR_RAYON_THREADS=4 ./scripts/mgrbox process *.cif -o /results
 ```
 
-### Multi-Arch Build (No Push)
+### Cross-Platform Build (Windows, Linux amd64, ARM Mac)
+
+An image built with `docker build -t mgrcli:local .` on an ARM Mac is **linux/arm64** and will not run on Windows or Intel Linux (they need **linux/amd64**). The Rust backend is compiled inside the image for the target platform, so you must use a **multi-platform** build.
+
+**Use the buildx script** (not plain `docker build`) so the image runs on all targets:
+
 ```bash
 ./scripts/docker_buildx.sh
 ```
+
+- By default this builds for `linux/amd64,linux/arm64`. Only the **first** platform is loaded into Docker (amd64), so the same image runs on Windows and Intel Linux. On ARM Mac it will run via emulation; for native ARM Mac use a single-platform build (below).
+- **Build for one platform only** (faster, no registry):
+  - Windows / Intel Linux: `PLATFORMS=linux/amd64 ./scripts/docker_buildx.sh`
+  - ARM Mac: `PLATFORMS=linux/arm64 ./scripts/docker_buildx.sh`
+- **Export to tar files** (no Docker Hub): build both platforms and save as tarballs for sharing (e.g. Google Drive). Filenames are friendly: **mgrcli-windows_linux_64.tar** (Windows + Intel/AMD Linux) and **mgrcli-mac_arm64.tar** (ARM Mac).
+  ```bash
+  EXPORT_TAR=1 ./scripts/docker_buildx.sh
+  # Produces mgrcli-windows_linux_64.tar and mgrcli-mac_arm64.tar
+  # Colabs: see docs/DOCKER_DESKTOP_SHARED_IMAGE.md for load + Docker Desktop settings (ports, volume, Dask).
+  ```
 
 ### GUI Launcher Behavior (Spec)
 - Check Docker Desktop is installed/running
@@ -342,6 +358,15 @@ MGR_RAYON_THREADS=4 ./scripts/mgrbox process *.cif -o /results
 - Pull latest image on launch (auto-update)
 - Start container with bind mount to output folder
 - Open browser to `http://localhost:8501`
+
+### Hugging Face Spaces (demo deployment)
+To deploy the app as a public demo on [Hugging Face Spaces](https://huggingface.co/spaces) (HTS tab shows a message only; full HTS is for local Docker/pip):
+
+```bash
+./scripts/deploy_to_hf_space.sh
+```
+
+Then push the generated **`build_space/`** directory to a new Space (Docker). See **`spaces/README.md`** for step-by-step instructions.
 
 ## Quick Start
 

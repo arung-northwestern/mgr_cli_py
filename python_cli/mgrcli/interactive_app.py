@@ -1934,6 +1934,16 @@ def main() -> None:
 def _render_hts_mode() -> None:
     """Render the full High-Throughput mode UI (CIF source, options, run, results)."""
     st.markdown("## High-Throughput Characterization")
+
+    # Restrict HTS to local installs (Docker / pip); show message only on hosted demos (e.g. Hugging Face Spaces)
+    if os.environ.get("MGR_DEPLOYMENT") == "spaces":
+        st.info(
+            "**High-Throughput Characterization is only available on local installs.** "
+            "Use the **Docker Desktop** image (Docker Hub) or **pip install** (PyPI) when we're public for full HTS and batch runs. "
+            "This keeps the demo lightweight; run the app locally for full features."
+        )
+        return
+
     st.caption("Process many CIFs in parallel. Options below mirror single-material mode.")
 
     samples = _get_sample_cifs()
@@ -2056,7 +2066,14 @@ def _render_hts_mode() -> None:
             hts_save_psd_plot = st.checkbox("Save PSD plot (HTML)", value=False, key="hts_out_psd_plot")
             hts_save_sa_plot = st.checkbox("Save surface area breakdown plot (HTML)", value=False, key="hts_out_sa_plot")
             hts_save_vol_plot = st.checkbox("Save void volume breakdown plot (HTML)", value=False, key="hts_out_vol_plot")
-        hts_out_dir = st.text_input("Output directory", value="./hts_output", key="hts_out")
+        default_results_root = os.environ.get("MGR_RESULTS_DIR", ".")
+        default_hts_out = str(Path(default_results_root) / "hts_output")
+        hts_out_dir = st.text_input(
+            "Output directory",
+            value=default_hts_out,
+            key="hts_out",
+            help="Directory where HTS results will be written. In Docker, this defaults to the mounted results volume.",
+        )
         hts_tar = st.checkbox("Compress output to single tar when done", value=False, key="hts_tar")
 
     with col_right:
@@ -2176,9 +2193,15 @@ def _render_hts_mode() -> None:
                         "save_sa_plot": hts_save_sa_plot or _all,
                         "save_vol_plot": hts_save_vol_plot or _all,
                     }
-                    cluster = LocalCluster(n_workers=4, threads_per_worker=1)
+                    # Configure Dask dashboard to be reachable from Docker
+                    dash_port = int(os.environ.get("MGR_DASK_DASHBOARD_PORT", "8787"))
+                    dashboard_address = f"0.0.0.0:{dash_port}"
+                    cluster = LocalCluster(n_workers=4, threads_per_worker=1, dashboard_address=dashboard_address)
                     client = Client(cluster)
                     dashboard_url = getattr(cluster, "dashboard_link", None) or getattr(client, "dashboard_link", None)
+                    # Prefer host-facing URL (for Docker): default 8787 so mapping 8787:8787 works without env
+                    host_dash_port = os.environ.get("MGR_DASK_DASHBOARD_HOST_PORT") or str(dash_port)
+                    dashboard_url = f"http://localhost:{host_dash_port}"
                     if dashboard_url:
                         hts_status.markdown(f"**HTS running.** Monitor workers: [Open Dask Dashboard]({dashboard_url})")
                     log_file = out_dir / "hts_run.log"

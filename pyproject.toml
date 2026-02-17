@@ -42,6 +42,5 @@ dev = [
 mgrcli = "mgrcli.cli:main"
 
 [tool.maturin]
-python-source = "python_cli"
 module-name = "mgrcli_rust"
 bindings = "pyo3"

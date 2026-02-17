@@ -6,6 +6,20 @@ PORT="${PORT:-8501}"
 DEFAULT_OUTPUT_DIR="${DEFAULT_OUTPUT_DIR:-$HOME/MGR_Results}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 
+# Allow caller to override host Dask dashboard port; otherwise pick a free one.
+DASK_DASHBOARD_PORT="${DASK_DASHBOARD_PORT:-}"
+if [[ -z "$DASK_DASHBOARD_PORT" ]]; then
+  DASK_DASHBOARD_PORT="$(python - << 'EOF'
+import socket
+s = socket.socket()
+s.bind(('', 0))
+port = s.getsockname()[1]
+s.close()
+print(port)
+EOF
+)"
+fi
+
 if [[ -z "$OUTPUT_DIR" ]]; then
   read -r -p "Output folder [${DEFAULT_OUTPUT_DIR}]: " OUTPUT_DIR
   OUTPUT_DIR="${OUTPUT_DIR:-$DEFAULT_OUTPUT_DIR}"
@@ -40,10 +54,13 @@ fi
 echo "Building image ${IMAGE_NAME}..."
 docker build -t "$IMAGE_NAME" .
 
-echo "Starting container on port ${PORT}..."
+echo "Starting container on app port ${PORT} and Dask dashboard port ${DASK_DASHBOARD_PORT}..."
 docker run --rm \
   -p "${PORT}:8501" \
+  -p "${DASK_DASHBOARD_PORT}:8787" \
   -v "${OUTPUT_DIR}:/results" \
   -e MGR_RESULTS_DIR=/results \
+  -e MGR_DASK_DASHBOARD_PORT=8787 \
+  -e MGR_DASK_DASHBOARD_HOST_PORT="${DASK_DASHBOARD_PORT}" \
   -e RAYON_NUM_THREADS="${RAYON_NUM_THREADS}" \
   "$IMAGE_NAME"
