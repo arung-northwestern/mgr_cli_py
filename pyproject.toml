@@ -37,6 +37,9 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
 ]
+skimage = [
+    "scikit-image>=0.21",
+]
 
 [project.scripts]
 mgrcli = "mgrcli.cli:main"

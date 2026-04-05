@@ -61,3 +61,4 @@ mcli_env/
 # Compiled shared libraries
 *.so
 python_cli/mgr_cli_py.cpython-*-linux-gnu.so
+.todos/

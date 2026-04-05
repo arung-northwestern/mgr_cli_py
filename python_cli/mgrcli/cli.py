@@ -90,7 +90,8 @@ def python_do_periodic_segmentation_rust(
     min_region_size=0.001,
     disable_tqdm=False,
     compute_connections=True,
-    return_dgrid=False
+    return_dgrid=False,
+    watershed_backend='rust_bucket',
 ):
     """Perform periodic segmentation using Rust backend."""
     import logging
@@ -124,7 +125,8 @@ def python_do_periodic_segmentation_rust(
         min_region_size=min_region_size,
         disable_tqdm=disable_tqdm,
         compute_connections=compute_connections,
-        return_dgrid=return_dgrid
+        return_dgrid=return_dgrid,
+        watershed_backend=watershed_backend,
     )
 
     return result
@@ -810,6 +812,7 @@ class MCLI:
         'compute_connections': True,
         'return_padded_regions': False,
         'return_dgrid': True,
+        'watershed_backend': 'rust_bucket',
     }
     DEFAULTS.update(PLOT_DEFAULTS)
 
@@ -939,6 +942,16 @@ Notes:
         param_group.add_argument(
             '-mrs', '--min-region-size', type=float,
             help=f'Minimum region size percentage (default: {self.DEFAULTS["min_region_size"]})'
+        )
+        param_group.add_argument(
+            '-b', '--backend', '--watershed-backend',
+            dest='watershed_backend',
+            choices=['rust_bucket', 'rust_det', 'rust_det_parallel', 'skimage'],
+            default=None,
+            help=(
+                'Watershed backend for segmentation: rust_bucket (default), rust_det, '
+                'rust_det_parallel, or skimage (install scikit-image, e.g. pip install "mgrcli[skimage]").'
+            ),
         )
         param_group.add_argument(
             '--js-threshold', type=float, default=0.15,
@@ -1724,6 +1737,9 @@ Notes:
         if hasattr(args, 'disable_tqdm') and args.disable_tqdm:
             result['disable_tqdm'] = True
 
+        if getattr(args, 'watershed_backend', None) is not None:
+            result['watershed_backend'] = args.watershed_backend
+
         return result
 
     def process_single_cif(self, cif_file: Path, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -1751,6 +1767,7 @@ Notes:
             disable_tqdm=config['disable_tqdm'],
             compute_connections=config['compute_connections'],
             return_dgrid=config['return_dgrid'],
+            watershed_backend=config.get('watershed_backend', 'rust_bucket'),
         )
 
         total_start = time.perf_counter()

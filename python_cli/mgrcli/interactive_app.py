@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from io import BytesIO
 
 import plotly.express as px
@@ -28,6 +28,61 @@ if str(MGR_SRC_PATH) not in sys.path:
 # Import the reference MGR library from mgr_src/mgr
 import mgr as mgr
 from mgr.helper import estimate_h_from_percolation_history
+
+# Watershed backend labels (selectbox) and descriptions (shown under the selection).
+WATERSHED_BACKEND_LABELS: Dict[str, str] = {
+    "rust_det": "rust_det — heap watershed (Rust)",
+    "rust_bucket": "rust_bucket — parallel buckets (Rust)",
+    "rust_det_parallel": "rust_det_parallel — deterministic parallel (Rust)",
+    "skimage": "skimage — scikit-image watershed",
+}
+WATERSHED_BACKEND_DETAILS: Dict[str, str] = {
+    "rust_det": (
+        "**rust_det** — Heap watershed (Rust). Deterministic; medium speed; single-threaded. "
+        "Skimage-like tie handling for many structures."
+    ),
+    "rust_bucket": (
+        "**rust_bucket** — Parallel buckets (Rust). Fastest and most memory-efficient. "
+        "*Not* bit-deterministic under parallel execution: thread concurrency can change tie-breaks (*)."
+    ),
+    "rust_det_parallel": (
+        "**rust_det_parallel** — Deterministic parallel (Rust). Deterministic; typically faster than "
+        "**rust_det** on large grids."
+    ),
+    "skimage": (
+        "**skimage** — scikit-image watershed. Deterministic; single-threaded. Speed broadly comparable "
+        "to **rust_det**. Requires the `scikit-image` package."
+    ),
+}
+WATERSHED_BACKEND_ORDER: Tuple[str, ...] = (
+    "rust_bucket",
+    "rust_det",
+    "rust_det_parallel",
+    "skimage",
+)
+
+
+def _watershed_backend_widgets(widget_key_suffix: str) -> str:
+    """Selectbox plus help text for the chosen backend. Suffix keeps Streamlit widget keys unique."""
+    sel_key = f"watershed_backend_select_{widget_key_suffix}"
+    choice = st.selectbox(
+        "Watershed backend",
+        options=list(WATERSHED_BACKEND_ORDER),
+        index=0,
+        format_func=lambda k: WATERSHED_BACKEND_LABELS[k],
+        key=sel_key,
+        help="Seeded watershed implementation used on the padded periodic distance grid.",
+    )
+    st.markdown(WATERSHED_BACKEND_DETAILS[choice])
+    if choice == "skimage":
+        try:
+            import skimage.segmentation  # noqa: F401
+        except ImportError:
+            st.warning(
+                "scikit-image is not installed. Install with: `pip install scikit-image` "
+                'or `pip install "mgrcli[skimage]"`.'
+            )
+    return choice
 
 
 def results_data_to_npz(results: Dict[str, Any]) -> bytes:
@@ -163,6 +218,7 @@ def _run_segmentation(
     min_distance: float = 1.5,
     threshold_abs: float = 1.5,
     extra_padding: float = 5.0,
+    watershed_backend: str = "rust_bucket",
 ) -> Dict[str, np.ndarray]:
     segmentation_kwargs = dict(
         dgrid=dgrid,
@@ -181,6 +237,7 @@ def _run_segmentation(
         disable_tqdm=True,
         compute_connections=True,
         return_dgrid=True,
+        watershed_backend=watershed_backend,
     )
     return python_do_periodic_segmentation_rust(**segmentation_kwargs)
 
@@ -195,6 +252,7 @@ def _compute_pld_analysis(
     min_distance: float,
     extra_padding: float,
     force_cpu_dgrid: bool = True,
+    watershed_backend: str = "rust_bucket",
 ) -> Dict[str, Any]:
     # For percolation, use CPU dgrid + fresh segmentation to match reference behavior.
     if force_cpu_dgrid:
@@ -209,6 +267,7 @@ def _compute_pld_analysis(
             min_distance=min_distance,
             extra_padding=extra_padding,
             return_dgrid=True,
+            watershed_backend=watershed_backend,
         )
         prepared = prepare_results_for_plot(analysis_results, mat_atoms)
     else:
@@ -396,6 +455,7 @@ def _hts_one_material(
         min_distance = float(params.get("min_distance", 1.5))
         threshold_abs = float(params.get("threshold_abs", 1.5))
         extra_padding = float(params.get("extra_padding", 5.0))
+        watershed_backend_w = str(params.get("watershed_backend", "rust_bucket"))
 
         if __package__ and "mgrcli" in __package__:
             from mgrcli.cli import python_do_periodic_segmentation_rust
@@ -423,6 +483,7 @@ def _hts_one_material(
             disable_tqdm=True,
             compute_connections=True,
             return_dgrid=True,
+            watershed_backend=watershed_backend_w,
         )
         results["ase_atoms"] = atoms
         results["dgrid"] = results.get("dgrid", dgrid)
@@ -571,7 +632,18 @@ def _hts_one_material(
                         psd_results.update(out)
                 if do_accessible and results.get("connections") is not None:
                     try:
-                        percol = _compute_pld_analysis(results, atoms, spacing, mask_thickness, h_value, threshold_abs, min_distance, extra_padding, force_cpu_dgrid=True)
+                        percol = _compute_pld_analysis(
+                            results,
+                            atoms,
+                            spacing,
+                            mask_thickness,
+                            h_value,
+                            threshold_abs,
+                            min_distance,
+                            extra_padding,
+                            force_cpu_dgrid=True,
+                            watershed_backend=watershed_backend_w,
+                        )
                         mod = dict(results)
                         mod.update(percol)
                         mod.setdefault("distance_grid", mod.get("dgrid"))
@@ -628,8 +700,16 @@ def _hts_one_material(
                 from python_cli.mgrcli.cli import save_surface_area_csv, save_void_volume_csv
             try:
                 percolation_analysis = _compute_pld_analysis(
-                    results, atoms, spacing, mask_thickness, h_value,
-                    threshold_abs, min_distance, extra_padding, force_cpu_dgrid=True,
+                    results,
+                    atoms,
+                    spacing,
+                    mask_thickness,
+                    h_value,
+                    threshold_abs,
+                    min_distance,
+                    extra_padding,
+                    force_cpu_dgrid=True,
+                    watershed_backend=watershed_backend_w,
                 )
                 modified_results = dict(results)
                 modified_results.update(percolation_analysis)
@@ -884,6 +964,7 @@ def main() -> None:
                 step=0.5,
                 help="Extra padding around the unit cell for periodic boundary conditions.",
             )
+        watershed_backend = _watershed_backend_widgets("visualization")
 
     st.markdown("### 🎨 Visualization Options")
     col_vis1, col_vis2 = st.columns(2)
@@ -958,6 +1039,7 @@ def main() -> None:
                 min_distance=min_distance,
                 threshold_abs=threshold_abs,
                 extra_padding=extra_padding,
+                watershed_backend=watershed_backend,
             )
             results["ase_atoms"] = working_atoms
             results["dgrid"] = results.get("dgrid", current_params["dgrid"])
@@ -1076,6 +1158,7 @@ def main() -> None:
             "spacing": float(spacing),
             "mask_thickness": float(mask_thickness),
             "surface_value": float(surface_value),
+            "watershed_backend": str(watershed_backend),
         }
         st.session_state["analysis_key"] = cache_key
         pld_cache = st.session_state.setdefault("pld_cache", {})
@@ -1224,6 +1307,9 @@ def main() -> None:
                             threshold_abs=float(threshold_abs),
                             min_distance=float(min_distance),
                             extra_padding=float(extra_padding),
+                            watershed_backend=str(
+                                metadata.get("watershed_backend", "rust_bucket")
+                            ),
                         )
                     except Exception as exc:
                         st.error(f"Percolation analysis failed: {exc}")
@@ -1719,6 +1805,9 @@ def main() -> None:
                                 threshold_abs=float(threshold_abs),
                                 min_distance=float(min_distance),
                                 extra_padding=float(extra_padding),
+                                watershed_backend=str(
+                                    metadata.get("watershed_backend", "rust_bucket")
+                                ),
                             )
                             pld_cache[cache_key] = percolation_analysis
 
@@ -2000,10 +2089,12 @@ def _render_hts_mode() -> None:
         hts_h = st.number_input("h (Å)", value=0.2, min_value=0.05, key="hts_h")
         hts_surface_value = st.number_input("Surface value (Å)", value=1.0, min_value=0.1, key="hts_surface_value")
         hts_min_dist, hts_threshold, hts_extra_pad = 1.5, 1.5, 5.0
+        hts_watershed_backend = "rust_bucket"
         with st.expander("Advanced segmentation", expanded=False):
             hts_min_dist = st.number_input("Min distance (Å)", value=1.5, key="hts_md")
             hts_threshold = st.number_input("Threshold abs (Å)", value=1.5, key="hts_thr")
             hts_extra_pad = st.number_input("Extra padding (Å)", value=5.0, key="hts_epad")
+            hts_watershed_backend = _watershed_backend_widgets("hts")
         hts_min_box_enabled = st.checkbox("Ensure minimum box thickness", value=False, key="hts_minbox")
         hts_min_box = 6.0
         if hts_min_box_enabled:
@@ -2163,6 +2254,7 @@ def _render_hts_mode() -> None:
                         "threshold_abs": hts_threshold,
                         "extra_padding": hts_extra_pad,
                         "min_box_thickness": float(hts_min_box) if hts_min_box_enabled else None,
+                        "watershed_backend": str(hts_watershed_backend),
                     }
                     _all = hts_select_all
                     options = {

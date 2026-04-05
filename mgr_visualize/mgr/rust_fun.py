@@ -5,6 +5,34 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _watershed_padded_labels(rust_mod, watershed_backend, padded_grid, markers, void_mask, compactness):
+    """Run seeded watershed on the padded periodic grid; returns uint32 region labels."""
+    wb = watershed_backend
+    pg32 = padded_grid.astype(np.float32)
+    seeds_u32 = markers.astype(np.uint32)
+    mask_u8 = void_mask.astype(np.uint8)
+    if wb == "rust_bucket":
+        return rust_mod.seeded_watershed_bucket(pg32, seeds_u32, mask=mask_u8)
+    if wb == "rust_det":
+        return rust_mod.seeded_watershed_det(pg32, seeds_u32, mask_u8)
+    if wb == "rust_det_parallel":
+        return rust_mod.seeded_watershed_det_parallel(pg32, seeds_u32, mask_u8)
+    if wb == "skimage":
+        from skimage.segmentation import watershed as sk_watershed
+
+        return sk_watershed(
+            -padded_grid,
+            markers.astype(np.int32),
+            mask=void_mask.astype(bool),
+            compactness=compactness,
+            connectivity=2,
+        ).astype(np.uint32)
+    raise ValueError(
+        f"Unknown watershed_backend {wb!r}. Expected "
+        "'rust_bucket', 'rust_det', 'rust_det_parallel', or 'skimage'."
+    )
+
+
 def dgrid_from_atoms_rust(ase_atoms, spacing, radii=None):
     """Compute a distance grid from atomic positions using the Rust backend.
 
@@ -89,7 +117,7 @@ def egrid_from_atoms_rust(
         return egrid
 
 
-def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, min_distance=1.5, threshold_abs=1.5, return_padded_regions=False, spacing=None, minimum_window_separation=None, wall_thickness=0.05, extra_padding=5, compactness=0, min_region_size=0.001, disable_tqdm=False, compute_connections=True, return_dgrid=False,):
+def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, min_distance=1.5, threshold_abs=1.5, return_padded_regions=False, spacing=None, minimum_window_separation=None, wall_thickness=0.05, extra_padding=5, compactness=0, min_region_size=0.001, disable_tqdm=False, compute_connections=True, return_dgrid=False, watershed_backend="rust_bucket",):
     """Perform periodic segmentation on a distance grid to identify pore regions.
 
     This function implements a comprehensive pore segmentation algorithm that:
@@ -131,6 +159,9 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     :type compute_connections: bool
     :param return_dgrid: Whether to include dgrid in output
     :type return_dgrid: bool
+    :param watershed_backend: Watershed implementation: rust_bucket (default), rust_det,
+        rust_det_parallel, or skimage (requires scikit-image).
+    :type watershed_backend: str
     :return: Dictionary containing segmentation results including maxima, regions, connections, etc.
     :rtype: dict
     """
@@ -150,6 +181,7 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     import mcli_rust
 
     logger.info(f"Using {mcli_rust.rayon_num_threads()} threads for parallel processing")
+    logger.info("Watershed backend: %s", watershed_backend)
     start_time = time()
     from .helper import (
         compute_wall_cells,
@@ -305,12 +337,13 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     # )
 
     # run the watershed segmentation using the merged markers.
-    padded_regions = mcli_rust.seeded_watershed_bucket(
-        padded_grid.astype(np.float32),
-        padded_markers.astype(np.uint32),
-        mask=padded_void.astype(np.uint8),
-        # # compactness=compactness,
-        # connectivity=2,  # 26-connectivity for full 3d
+    padded_regions = _watershed_padded_labels(
+        mcli_rust,
+        watershed_backend,
+        padded_grid,
+        padded_markers,
+        padded_void,
+        compactness,
     )
 
     logger.info(
@@ -374,12 +407,13 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
         padded_void = np.pad(void_mask, padding_thickness, mode="wrap")
 
         # run the watershed segmentation using the merged markers.
-        padded_regions = mcli_rust.seeded_watershed_bucket(
-            padded_grid.astype(np.float32),
-            padded_markers.astype(np.uint32),
-            mask=padded_void.astype(np.uint8),
-            # # compactness=compactness,
-            # connectivity=2,  # 26-connectivity for full 3d
+        padded_regions = _watershed_padded_labels(
+            mcli_rust,
+            watershed_backend,
+            padded_grid,
+            padded_markers,
+            padded_void,
+            compactness,
         )
 
     # replace regions_pbc with regions_pbc_cleaned
@@ -455,12 +489,13 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     #     )
 
     # compute unmerged regions
-    unmerged_padded_regions = mcli_rust.seeded_watershed_bucket(
-        padded_grid.astype(np.float32),
-        seeds=unmerged_markers.astype(np.uint32),
-        mask=padded_void.astype(np.uint8),
-        # compactness=compactness,
-        # connectivity=2,
+    unmerged_padded_regions = _watershed_padded_labels(
+        mcli_rust,
+        watershed_backend,
+        padded_grid,
+        unmerged_markers,
+        padded_void,
+        compactness,
     )
 
     # grab the central block
