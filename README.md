@@ -70,7 +70,9 @@ This CLI tool is **separate** from the main Mofography Python package but mainta
 
 # 🚀 Installation Guide
 
-Install from source into a Python environment. **`pip install -e .` pulls in all Python dependencies** declared in `pyproject.toml` (Streamlit, Plotly, Dask, ASE, …) and **builds `mgrcli_rust` automatically** via [maturin](https://www.maturin.rs/). You only need a working **Rust toolchain** on the machine so that compile step can run.
+Install from source into a Python environment. **`pip install -e .` pulls in all Python dependencies** declared in `pyproject.toml` (including the **`mgr_src`** stack: pymatgen, freud, networkx, trimesh, scikit-learn, tqdm, rich, and the same web/data helpers as the [mofography](https://github.com/arung-northwestern/mofography) README’s pip list where this repo imports them). It also **builds `mgrcli_rust` automatically** via [maturin](https://www.maturin.rs/). You only need a working **Rust toolchain** on the machine so that compile step can run.
+
+**Optional CUDA:** `pip install -e ".[gpu]"` adds **cupy** for GPU code paths in `mgr_src` (omit on CPU-only machines, as in mofography’s install note). **dask-jobqueue** is not used in this codebase yet, so it is not declared as a dependency.
 
 For users who do not want a local Python/Rust setup, the **Docker** workflow runs the Streamlit app in a container; **public image names and pull commands will be added to this README when the image is published.**
 

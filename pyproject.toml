@@ -29,7 +29,8 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Physics",
 ]
 dependencies = [
-    "numpy>=1.20.0,<2.4",
+    # Core CLI + Streamlit
+    "numpy>=1.20.0,<3",
     "scipy>=1.10",
     "scikit-image>=0.21",
     "plotly>=5.20",
@@ -38,12 +39,31 @@ dependencies = [
     "matplotlib>=3.3",
     "streamlit>=1.32",
     "dask[distributed]>=2023.0",
+    "pandas>=1.5",
+    # Used by mgr_src (aligned with mofography install list where applicable)
+    "pymatgen>=2023.1",
+    "networkx>=3.0",
+    "tqdm>=4.64",
+    "aiohttp>=3.9",
+    "icecream>=2.1",
+    "sparse>=0.14",
+    "scikit-learn>=1.2",
+    "rich>=13.0",
+    "trimesh>=3.23",
+    "furl>=2.1",
+    "requests>=2.28",
+    "freud-analysis>=2.13",
+    "kaleido>=0.2.1",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
+]
+# GPU paths in mgr_src (e.g. cupy FFT). Omit on CPU-only machines (see mofography README).
+gpu = [
+    "cupy>=12.0",
 ]
 
 [project.scripts]
