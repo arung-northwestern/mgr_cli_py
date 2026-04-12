@@ -8,9 +8,8 @@ A high-performance command-line interface for analyzing Metal-Organic Frameworks
 
 ## Table of Contents
 - [Installation Guide](#-installation-guide)
-  - [Choose Your Installation Path](#choose-your-installation-path)
-  - [Path 1: Developer Installation](#-path-1-developer-installation)
-  - [Path 2: Standalone Executable](#-path-2-standalone-executable)
+  - [Prerequisites and install](#prerequisites-and-install)
+  - [How the Rust backend is built](#how-the-rust-backend-is-built)
   - [Troubleshooting](#-troubleshooting)
 - [Quick Start](#quick-start)
 - [Features](#features)
@@ -20,7 +19,6 @@ A high-performance command-line interface for analyzing Metal-Organic Frameworks
 - [Examples](#examples)
 - [Workflow Diagram](#workflow-diagram)
 - [Reading Results in Python](#reading-results-in-python)
-- [Standalone Builds](#standalone-builds)
 - [Testing](#testing)
 - [Development](#development)
 - [Performance](#performance)
@@ -48,7 +46,7 @@ A high-performance command-line interface for analyzing Metal-Organic Frameworks
 * **🎯 Distraction-Free**: For TUI lovers who prefer focused, command-line workflows
 * **🔄 Automation Ready**: Easy integration into scripts, pipelines, and automated workflows
 * **💾 Resource Efficient**: Lower memory footprint compared to full Python environment
-* **📦 Zero Dependencies**: Standalone executables available without Python installation
+* **🐳 Docker path**: For a browser-only experience without a local Python/Rust toolchain, use the Docker-based Streamlit image (see [Docker (Local)](#docker-local)); public registry images will be documented when published.
 
 ## Relationship to Mofography Python Package
 
@@ -56,43 +54,35 @@ This CLI tool is **separate** from the main Mofography Python package but mainta
 
 ## Architecture
 
-### Backend Technologies
-* **Rust Core**: High-performance segmentation algorithms (distance grids, watershed, maxima detection, window connections)
-* **Python Interface**: User-friendly CLI built with argparse
-* **PyO3 Bridge**: Seamless Rust-Python interoperability
-* **Numpy Arrays**: Efficient data structures for scientific computing
+### Backend technologies
+* **`mgrcli_rust` (Rust)**: Native extension module (PyO3) with the heavy numerical work: distance grids, watershed, maxima detection, window connections, and related kernels. The **CLI and Streamlit app import this module**; they do not call a separate “mgrui” or second Rust product.
+* **Python (`python_cli/mgrcli/`)**: `argparse` CLI, Streamlit UI (`interactive_app.py`), plotting glue, orchestration, and saving results (for example `.npz`).
+* **PyO3 + NumPy**: Rust functions receive and return NumPy arrays where appropriate.
 
-### Where Python vs Rust is Used
-* **Python**: CLI interface, configuration management, file I/O, result serialization
-* **Rust**: Core algorithms, numerical computations, memory management, parallel processing
+### Which `Cargo.toml` is used
+**The repository root** `Cargo.toml` (next to `pyproject.toml`), with Rust sources in **`src/`**, is what **maturin** / `pip install` compile into `mgrcli_rust`. A duplicate crate under `mgr_src/mgrcli_rust/` is not used for that install path; ignore it unless you are working on that subtree explicitly.
+
+### Where Python vs Rust is used
+* **Python**: CLI, Streamlit, configuration, file I/O, Plotly/pyvista workflows, Dask/HTS drivers.
+* **Rust (`mgrcli_rust`)**: Core segmentation algorithms, numerical kernels, parallelism (Rayon), and tight array work.
 
 > **Note**: This is completely standalone from the main mofography Python library, although the core segmentation algorithms (distance grids, watershed, maxima detection, and window connections) use the same Rust backend functions. However, all bookkeeping operations (CIF file reading, atomic radii assignment, periodic boundary condition handling, and reindexing) are implemented entirely in Rust here, which may produce slightly different results compared to the Python version.
 
 # 🚀 Installation Guide
 
-## Choose Your Installation Path
+Install from source into a Python environment. **`pip install -e .` pulls in all Python dependencies** declared in `pyproject.toml` (Streamlit, Plotly, Dask, ASE, …) and **builds `mgrcli_rust` automatically** via [maturin](https://www.maturin.rs/). You only need a working **Rust toolchain** on the machine so that compile step can run.
 
-### 📋 **Quick Decision Guide**
+For users who do not want a local Python/Rust setup, the **Docker** workflow runs the Streamlit app in a container; **public image names and pull commands will be added to this README when the image is published.**
 
-| Your Situation | Recommended Path | Requirements | Installation Time |
-|----------------|------------------|--------------|-------------------|
-| **Have Python + Rust** | [Path 1: Source Installation](#-path-1-developer-installation) | Python 3.8+, Rust, Git | ~5-10 minutes |
-| **Want standalone .exe** | [Path 2: Standalone Executable](#-path-2-standalone-executable) | None! | ~2 minutes |
-| **New to programming** | [Path 2: Standalone Executable](#-path-2-standalone-executable) | None! | ~2 minutes |
-
----
-
-## 🛠️ **Path 1: Developer Installation** (Recommended if you have Python & Rust)
-
-Use this path to install `mgrcli` into a Python environment. The **Rust backend must compile successfully**: the `mgrcli_rust` module is a native extension built from the **repository root** (`Cargo.toml`, `src/`). The usual workflow is **one install command** (`pip install -e .` or `maturin develop`), which compiles Rust and installs the CLI; you then add optional Python dependencies for plotting, Streamlit, and HTS features.
+## Prerequisites and install
 
 ### Prerequisites
 
 * **Python 3.8+**: [Download Python](https://www.python.org/downloads/)
-* **Rust & Cargo**: Required to compile `mgrcli_rust` (PyO3 / maturin)
-* **Git**: For cloning the repository
+* **Rust & Cargo**: required so `mgrcli_rust` can compile (PyO3 / maturin)
+* **Git**: to clone the repository
 
-### Step 1: Install Rust (One-time setup)
+### Step 1: Install Rust (one-time)
 
 **Windows:**
 ```bash
@@ -128,7 +118,7 @@ rustc --version  # Should show version 1.70 or higher
 cargo --version  # Should show cargo version
 ```
 
-### Step 2: Clone and enter the repository
+### Step 2: Clone the repository
 
 ```bash
 git clone https://github.com/arung-northwestern/mgr_cli_py.git
@@ -142,124 +132,58 @@ python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 ```
 
-### Step 3: Compile the Rust extension and install the CLI
+### Step 3: Install the package (Rust builds here)
 
 From the **repository root** (the directory that contains `Cargo.toml`, `pyproject.toml`, and `python_cli/`):
-
-**Option A — editable install (recommended):** uses [maturin](https://www.maturin.rs/) as the build backend (`pyproject.toml`) to compile `mgrcli_rust` and install the `mgrcli` package.
 
 ```bash
 pip install --upgrade pip
 pip install -e .
 ```
 
-**Option B — maturin explicitly:**
+Equivalent with **uv**:
+
+```bash
+uv pip install -e .
+```
+
+**Non-editable install from a wheel** (for example on a machine where you copy artifacts instead of the full repo):
 
 ```bash
 pip install maturin
-maturin develop --release
+maturin build --release
+pip install target/wheels/mgrcli-*.whl
 ```
 
-**Optional — verify Rust alone before Python** (does not install the module into Python; useful to confirm your toolchain):
+Adjust the glob if your shell does not expand it (install the single `.whl` file that maturin prints).
 
-```bash
-cargo build --release
-```
-
-### Step 4: Install Python dependencies for interactive mode and full CLI features
-
-Core metadata in `pyproject.toml` lists **numpy** only. For **`mgrcli interactive`** (Streamlit), plotting, ASE, Dask/HTS, and related commands, install the rest from the repo:
-
-```bash
-pip install -r requirements.txt
-```
-
-Without Streamlit (and the other packages in `requirements.txt`), `mgrcli process` may work, but **`mgrcli interactive` will fail** until you run `pip install streamlit` or use `requirements.txt`.
-
-### Step 5: Verify installation
+### Step 4: Verify
 
 ```bash
 mgrcli --help
 mgrcli process cifs/ZIF-8-RASPA.cif -o ./out/
-mgrcli interactive   # opens the Streamlit app in your browser (requires streamlit)
+mgrcli interactive
 ```
 
-**What happens during `pip install -e .` / `maturin develop`:**
-1. **Rust build**: The `mgrcli_rust` crate in `src/` is compiled to a Python extension module.
-2. **Python package**: Code under `python_cli/mgrcli/` is installed; entry point **`mgrcli`** calls `mgrcli.cli:main`.
-3. **Interactive app**: `mgrcli interactive` runs `streamlit` on `python_cli/mgrcli/interactive_app.py` and sets `PYTHONPATH` to the repo root so `mgr_src` and local imports resolve.
+**What `pip install -e .` does:** resolves Python dependencies from `pyproject.toml`, runs **maturin**, which compiles the **`mgrcli_rust`** crate from the **root** `Cargo.toml` / `src/`, and wires the **`mgrcli`** console script to `python_cli/mgrcli/cli.py`. The CLI and Streamlit app call into **`import mgrcli_rust`** for the hot paths.
 
-### 🎯 **Expected results**
-- First build: roughly 5–15 minutes depending on CPU (Rust release build).
-- **`mgrcli`** on your PATH inside the active environment.
-- **Interactive mode**: browser UI at the URL Streamlit prints (default port is chosen by Streamlit unless you pass `--port`).
+**Interactive app:** `mgrcli interactive` runs Streamlit on `python_cli/mgrcli/interactive_app.py` and sets `PYTHONPATH` to the repo root so `mgr_src` resolves.
 
----
+### Expected first-time build
 
-## ⚡ **Path 2: Standalone Executable** (No Python/Rust Required!)
+- Roughly 5–15 minutes for a release-quality Rust compile, depending on CPU.
+- **`mgrcli`** is available inside the active environment.
 
-Perfect for end users, deployment, or when you just want to analyze CIF files.
+## How the Rust backend is built
 
-### Step 1: Get the Executable
+| Approach | When to use it | What compiles Rust? |
+|----------|----------------|---------------------|
+| **`pip install -e .`** | Normal development | **Automatic** — PEP 517 invokes **maturin**, which runs `cargo` and installs the extension plus Python sources. |
+| **`maturin develop --release`** | Same as editable, but you invoke maturin yourself | maturin |
+| **`maturin build --release`** then **`pip install target/wheels/*.whl`** | CI, air-gapped installs, or shipping a wheel without the source tree | maturin (you install the built wheel afterward) |
+| **`cargo build --release` alone** | Sanity-check the Rust toolchain | **Does not** install `mgrcli_rust` into Python; use one of the rows above for a usable Python module. |
 
-**Option A: Download Pre-built (Coming Soon)**
-```bash
-# Future: Direct download links for Windows/Linux/macOS
-# No installation required - just download and run!
-```
-
-**Option B: Build from Source (if you have Python + Rust)**
-```bash
-# If you have Python + Rust, you can build standalone executables:
-
-# Install PyInstaller
-pip install pyinstaller
-
-git clone https://github.com/arung-northwestern/mgr_cli_py.git
-cd mgr_cli_py
-pip install -e .   # builds mgrcli_rust from repo root
-
-# Build standalone executable (28MB, numpy-free)
-pyinstaller --onefile --name mgrcli \
-    --hidden-import=mgrcli_rust \
-    python_cli/mgrcli/cli_standalone.py
-
-# Find your executable in dist/mgrcli_standalone
-ls -lh dist/mgrcli_standalone  # Should show ~28MB
-```
-
-### Step 2: Run the Executable
-
-```bash
-# Make executable (Linux/macOS)
-chmod +x dist/mgrcli_standalone
-
-# Test it works
-./dist/mgrcli_standalone --help
-
-# Process your CIF files
-./dist/mgrcli_standalone process your_structure.cif
-./dist/mgrcli_standalone process *.cif -o ./results/
-```
-
-### 🎯 **Expected Results**
-- Installation time: ~2 minutes (or 0 if downloading)
-- Executable size: ~28MB (numpy-free) or ~47MB (with numpy)
-- Dependencies: **None required!**
-- Platform support: Windows, Linux, macOS
-- Single file: Everything bundled into one executable
-
-### 📊 **Standalone vs Developer Installation**
-
-| Feature | Standalone Executable | Developer Installation |
-|---------|----------------------|------------------------|
-| **Python/Rust Required** | ❌ No | ✅ Yes |
-| **Installation Time** | ~2 min | ~10 min |
-| **File Size** | 28MB (numpy-free) | Full source + dependencies |
-| **Dependencies** | None | Python + Rust toolchain |
-| **Update Method** | Download new executable | `git pull` + rebuild |
-| **Customization** | Limited | Full source access |
-| **Performance** | Same | Same |
+You do **not** need a separate manual “compile Rust, then pip” sequence for day-to-day work: **`pip install -e .` already includes the Rust build** as long as `rustc` / `cargo` are on your `PATH`.
 
 ---
 
@@ -329,22 +253,21 @@ You will be prompted to choose an output folder. The app runs at `http://localho
 
 For non-terminal users, see `docs/GUI_ONLY_QUICKSTART.md`.
 
-### Prebuilt Image (When Published)
-```bash
-docker pull <your-org>/mgrcli:latest
-docker run --rm -p 8501:8501 <your-org>/mgrcli:latest
-```
-Open `http://localhost:8501`.
+### Prebuilt image (when published)
 
-### CLI (Terminal Users)
-If you prefer the CLI, install it from the repo using `uv` (compiles the Rust extension and installs the Python CLI from the repo root):
+Public pull/run instructions for a registry image (Docker Hub or similar) will be added here once the image is published. Until then, build locally with `./scripts/docker_build_run.sh` or `docker build` as above.
+
+### CLI (terminal users)
+
+From the **repository root**, an editable install compiles `mgrcli_rust` and pulls in all runtime dependencies declared in `pyproject.toml`:
+
 ```bash
-# Install uv (macOS/Linux)
+# Optional: uv (macOS/Linux)
 curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# From the repository root (same directory as Cargo.toml / pyproject.toml)
 uv pip install -e .
-uv pip install -r requirements.txt   # Streamlit, plotting, HTS/Dask, etc.
+
+# Or plain pip
+pip install -e .
 ```
 
 ### Environment Overrides
@@ -428,7 +351,7 @@ mgrcli process --help
 Each command generates:
 - **`.npz` file**: Compressed results with all analysis data
 - **Console output**: Progress indicators and timing information
-- **Compatible format**: Can be loaded with `numpy.load()` or the standalone reader
+- **Compatible format**: Can be loaded with `numpy.load()`
 
 ### Next Steps
 
@@ -698,21 +621,20 @@ mgr_cli_py/                    # repository root — run pip/maturin from here
 │   └── tests/
 ├── mgr_src/                   # Python reference / library code used by the CLI
 ├── cifs/                      # Sample CIF inputs
-└── requirements.txt           # Full runtime stack (Streamlit, plotly, Dask, …)
+└── requirements.txt           # Mirrors pyproject.toml (optional `pip install -r` workflows)
 ```
-A separate copy of the Rust crate exists under `mgr_src/mgrcli_rust/` for historical layout; **builds for pip install use the root `Cargo.toml` and `src/`.**
+A duplicate Rust tree under `mgr_src/mgrcli_rust/` is not used for **`pip install`**; the authoritative crate is **root `Cargo.toml` + `src/`**.
 
-### Building for Distribution
+### Building a wheel for distribution
 
 ```bash
-# Build wheels for multiple platforms
-pip install build
-python setup.py bdist_wheel
-
-# Cross-platform builds (advanced)
-pip install cibuildwheel
-cibuildwheel --platform linux --arch x86_64
+pip install maturin
+maturin build --release
+# Wheel under target/wheels/ — install with pip on compatible platforms
+pip install target/wheels/mgrcli-*.whl
 ```
+
+Cross-platform wheels for the Rust extension typically require **per-target builds** (or CI such as cibuildwheel); maturin documents supported targets.
 
 ## Performance
 
@@ -757,111 +679,6 @@ If you use MCLI in your research, please cite:
 }
 ```
 
-## Roadmap
-
-## Standalone Builds
-
-For users who want to create single-executable distributions or minimize dependencies, MCLI supports a **numpy-free mode** that eliminates the numpy dependency while maintaining full functionality.
-
-### Why Remove NumPy?
-
-- **Size Reduction**: NumPy adds ~18MB (38% reduction) to executable size
-- **Deployment Simplicity**: Fewer dependencies to manage
-- **Cross-Platform Consistency**: More reliable builds across different systems
-
-### Standalone Options
-
-#### Option 1: Automatic Fallback (Recommended)
-The main CLI automatically detects if NumPy is available and falls back to the standalone implementation:
-
-```python
-# In python_cli/mgrcli/cli.py
-if not HAS_NUMPY:
-    print("Warning: numpy not available, using standalone implementation")
-```
-
-#### Option 2: Force Standalone Mode
-Set the flag in the main CLI for guaranteed numpy-free operation:
-
-```python
-# In python_cli/mgrcli/cli.py
-USE_STANDALONE = True  # Forces numpy-free implementation
-```
-
-#### Option 3: Dedicated Standalone Version
-Use the completely separate standalone implementation:
-
-```bash
-# Use the standalone version directly
-python python_cli/mgrcli/cli_standalone.py --help
-
-# Or create an alias
-alias mgrcli='python python_cli/mgrcli/cli_standalone.py'
-```
-
-### Building Standalone Executables
-
-#### With PyInstaller (Recommended & Tested)
-
-From the **repository root**, after `pip install -e .` so `mgrcli_rust` is built:
-
-```bash
-# Install PyInstaller
-pip install pyinstaller
-
-# Build numpy-free executable (28MB)
-pyinstaller --onefile --name mgrcli \
-    --hidden-import=mgrcli_rust \
-    python_cli/mgrcli/cli_standalone.py
-
-# Build numpy-enabled executable (47MB)
-pyinstaller --onefile --name mgrcli \
-    --hidden-import=mgrcli_rust \
-    python_cli/mgrcli/cli_numpy.py
-
-# Test both executables
-./dist/mgrcli_standalone --help     # 28MB - numpy-free
-./dist/mgrcli_numpy --help          # 47MB - full numpy support
-```
-
-### Performance Comparison (Tested Results)
-
-| Implementation | Dependencies | Executable Size | .npz Compatibility | Performance | Linux Tested |
-|----------------|--------------|-----------------|-------------------|-------------|--------------|
-| **NumPy-based** | numpy, rust | **47MB** | ✅ Full | Fastest | ✅ Works |
-| **Standalone** | rust only | **28MB** | ✅ Compatible* | Near identical | ✅ Works |
-| **Improvement** | **-1 dependency** | **-38%** | ✅ Same | ✅ Same | ✅ Same |
-
-*Standalone implementation creates .npz files that are fully compatible with NumPy's `np.load()` function.
-
-### PyInstaller Compatibility
-
-**✅ Linux Support**: Both versions tested and working on Linux
-**✅ Cross-Platform**: PyInstaller executables work on Windows, Linux, and macOS
-**✅ Single File**: `--onefile` flag creates self-contained executables
-**✅ Dependencies**: Automatically bundles all required libraries
-
-### NumPy Dependency Status
-
-**Current Status**: NumPy is **optional** in `requirements.txt`:
-```txt
-# numpy>=1.20.0  # Optional - only needed for numpy-based .npz saving
-setuptools-rust
-```
-
-**Impact**: Minimal usage - only for `.npz` file saving, since Rust already returns numpy arrays for numerical data.
-
-### Analysis & Visualization
-* [ ] **Plotting Capabilities**: Built-in visualization for pore networks, segmentation results, and property distributions
-* [ ] **Textural Properties**: Calculate pore diameters, pore size distributions, surface areas, volumes, and percolation analysis
-* [ ] **NetworkX Integration**: Export pore graphs in NetworkX-compatible format for machine learning applications
-* [ ] **Advanced Metrics**: Compute BET surface area, pore volume distributions, and structural descriptors
-
-### Deployment & Distribution
-* [ ] **Standalone Executables**: Create single-binary executables for Windows, Linux, and macOS (no Rust/Python installation required)
-* [ ] **Web Application**: Build a web-based interface using this Rust backend for non-programmers
-* [ ] **Docker Images**: Containerized deployment for easy setup and reproducibility
-
 ## Development Notes & Recent Fixes
 
 ### Recent Bug Fixes
@@ -904,22 +721,20 @@ DEFAULTS = {
 
 **To change CLI defaults**: Simply modify the values in this `DEFAULTS` dictionary.
 
-### Key Files for Future Development
+### Key files for development
 
-- **`src/lib.rs`**: Main Rust backend - all core algorithms and data processing
-- **`python_cli/mgrcli/cli.py`**: Python CLI interface - argument parsing and result handling
-- **`setup.py`**: Build configuration - setuptools-rust for Rust/Python interop
-- **`Cargo.toml`**: Rust dependencies and build settings
-- **`python_cli/mgrcli/__init__.py`**: Package initialization
+- **`src/lib.rs`**: Rust implementation compiled into **`mgrcli_rust`**
+- **`python_cli/mgrcli/cli.py`**: CLI entry and commands (imports `mgrcli_rust`)
+- **`python_cli/mgrcli/interactive_app.py`**: Streamlit UI (same backend)
+- **`pyproject.toml`**: Python dependencies and **maturin** build backend
+- **Root `Cargo.toml`**: Crate consumed by maturin for `pip install`
+- **`setup.py`**: Legacy setuptools-rust path (optional; normal installs use maturin)
 
-### Build & Development Tips
+### Build and development tips
 
 ```bash
 # Rebuild after Rust changes (from repository root)
 pip install --force-reinstall -e .
-
-# Optional: scikit-image watershed backend only
-pip install -e ".[skimage]"
 ```
 
 ### Future Development Considerations

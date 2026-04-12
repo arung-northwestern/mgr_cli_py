@@ -1,5 +1,6 @@
-# Core runtime dependencies
-numpy>=1.20.0
+# Mirrors [project.dependencies] in pyproject.toml.
+# Prefer: pip install -e .   (installs these plus builds mgrcli_rust)
+numpy>=1.20.0,<2.4
 scipy>=1.10
 scikit-image>=0.21
 plotly>=5.20
@@ -8,6 +9,3 @@ pyvista>=0.43
 matplotlib>=3.3
 streamlit>=1.32
 dask[distributed]>=2023.0
-
-# Build requirements
-setuptools-rust
