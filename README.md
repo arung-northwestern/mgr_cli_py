@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
-A high-performance command-line interface for analyzing Metal-Organic Frameworks (MOFs) using advanced segmentation algorithms. This is a separate, comparable version of the Mofography library that offers both CLI and interactive Streamlit modes, built with Rust for performance and Python for usability.
+A high-performance command-line interface for analyzing Metal-Organic Frameworks (MOFs) using advanced segmentation algorithms. This repository ships a **terminal CLI** (`mgrcli`) and an **interactive Streamlit web app** (`mgrcli interactive`), powered by a **Rust extension** (`mgrcli_rust`, PyO3) compiled from the workspace root and Python packages under `python_cli/`.
 
 ## Table of Contents
 - [Installation Guide](#-installation-guide)
@@ -84,12 +84,12 @@ This CLI tool is **separate** from the main Mofography Python package but mainta
 
 ## 🛠️ **Path 1: Developer Installation** (Recommended if you have Python & Rust)
 
-Perfect for developers, researchers, or anyone comfortable with Python development.
+Use this path to install `mgrcli` into a Python environment. The **Rust backend must compile successfully**: the `mgrcli_rust` module is a native extension built from the **repository root** (`Cargo.toml`, `src/`). The usual workflow is **one install command** (`pip install -e .` or `maturin develop`), which compiles Rust and installs the CLI; you then add optional Python dependencies for plotting, Streamlit, and HTS features.
 
 ### Prerequisites
 
 * **Python 3.8+**: [Download Python](https://www.python.org/downloads/)
-* **Rust & Cargo**: Required for building the high-performance core
+* **Rust & Cargo**: Required to compile `mgrcli_rust` (PyO3 / maturin)
 * **Git**: For cloning the repository
 
 ### Step 1: Install Rust (One-time setup)
@@ -128,42 +128,71 @@ rustc --version  # Should show version 1.70 or higher
 cargo --version  # Should show cargo version
 ```
 
-### Step 2: Install MCLI
+### Step 2: Clone and enter the repository
 
 ```bash
-# Clone the repository (replace with actual repository URL)
-git clone https://github.com/your-username/mgr_standalone.git
-cd mgr_standalone/mgrcli_rust
+git clone https://github.com/arung-northwestern/mgr_cli_py.git
+cd mgr_cli_py
+```
 
-# Install Python dependencies (numpy optional)
-pip install -r requirements.txt
+Create and activate a virtual environment (recommended):
 
-# Build and install (compiles Rust core + Python bindings)
+```bash
+python3 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+```
+
+### Step 3: Compile the Rust extension and install the CLI
+
+From the **repository root** (the directory that contains `Cargo.toml`, `pyproject.toml`, and `python_cli/`):
+
+**Option A — editable install (recommended):** uses [maturin](https://www.maturin.rs/) as the build backend (`pyproject.toml`) to compile `mgrcli_rust` and install the `mgrcli` package.
+
+```bash
+pip install --upgrade pip
 pip install -e .
 ```
 
-> **Note**: Replace `https://github.com/your-username/mgr_standalone.git` with the actual repository URL from GitHub, GitLab, or your git hosting service.
-
-### Step 3: Verify Installation
+**Option B — maturin explicitly:**
 
 ```bash
-# Test the installation
-mgrcli --help
-
-# Process your first CIF file
-mgrcli process your_file.cif
+pip install maturin
+maturin develop --release
 ```
 
-**What happens during installation:**
-1. **Rust Compilation**: High-performance segmentation algorithms are compiled
-2. **Python Bindings**: PyO3 creates seamless Python↔Rust interface
-3. **CLI Setup**: `mgrcli` command becomes available globally
+**Optional — verify Rust alone before Python** (does not install the module into Python; useful to confirm your toolchain):
 
-### 🎯 **Expected Results**
-- Installation time: ~5-10 minutes
-- CLI command: `mgrcli` (available globally)
-- Full functionality: All features available
-- Dependencies: Python + compiled Rust extension
+```bash
+cargo build --release
+```
+
+### Step 4: Install Python dependencies for interactive mode and full CLI features
+
+Core metadata in `pyproject.toml` lists **numpy** only. For **`mgrcli interactive`** (Streamlit), plotting, ASE, Dask/HTS, and related commands, install the rest from the repo:
+
+```bash
+pip install -r requirements.txt
+```
+
+Without Streamlit (and the other packages in `requirements.txt`), `mgrcli process` may work, but **`mgrcli interactive` will fail** until you run `pip install streamlit` or use `requirements.txt`.
+
+### Step 5: Verify installation
+
+```bash
+mgrcli --help
+mgrcli process cifs/ZIF-8-RASPA.cif -o ./out/
+mgrcli interactive   # opens the Streamlit app in your browser (requires streamlit)
+```
+
+**What happens during `pip install -e .` / `maturin develop`:**
+1. **Rust build**: The `mgrcli_rust` crate in `src/` is compiled to a Python extension module.
+2. **Python package**: Code under `python_cli/mgrcli/` is installed; entry point **`mgrcli`** calls `mgrcli.cli:main`.
+3. **Interactive app**: `mgrcli interactive` runs `streamlit` on `python_cli/mgrcli/interactive_app.py` and sets `PYTHONPATH` to the repo root so `mgr_src` and local imports resolve.
+
+### 🎯 **Expected results**
+- First build: roughly 5–15 minutes depending on CPU (Rust release build).
+- **`mgrcli`** on your PATH inside the active environment.
+- **Interactive mode**: browser UI at the URL Streamlit prints (default port is chosen by Streamlit unless you pass `--port`).
 
 ---
 
@@ -186,9 +215,9 @@ Perfect for end users, deployment, or when you just want to analyze CIF files.
 # Install PyInstaller
 pip install pyinstaller
 
-# Clone and enter the repository (replace with actual repository URL)
-git clone https://github.com/your-username/mgr_standalone.git
-cd mgr_standalone/mgrcli_rust
+git clone https://github.com/arung-northwestern/mgr_cli_py.git
+cd mgr_cli_py
+pip install -e .   # builds mgrcli_rust from repo root
 
 # Build standalone executable (28MB, numpy-free)
 pyinstaller --onefile --name mgrcli \
@@ -198,8 +227,6 @@ pyinstaller --onefile --name mgrcli \
 # Find your executable in dist/mgrcli_standalone
 ls -lh dist/mgrcli_standalone  # Should show ~28MB
 ```
-
-> **Note**: Replace `https://github.com/your-username/mgr_standalone.git` with the actual repository URL.
 
 ### Step 2: Run the Executable
 
@@ -254,9 +281,9 @@ python -m mgrcli.cli --help
 # Update Rust toolchain
 rustup update
 
-# Clear build cache and retry
+# From the repository root: clear build cache and retry
 pip uninstall mgrcli
-rm -rf build/
+rm -rf build/ target/
 pip install -e .
 ```
 
@@ -310,13 +337,14 @@ docker run --rm -p 8501:8501 <your-org>/mgrcli:latest
 Open `http://localhost:8501`.
 
 ### CLI (Terminal Users)
-If you prefer the CLI, install it from the repo using `uv` (builds the Rust backend and installs the Python CLI):
+If you prefer the CLI, install it from the repo using `uv` (compiles the Rust extension and installs the Python CLI from the repo root):
 ```bash
 # Install uv (macOS/Linux)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# From the repo root
+# From the repository root (same directory as Cargo.toml / pyproject.toml)
 uv pip install -e .
+uv pip install -r requirements.txt   # Streamlit, plotting, HTS/Dask, etc.
 ```
 
 ### Environment Overrides
@@ -642,12 +670,8 @@ print(f"\nGrid spacing used: {input_params['spacing']} Å")
 ### Run Tests
 
 ```bash
-# Run the simple test suite
-python test_cli.py
-
-# Run Python unit tests
-cd python_cli
-python -m pytest tests/
+# Run Python unit tests (from repository root)
+cd python_cli && python -m pytest tests/ && cd ..
 ```
 
 ### Test Data
@@ -659,20 +683,24 @@ Test CIF files are available in the `cifs/` directory:
 
 ## Development
 
-### Project Structure
+### Project structure
 ```
-mgrcli_rust/
-├── src/lib.rs              # Rust core algorithms
+mgr_cli_py/                    # repository root — run pip/maturin from here
+├── Cargo.toml                 # Rust crate mgrcli_rust (PyO3 extension)
+├── src/lib.rs                 # Rust implementation compiled into mgrcli_rust
+├── pyproject.toml             # Python package metadata; maturin build backend
+├── setup.py                   # Legacy setuptools-rust layout (optional)
 ├── python_cli/
 │   ├── mgrcli/
-│   │   ├── __init__.py     # Package initialization
-│   │   └── cli.py          # CLI implementation
-│   └── tests/              # Python unit tests
-├── cifs/                   # Test CIF files
-├── Cargo.toml             # Rust dependencies
-├── setup.py               # Python package setup
-└── README.md              # This file
+│   │   ├── cli.py             # CLI entry and commands
+│   │   ├── interactive_app.py  # Streamlit app (mgrcli interactive)
+│   │   └── ...
+│   └── tests/
+├── mgr_src/                   # Python reference / library code used by the CLI
+├── cifs/                      # Sample CIF inputs
+└── requirements.txt           # Full runtime stack (Streamlit, plotly, Dask, …)
 ```
+A separate copy of the Rust crate exists under `mgr_src/mgrcli_rust/` for historical layout; **builds for pip install use the root `Cargo.toml` and `src/`.**
 
 ### Building for Distribution
 
@@ -725,7 +753,7 @@ If you use MCLI in your research, please cite:
   title={{MCLI: MOF Analysis CLI Tool}},
   author={MOF Analysis Team},
   year={2024},
-  url={https://github.com/your-repo/mgrcli}
+  url={https://github.com/arung-northwestern/mgr_cli_py}
 }
 ```
 
@@ -774,6 +802,8 @@ alias mgrcli='python python_cli/mgrcli/cli_standalone.py'
 ### Building Standalone Executables
 
 #### With PyInstaller (Recommended & Tested)
+
+From the **repository root**, after `pip install -e .` so `mgrcli_rust` is built:
 
 ```bash
 # Install PyInstaller
@@ -885,14 +915,11 @@ DEFAULTS = {
 ### Build & Development Tips
 
 ```bash
-# Rebuild after Rust changes
+# Rebuild after Rust changes (from repository root)
 pip install --force-reinstall -e .
 
-# Debug array bounds issues
-# Use .nrows() not .len() for 2D ndarray bounds
-
-# Debug numpy serialization
-# Check for mixed data types in complex structures
+# Optional: scikit-image watershed backend only
+pip install -e ".[skimage]"
 ```
 
 ### Future Development Considerations
