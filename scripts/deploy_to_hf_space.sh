@@ -32,6 +32,7 @@ rsync -a \
   --exclude='*.zst' \
   --exclude='*.gz' \
   --exclude='build_space' \
+  --exclude='hts_output' \
   "${REPO_ROOT}/" "${BUILD_DIR}/"
 
 # Use the Spaces Dockerfile at root (port 7860, MGR_DEPLOYMENT=spaces)
