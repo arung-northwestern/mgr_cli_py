@@ -5,7 +5,22 @@ This folder contains the Dockerfile used when deploying the Streamlit app to **H
 - **HTS tab** shows a message only: *"High-Throughput Characterization is only available on local installs (Docker or pip)."* No batch runs on the Space to keep usage fair.
 - The app listens on **port 7860** (required by HF).
 
-## Quick deploy (after repo is public or you have a Space)
+## One-command deploy (recommended)
+
+After you commit and push to GitHub, from **repo root**:
+
+```bash
+./scripts/push_hf_space.sh --pull
+```
+
+- Builds a fresh bundle, syncs to a cached clone under `/tmp`, commits, and pushes to your Space **`main`** branch.
+- **Pushing triggers an automatic rebuild** on Hugging Face (that is the restart).
+- Requires `hf auth login` (or git credentials for `huggingface.co`).
+- Override Space URL: `HF_SPACE_URL=https://huggingface.co/spaces/USER/NAME ./scripts/push_hf_space.sh`
+
+Optional custom message: `./scripts/push_hf_space.sh -m "fix: faster dgrid"`
+
+## Quick deploy (manual bundle)
 
 1. From the **repo root**, run:
    ```bash
