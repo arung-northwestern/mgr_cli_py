@@ -34,8 +34,28 @@ MGR_SRC_PATH = REPO_ROOT / "mgr_src"
 if str(MGR_SRC_PATH) not in sys.path:
     sys.path.insert(0, str(MGR_SRC_PATH))
 
-# Import the reference MGR library from mgr_src/mgr
-import mgr as mgr
+def _import_mgr_module():
+    """Import mgr lazily to keep CLI startup fast for non-analysis commands."""
+    import mgr as _mgr
+    return _mgr
+
+
+class _MgrProxy:
+    """Attribute proxy that imports mgr only on first use."""
+
+    _module = None
+
+    def _get_module(self):
+        if self._module is None:
+            self._module = _import_mgr_module()
+        return self._module
+
+    def __getattr__(self, item):
+        return getattr(self._get_module(), item)
+
+
+# Keep existing mgr.* call sites but avoid eager import during CLI startup.
+mgr = _MgrProxy()
 
 # Optional numpy import - only needed for numpy-based .npz saving
 try:
@@ -1090,6 +1110,10 @@ Notes:
             '--no-browser', action='store_true',
             help='Do not automatically open a browser window'
         )
+        interactive_parser.add_argument(
+            '--clean', action='store_true',
+            help='Kill stale interactive app Streamlit processes before launch'
+        )
 
         # Parse arguments
         args = parser.parse_args()
@@ -1561,6 +1585,18 @@ Notes:
             print("Error: interactive app script not found.")
             sys.exit(1)
 
+        if getattr(args, 'clean', False):
+            try:
+                subprocess.run(
+                    ["pkill", "-f", f"streamlit run {app_path}"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                print("Cleaned stale interactive app processes.")
+            except Exception as e:
+                print(f"Warning: failed to clean stale processes: {e}")
+
         cmd = ["streamlit", "run", str(app_path)]
         if getattr(args, 'port', None):
             cmd.extend(["--server.port", str(args.port)])
@@ -1577,6 +1613,9 @@ Notes:
             env["STREAMLIT_SERVER_HEADLESS"] = "true"
 
         env.setdefault("MCLI_SAMPLE_CIF_DIR", str(REPO_ROOT / "cifs"))
+        # Force local behavior for CLI-launched interactive sessions so hosted-demo
+        # constraints are never applied by accident due to inherited shell env vars.
+        env.setdefault("MGR_FORCE_LOCAL", "1")
 
         try:
             subprocess.run(cmd, check=True, env=env)

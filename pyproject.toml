@@ -41,7 +41,7 @@ dependencies = [
     "dask[distributed]>=2023.0",
     "pandas>=1.5",
     # Used by mgr_src (aligned with mofography install list where applicable)
-    "pymatgen>=2023.1",
+    "pymatgen>=2023.1,<2026",
     "networkx>=3.0",
     "tqdm>=4.64",
     "aiohttp>=3.9",

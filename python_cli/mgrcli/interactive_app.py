@@ -6,6 +6,7 @@ import logging
 import os
 import tempfile
 import time
+import hashlib
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
@@ -15,7 +16,6 @@ import plotly.express as px
 
 import numpy as np
 import streamlit as st
-from ase.io import read
 
 import plotly.graph_objects as go
 import pandas as pd
@@ -28,9 +28,36 @@ MGR_SRC_PATH = REPO_ROOT / "mgr_src"
 if str(MGR_SRC_PATH) not in sys.path:
     sys.path.insert(0, str(MGR_SRC_PATH))
 
-# Import the reference MGR library from mgr_src/mgr
-import mgr as mgr
-from mgr.helper import estimate_h_from_percolation_history
+def _import_mgr_module():
+    import mgr as _mgr
+    return _mgr
+
+
+class _MgrProxy:
+    _module = None
+
+    def _get_module(self):
+        if self._module is None:
+            self._module = _import_mgr_module()
+        return self._module
+
+    def __getattr__(self, item):
+        return getattr(self._get_module(), item)
+
+
+mgr = _MgrProxy()
+
+
+def estimate_h_from_percolation_history(dgrid):
+    from mgr.helper import estimate_h_from_percolation_history as _estimate
+
+    return _estimate(dgrid)
+
+
+def _read_atoms_from_cif(cif_path: Path):
+    from ase.io import read as _read
+
+    return _read(str(cif_path))
 
 # Watershed backend labels (selectbox) and descriptions (shown under the selection).
 WATERSHED_BACKEND_LABELS: Dict[str, str] = {
@@ -74,7 +101,14 @@ _SPACES_COMPUTE_LOCK = Lock()
 
 
 def _is_spaces_deployment() -> bool:
-    return os.environ.get("MGR_DEPLOYMENT") == "spaces"
+    # Local CLI runs can inherit shell env accidentally; allow an explicit local override.
+    if os.environ.get("MGR_FORCE_LOCAL") == "1":
+        return False
+    deployment = (os.environ.get("MGR_DEPLOYMENT") or "").strip().lower()
+    if deployment:
+        return deployment == "spaces"
+    # Fallback for native Spaces envs even when MGR_DEPLOYMENT is not set.
+    return bool(os.environ.get("SPACE_ID") or os.environ.get("HF_SPACE_ID"))
 
 
 def _spaces_allow_compute_now() -> bool:
@@ -192,22 +226,100 @@ def make_pocket_psd_dataframe(bins: np.ndarray, pocket_psds: Dict[Any, Any]) -> 
 
     return pd.DataFrame(rows)
 
-if __package__ is None or __package__ == "":  # pragma: no cover - streamlit entry
-    import sys
+_CLI_FUNCS = None
+_PLOTTING_SYMBOLS = None
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from python_cli.mgrcli.cli import compute_dgrid_rust, python_do_periodic_segmentation_rust, get_pbc_groups
-    from python_cli.mgrcli.plotting import (
-        show_mof,
-        STYLIZE_LIGHTING,
-        STYLIZE_LIGHTPOSITION,
-        dark_layout,
-        white_layout,
-        prepare_results_for_plot,
+
+def _load_cli_funcs():
+    global _CLI_FUNCS
+    if _CLI_FUNCS is not None:
+        return _CLI_FUNCS
+
+    if __package__ is None or __package__ == "":  # pragma: no cover - streamlit entry
+        import sys
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from python_cli.mgrcli.cli import (
+            compute_dgrid_rust as _compute_dgrid_rust,
+            python_do_periodic_segmentation_rust as _python_do_periodic_segmentation_rust,
+            get_pbc_groups as _get_pbc_groups,
+        )
+    else:  # pragma: no cover - package import path
+        from .cli import (
+            compute_dgrid_rust as _compute_dgrid_rust,
+            python_do_periodic_segmentation_rust as _python_do_periodic_segmentation_rust,
+            get_pbc_groups as _get_pbc_groups,
+        )
+    _CLI_FUNCS = (_compute_dgrid_rust, _python_do_periodic_segmentation_rust, _get_pbc_groups)
+    return _CLI_FUNCS
+
+
+def _load_plotting_symbols():
+    global _PLOTTING_SYMBOLS
+    if _PLOTTING_SYMBOLS is not None:
+        return _PLOTTING_SYMBOLS
+
+    if __package__ is None or __package__ == "":  # pragma: no cover - streamlit entry
+        import sys
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from python_cli.mgrcli.plotting import (
+            show_mof as _show_mof,
+            STYLIZE_LIGHTING as _STYLIZE_LIGHTING,
+            STYLIZE_LIGHTPOSITION as _STYLIZE_LIGHTPOSITION,
+            dark_layout as _dark_layout,
+            white_layout as _white_layout,
+            prepare_results_for_plot as _prepare_results_for_plot,
+        )
+    else:  # pragma: no cover - package import path
+        from .plotting import (
+            show_mof as _show_mof,
+            STYLIZE_LIGHTING as _STYLIZE_LIGHTING,
+            STYLIZE_LIGHTPOSITION as _STYLIZE_LIGHTPOSITION,
+            dark_layout as _dark_layout,
+            white_layout as _white_layout,
+            prepare_results_for_plot as _prepare_results_for_plot,
+        )
+    _PLOTTING_SYMBOLS = (
+        _show_mof,
+        _STYLIZE_LIGHTING,
+        _STYLIZE_LIGHTPOSITION,
+        _dark_layout,
+        _white_layout,
+        _prepare_results_for_plot,
     )
-else:  # pragma: no cover - package import path
-    from .plotting import show_mof, STYLIZE_LIGHTING, STYLIZE_LIGHTPOSITION, dark_layout, white_layout, prepare_results_for_plot
-    from .cli import compute_dgrid_rust, python_do_periodic_segmentation_rust, get_pbc_groups
+    return _PLOTTING_SYMBOLS
+
+
+def compute_dgrid_rust(*args, **kwargs):
+    func, _, _ = _load_cli_funcs()
+    return func(*args, **kwargs)
+
+
+def python_do_periodic_segmentation_rust(*args, **kwargs):
+    _, func, _ = _load_cli_funcs()
+    return func(*args, **kwargs)
+
+
+def get_pbc_groups(*args, **kwargs):
+    _, _, func = _load_cli_funcs()
+    return func(*args, **kwargs)
+
+
+def show_mof(*args, **kwargs):
+    func, _, _, _, _, _ = _load_plotting_symbols()
+    return func(*args, **kwargs)
+
+
+def prepare_results_for_plot(*args, **kwargs):
+    _, _, _, _, _, func = _load_plotting_symbols()
+    return func(*args, **kwargs)
+
+
+STYLIZE_LIGHTING = None
+STYLIZE_LIGHTPOSITION = None
+dark_layout = None
+white_layout = None
 
 
 ASCII_LOGO = r"""
@@ -446,7 +558,7 @@ def _hts_one_material(
     out_dir = P(out_dir)
     if isinstance(cif_path, (str, P)):
         cif_path = P(cif_path)
-        atoms = read(str(cif_path))
+        atoms = _read_atoms_from_cif(cif_path)
         material_name = cif_path.stem or "material"
     else:
         atoms = cif_path
@@ -822,10 +934,16 @@ def _hts_one_material(
 
 
 def main() -> None:
+    global STYLIZE_LIGHTING, STYLIZE_LIGHTPOSITION, dark_layout, white_layout
+    if STYLIZE_LIGHTING is None or STYLIZE_LIGHTPOSITION is None or dark_layout is None or white_layout is None:
+        _, STYLIZE_LIGHTING, STYLIZE_LIGHTPOSITION, dark_layout, white_layout, _ = _load_plotting_symbols()
+
     st.set_page_config(
         layout="wide",
         menu_items={"Get Help": None, "Report a bug": None, "About": None},
     )
+    mode_label = "spaces" if _is_spaces_deployment() else "local"
+    st.sidebar.caption(f"Debug: deployment mode = `{mode_label}`")
 
     st.markdown(f"""
 ```
@@ -865,33 +983,72 @@ def main() -> None:
 
     atoms = None
     cif_path: Optional[Path] = None
+    selected_source_key: Optional[str] = None
+
+    # Streamlit reruns on any widget change. Cache expensive CIF->bonds processing
+    # in session state and only recompute when the source CIF changes.
+    atoms_cache_key = "single_material_atoms_with_bonds"
+    atoms_source_key_state = "single_material_atoms_source_key"
+    atoms_cif_path_state = "single_material_atoms_cif_path"
     if uploaded_file is not None:
+        uploaded_bytes = uploaded_file.getvalue()
+        selected_source_key = (
+            f"upload::{getattr(uploaded_file, 'name', 'upload.cif')}::"
+            f"{len(uploaded_bytes)}::{hashlib.sha1(uploaded_bytes).hexdigest()}"
+        )
+
         if _is_spaces_deployment():
-            uploaded_size = int(getattr(uploaded_file, "size", 0) or len(uploaded_file.getbuffer()))
+            uploaded_size = int(getattr(uploaded_file, "size", 0) or len(uploaded_bytes))
             if uploaded_size > SPACES_MAX_UPLOAD_BYTES:
                 st.error(
                     f"Uploaded CIF is too large ({uploaded_size / (1024 * 1024):.1f} MB). "
                     f"Please keep uploads below {SPACES_MAX_UPLOAD_BYTES / (1024 * 1024):.0f} MB for the public demo."
                 )
                 return
-        previous_upload_path = st.session_state.get("uploaded_cif_temp_path")
-        if previous_upload_path:
-            try:
-                Path(previous_upload_path).unlink(missing_ok=True)
-            except Exception:
-                pass
-        cif_path = _safe_uploaded_cif_path(uploaded_file)
-        st.session_state["uploaded_cif_temp_path"] = str(cif_path)
-        atoms = read(str(cif_path))
+
+        cache_hit = st.session_state.get(atoms_source_key_state) == selected_source_key
+        if not cache_hit:
+            previous_upload_path = st.session_state.get("uploaded_cif_temp_path")
+            if previous_upload_path:
+                try:
+                    Path(previous_upload_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            cif_path = _safe_uploaded_cif_path(uploaded_file)
+            st.session_state["uploaded_cif_temp_path"] = str(cif_path)
+            atoms = _read_atoms_from_cif(cif_path)
+            from mgr.analyze import update_with_covalent_bonds
+
+            atoms = update_with_covalent_bonds(atoms)
+            st.session_state[atoms_cache_key] = atoms
+            st.session_state[atoms_source_key_state] = selected_source_key
+            st.session_state[atoms_cif_path_state] = str(cif_path)
+        else:
+            atoms = st.session_state.get(atoms_cache_key)
+            cached_cif_path = st.session_state.get(atoms_cif_path_state)
+            if cached_cif_path:
+                cif_path = Path(cached_cif_path)
     elif sample_choice:
         cif_path = samples[sample_choice]
-        atoms = read(str(cif_path))
+        try:
+            mtime_ns = cif_path.stat().st_mtime_ns
+        except Exception:
+            mtime_ns = 0
+        selected_source_key = f"sample::{cif_path.resolve()}::{mtime_ns}"
+        cache_hit = st.session_state.get(atoms_source_key_state) == selected_source_key
+        if not cache_hit:
+            atoms = _read_atoms_from_cif(cif_path)
+            from mgr.analyze import update_with_covalent_bonds
 
-    # Compute bonds immediately after loading CIF
-    if atoms is not None:
-        import mgr as mgr
-        from mgr.analyze import update_with_covalent_bonds
-        atoms = update_with_covalent_bonds(atoms)
+            atoms = update_with_covalent_bonds(atoms)
+            st.session_state[atoms_cache_key] = atoms
+            st.session_state[atoms_source_key_state] = selected_source_key
+            st.session_state[atoms_cif_path_state] = str(cif_path)
+        else:
+            atoms = st.session_state.get(atoms_cache_key)
+
+    if atoms is None and st.session_state.get(atoms_source_key_state) == selected_source_key:
+        atoms = st.session_state.get(atoms_cache_key)
 
     if atoms is None:
         st.info("Upload a CIF file or pick a sample to begin.")
