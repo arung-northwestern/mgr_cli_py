@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
+import time
 from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
 from io import BytesIO
 
@@ -60,6 +63,46 @@ WATERSHED_BACKEND_ORDER: Tuple[str, ...] = (
     "rust_det_parallel",
     "skimage",
 )
+
+SPACES_MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
+SPACES_MIN_SPACING = 0.25
+SPACES_MAX_EXTRA_PADDING = 10.0
+SPACES_MAX_MIN_BOX_THICKNESS = 12.0
+SPACES_MIN_SECONDS_BETWEEN_RUNS = 25.0
+SPACES_MAX_ATOMS = 5000
+_SPACES_COMPUTE_LOCK = Lock()
+
+
+def _is_spaces_deployment() -> bool:
+    return os.environ.get("MGR_DEPLOYMENT") == "spaces"
+
+
+def _spaces_allow_compute_now() -> bool:
+    """Enforce a per-session cooldown for expensive compute actions on hosted demo."""
+    if not _is_spaces_deployment():
+        return True
+    now = time.time()
+    last_run = float(st.session_state.get("spaces_last_compute_at", 0.0))
+    dt = now - last_run
+    if dt < SPACES_MIN_SECONDS_BETWEEN_RUNS:
+        wait_for = int(SPACES_MIN_SECONDS_BETWEEN_RUNS - dt) + 1
+        st.error(f"Server busy (cooldown). Estimated wait: ~{wait_for}s.")
+        st.caption("This public demo limits request rate so everyone gets a chance to run analyses.")
+        return False
+    st.session_state["spaces_last_compute_at"] = now
+    return True
+
+
+def _safe_uploaded_cif_path(uploaded_file: Any) -> Path:
+    """Persist uploaded CIF to a temp location with a sanitized filename."""
+    raw_name = Path(getattr(uploaded_file, "name", "upload.cif")).name
+    safe_stem = "".join(ch if (ch.isalnum() or ch in ("-", "_", ".")) else "_" for ch in Path(raw_name).stem)
+    safe_stem = safe_stem[:80] or "upload"
+    fd, tmp_name = tempfile.mkstemp(prefix=f"mgr_{safe_stem}_", suffix=".cif")
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    tmp_path.write_bytes(uploaded_file.getbuffer())
+    return tmp_path
 
 
 def _watershed_backend_widgets(widget_key_suffix: str) -> str:
@@ -823,9 +866,22 @@ def main() -> None:
     atoms = None
     cif_path: Optional[Path] = None
     if uploaded_file is not None:
-        cif_path = Path(uploaded_file.name)
-        with open(cif_path, "wb") as buffer:
-            buffer.write(uploaded_file.getbuffer())
+        if _is_spaces_deployment():
+            uploaded_size = int(getattr(uploaded_file, "size", 0) or len(uploaded_file.getbuffer()))
+            if uploaded_size > SPACES_MAX_UPLOAD_BYTES:
+                st.error(
+                    f"Uploaded CIF is too large ({uploaded_size / (1024 * 1024):.1f} MB). "
+                    f"Please keep uploads below {SPACES_MAX_UPLOAD_BYTES / (1024 * 1024):.0f} MB for the public demo."
+                )
+                return
+        previous_upload_path = st.session_state.get("uploaded_cif_temp_path")
+        if previous_upload_path:
+            try:
+                Path(previous_upload_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+        cif_path = _safe_uploaded_cif_path(uploaded_file)
+        st.session_state["uploaded_cif_temp_path"] = str(cif_path)
         atoms = read(str(cif_path))
     elif sample_choice:
         cif_path = samples[sample_choice]
@@ -840,6 +896,12 @@ def main() -> None:
     if atoms is None:
         st.info("Upload a CIF file or pick a sample to begin.")
         return
+    if _is_spaces_deployment() and len(atoms) > SPACES_MAX_ATOMS:
+        st.error(
+            f"This structure has {len(atoms)} atoms, which is above the public-demo limit "
+            f"of {SPACES_MAX_ATOMS} atoms. Please run larger systems locally."
+        )
+        return
 
     st.markdown("### 🔧 Workflow Parameters")
     st.info("After changing any parameter or material, please click 'Compute and Visualize' to update the results.")
@@ -851,6 +913,12 @@ def main() -> None:
         step=0.1,
         help="Grid spacing in Angstroms. Smaller values increase resolution and runtime.",
     )
+    if _is_spaces_deployment() and spacing < SPACES_MIN_SPACING:
+        spacing = SPACES_MIN_SPACING
+        st.info(
+            f"Grid spacing is clamped to {SPACES_MIN_SPACING:.1f} A on the hosted demo "
+            "to keep runtime manageable."
+        )
 
     # Distance grid computation method selection
     use_aabb_method = st.checkbox(
@@ -964,6 +1032,11 @@ def main() -> None:
                 step=0.5,
                 help="Extra padding around the unit cell for periodic boundary conditions.",
             )
+        if _is_spaces_deployment() and extra_padding > SPACES_MAX_EXTRA_PADDING:
+            extra_padding = SPACES_MAX_EXTRA_PADDING
+            st.info(
+                f"Extra padding is clamped to {SPACES_MAX_EXTRA_PADDING:.1f} A on the hosted demo."
+            )
         watershed_backend = _watershed_backend_widgets("visualization")
 
     st.markdown("### 🎨 Visualization Options")
@@ -1006,13 +1079,30 @@ def main() -> None:
     compute_clicked = st.button("Compute and Visualize")
 
     if compute_clicked:
+        if not _spaces_allow_compute_now():
+            return
+        lock_acquired = True
+        if _is_spaces_deployment():
+            lock_acquired = _SPACES_COMPUTE_LOCK.acquire(blocking=False)
+            if not lock_acquired:
+                estimated = int(st.session_state.get("spaces_last_compute_duration_sec", 45))
+                estimated = max(10, min(180, estimated))
+                st.error(f"Server busy. Estimated wait: ~{estimated}s.")
+                st.caption("Another user is currently running a compute job on this demo instance.")
+                return
         status = st.empty()
         status.markdown("<div style='padding:8px;background:#332700;color:#FFD700;text-align:center;'>⚡ COMPUTING ⚡</div>", unsafe_allow_html=True)
+        compute_started_at = time.time()
 
         try:
             # Handle minimum box thickness - create supercell if needed
             working_atoms = atoms
             if min_box_thickness_enabled:
+                if _is_spaces_deployment() and min_box_thickness > SPACES_MAX_MIN_BOX_THICKNESS:
+                    min_box_thickness = SPACES_MAX_MIN_BOX_THICKNESS
+                    st.info(
+                        f"Minimum box thickness is clamped to {SPACES_MAX_MIN_BOX_THICKNESS:.1f} A on the hosted demo."
+                    )
                 # Get current cell dimensions
                 cell_lengths = atoms.get_cell_lengths_and_angles()[:3]
                 min_current_length = min(cell_lengths)
@@ -1151,6 +1241,9 @@ def main() -> None:
                     results["pocket_types_detected"] = False
 
         finally:
+            st.session_state["spaces_last_compute_duration_sec"] = max(1.0, time.time() - compute_started_at)
+            if _is_spaces_deployment() and lock_acquired:
+                _SPACES_COMPUTE_LOCK.release()
             status.markdown("<div style='padding:8px;background:#003300;color:#00FF00;text-align:center;'>✓ COMPUTE FINISHED ✓</div>", unsafe_allow_html=True)
 
         st.session_state["latest_results"] = results
