@@ -17,6 +17,7 @@ import json
 import struct
 import time
 import zipfile
+import signal
 from pathlib import Path
 import subprocess
 CURRENT_FILE = Path(__file__).resolve()
@@ -1587,13 +1588,45 @@ Notes:
 
         if getattr(args, 'clean', False):
             try:
-                subprocess.run(
-                    ["pkill", "-f", f"streamlit run {app_path}"],
+                current_pid = os.getpid()
+                stale_pids = []
+                proc = subprocess.run(
+                    ["pgrep", "-f", str(app_path)],
                     check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
                 )
-                print("Cleaned stale interactive app processes.")
+                if proc.returncode == 0 and proc.stdout:
+                    for line in proc.stdout.splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            pid = int(line)
+                        except ValueError:
+                            continue
+                        if pid != current_pid:
+                            stale_pids.append(pid)
+
+                if stale_pids:
+                    for pid in stale_pids:
+                        try:
+                            os.kill(pid, signal.SIGTERM)
+                        except OSError:
+                            pass
+                    time.sleep(0.4)
+                    for pid in stale_pids:
+                        try:
+                            os.kill(pid, 0)
+                        except OSError:
+                            continue
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except OSError:
+                            pass
+                    print(f"Cleaned stale interactive app processes: {len(stale_pids)}")
+                else:
+                    print("No stale interactive app processes found.")
             except Exception as e:
                 print(f"Warning: failed to clean stale processes: {e}")
 

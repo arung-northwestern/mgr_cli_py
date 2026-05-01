@@ -7,15 +7,19 @@ import os
 import tempfile
 import time
 import hashlib
+import html
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
-from io import BytesIO
+from io import BytesIO, StringIO
 
 import plotly.express as px
 
 import numpy as np
 import streamlit as st
+import streamlit.components.v1 as components
 
 import plotly.graph_objects as go
 import pandas as pd
@@ -228,6 +232,18 @@ def make_pocket_psd_dataframe(bins: np.ndarray, pocket_psds: Dict[Any, Any]) -> 
 
 _CLI_FUNCS = None
 _PLOTTING_SYMBOLS = None
+_MESH_PREWARM_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+
+
+class _BufferingLogHandler(logging.Handler):
+    """Capture log records emitted during a compute action."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lines: List[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.lines.append(self.format(record))
 
 
 def _load_cli_funcs():
@@ -270,6 +286,8 @@ def _load_plotting_symbols():
             dark_layout as _dark_layout,
             white_layout as _white_layout,
             prepare_results_for_plot as _prepare_results_for_plot,
+            prewarm_framework_cache as _prewarm_framework_cache,
+            clear_framework_cache as _clear_framework_cache,
         )
     else:  # pragma: no cover - package import path
         from .plotting import (
@@ -279,6 +297,8 @@ def _load_plotting_symbols():
             dark_layout as _dark_layout,
             white_layout as _white_layout,
             prepare_results_for_plot as _prepare_results_for_plot,
+            prewarm_framework_cache as _prewarm_framework_cache,
+            clear_framework_cache as _clear_framework_cache,
         )
     _PLOTTING_SYMBOLS = (
         _show_mof,
@@ -287,6 +307,8 @@ def _load_plotting_symbols():
         _dark_layout,
         _white_layout,
         _prepare_results_for_plot,
+        _prewarm_framework_cache,
+        _clear_framework_cache,
     )
     return _PLOTTING_SYMBOLS
 
@@ -307,12 +329,22 @@ def get_pbc_groups(*args, **kwargs):
 
 
 def show_mof(*args, **kwargs):
-    func, _, _, _, _, _ = _load_plotting_symbols()
+    func, _, _, _, _, _, _, _ = _load_plotting_symbols()
     return func(*args, **kwargs)
 
 
 def prepare_results_for_plot(*args, **kwargs):
-    _, _, _, _, _, func = _load_plotting_symbols()
+    _, _, _, _, _, func, _, _ = _load_plotting_symbols()
+    return func(*args, **kwargs)
+
+
+def prewarm_framework_cache(*args, **kwargs):
+    _, _, _, _, _, _, func, _ = _load_plotting_symbols()
+    return func(*args, **kwargs)
+
+
+def clear_framework_cache(*args, **kwargs):
+    _, _, _, _, _, _, _, func = _load_plotting_symbols()
     return func(*args, **kwargs)
 
 
@@ -320,6 +352,77 @@ STYLIZE_LIGHTING = None
 STYLIZE_LIGHTPOSITION = None
 dark_layout = None
 white_layout = None
+
+
+def _queue_mesh_prewarm(results_data: Optional[Dict[str, Any]], cache_identity: str, stylize: bool, show_rings: bool = True) -> None:
+    if not results_data or "ase_atoms" not in results_data:
+        return
+    jobs = st.session_state.setdefault("mesh_prewarm_jobs", {})
+    job_key = f"{cache_identity}::stylize={int(bool(stylize))}::rings={int(bool(show_rings))}"
+    existing = jobs.get(job_key)
+    if existing is not None and not existing.done():
+        return
+    if existing is not None and existing.done():
+        return
+    # Copy atoms so plotting prewarm can run safely in the background.
+    atoms_copy = results_data["ase_atoms"].copy()
+    jobs[job_key] = _MESH_PREWARM_EXECUTOR.submit(
+        prewarm_framework_cache,
+        atoms_copy,
+        bool(stylize),
+        bool(show_rings),
+    )
+
+
+def _append_runtime_logs(lines: List[str]) -> None:
+    logs = st.session_state.setdefault("ui_logs", [])
+    logs.extend([line for line in lines if line and line.strip()])
+    if len(logs) > 600:
+        del logs[: len(logs) - 600]
+
+
+def _run_with_output_capture(callable_obj, *args, **kwargs):
+    stdout_buffer = StringIO()
+    stderr_buffer = StringIO()
+    root_logger = logging.getLogger()
+    handler = _BufferingLogHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
+    prev_level = root_logger.level
+    root_logger.addHandler(handler)
+    if prev_level > logging.INFO:
+        root_logger.setLevel(logging.INFO)
+    try:
+        with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
+            result = callable_obj(*args, **kwargs)
+    finally:
+        root_logger.removeHandler(handler)
+        root_logger.setLevel(prev_level)
+    captured_lines: List[str] = []
+    captured_lines.extend(handler.lines)
+    captured_lines.extend(stdout_buffer.getvalue().splitlines())
+    captured_lines.extend(stderr_buffer.getvalue().splitlines())
+    _append_runtime_logs(captured_lines)
+    return result
+
+
+def _render_logs_panel(log_text: str) -> None:
+    safe_logs = html.escape(log_text or "(no logs yet)")
+    components.html(
+        f"""
+        <div style="border:1px solid #3a3a3a;border-radius:8px;background:#111;padding:8px;">
+          <pre id="mgr-runtime-logs" style="margin:0;max-height:260px;overflow:auto;white-space:pre-wrap;color:#e6e6e6;font-size:12px;line-height:1.35;">{safe_logs}</pre>
+          <div style="display:flex;justify-content:flex-end;margin-top:8px;">
+            <button
+              onclick="navigator.clipboard.writeText(document.getElementById('mgr-runtime-logs').innerText)"
+              style="background:#1f6feb;color:white;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;font-size:12px;"
+            >
+              Copy logs
+            </button>
+          </div>
+        </div>
+        """,
+        height=330,
+    )
 
 
 ASCII_LOGO = r"""
@@ -936,21 +1039,52 @@ def _hts_one_material(
 def main() -> None:
     global STYLIZE_LIGHTING, STYLIZE_LIGHTPOSITION, dark_layout, white_layout
     if STYLIZE_LIGHTING is None or STYLIZE_LIGHTPOSITION is None or dark_layout is None or white_layout is None:
-        _, STYLIZE_LIGHTING, STYLIZE_LIGHTPOSITION, dark_layout, white_layout, _ = _load_plotting_symbols()
+        _, STYLIZE_LIGHTING, STYLIZE_LIGHTPOSITION, dark_layout, white_layout, _, _, _ = _load_plotting_symbols()
 
     st.set_page_config(
         layout="wide",
         menu_items={"Get Help": None, "Report a bug": None, "About": None},
     )
+    st.session_state.setdefault("ui_logs", [])
     mode_label = "spaces" if _is_spaces_deployment() else "local"
     st.sidebar.caption(f"Debug: deployment mode = `{mode_label}`")
+    show_logs = st.sidebar.toggle("Show runtime logs", value=False, key="show_runtime_logs")
+    col_reset, col_logs, col_refresh = st.sidebar.columns(3)
+    with col_reset:
+        if st.button("Clear/Reset", use_container_width=True, key="reset_app"):
+            clear_framework_cache()
+            st.session_state.clear()
+            st.rerun()
+    with col_logs:
+        if st.button("Clear Logs", use_container_width=True, key="clear_logs"):
+            st.session_state["ui_logs"] = []
+            st.rerun()
+    with col_refresh:
+        if st.button("Refresh Logs", use_container_width=True, key="refresh_logs"):
+            st.rerun()
 
     st.markdown(f"""
 ```
 {ASCII_LOGO}
 ```
 """)
-    st.markdown("## Pore Analysis & Visualization Web App")
+    build_id = os.environ.get("MGRCLI_BUILD", "1")
+    app_version = f"{time.strftime('%Y.%m.%d')}.{build_id}"
+    st.markdown(
+        (
+            "<div style='line-height:1.2;'>"
+            f"<span style='font-family:Menlo,Consolas,monospace;font-size:0.82rem;"
+            "color:#2ecc71;background:rgba(46,204,113,0.10);padding:0.12rem 0.35rem;border-radius:0.35rem;'>"
+            f"{app_version}</span></div>"
+        ),
+        unsafe_allow_html=True,
+    )
+    st.markdown("<div style='font-size:0.92rem;opacity:0.9;'>Pore Graph Analysis and Visualization of Nanoporous Materials</div>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size:0.80rem;opacity:0.85;'><em>(code and research paper coming soon!)</em></div>", unsafe_allow_html=True)
+    st.caption("Experimental; bugs and freezes may occur. Thank you for testing 🙏.")
+    if show_logs:
+        log_text = "\n".join(st.session_state.get("ui_logs", []))
+        _render_logs_panel(log_text)
 
     app_mode = st.radio(
         "Mode",
@@ -1122,7 +1256,13 @@ def main() -> None:
     cache_key = f"{getattr(cif_path, 'name', 'uploaded')}::{spacing:.3f}::aabb={use_aabb_method}::bs={block_size}"
     if auto_set_params and cache_key not in param_state:
         with st.spinner("Computing suggested parameters..."):
-            param_state[cache_key] = _auto_parameters(atoms, spacing, use_aabb_method, block_size)
+            param_state[cache_key] = _run_with_output_capture(
+                _auto_parameters,
+                atoms,
+                spacing,
+                use_aabb_method,
+                block_size,
+            )
 
     current_params = param_state.get(cache_key)
     if current_params is None:
@@ -1207,7 +1347,15 @@ def main() -> None:
         stylize = st.checkbox("Stylize plot", value=True, disabled=(projection_choice == "orthographic"))
         if projection_choice == "orthographic":
             stylize = False
-        layout_choice = st.selectbox("Background", ["dark", "white"], index=0)
+        if "visualization_layout_choice" not in st.session_state:
+            theme_base = str(st.get_option("theme.base") or "").lower()
+            st.session_state["visualization_layout_choice"] = "white" if theme_base == "light" else "dark"
+        layout_choice = st.selectbox(
+            "Background",
+            ["dark", "white"],
+            index=0 if st.session_state["visualization_layout_choice"] == "dark" else 1,
+            key="visualization_layout_choice",
+        )
     with col_vis2:
         show_surface = st.checkbox(f"Show pore surface at {surface_value:.2f} Å", value=True)
         show_surface_pbc = st.checkbox("Show periodic pore surface", value=True)
@@ -1252,44 +1400,54 @@ def main() -> None:
         compute_started_at = time.time()
 
         try:
+            def _compute_pipeline():
+                # Handle minimum box thickness - create supercell if needed
+                working_atoms = atoms
+                if min_box_thickness_enabled:
+                    if _is_spaces_deployment() and min_box_thickness > SPACES_MAX_MIN_BOX_THICKNESS:
+                        _min_box_thickness = SPACES_MAX_MIN_BOX_THICKNESS
+                    else:
+                        _min_box_thickness = min_box_thickness
+                    cell_lengths = atoms.get_cell_lengths_and_angles()[:3]
+                    min_current_length = min(cell_lengths)
+                    if min_current_length < _min_box_thickness:
+                        repetitions = mgr.get_repetitions_to_meet_cutoff(atoms, _min_box_thickness)
+                        working_atoms = atoms * repetitions
+                _results = _run_segmentation(
+                    working_atoms,
+                    current_params["dgrid"],
+                    spacing=spacing,
+                    mask_thickness=mask_thickness,
+                    h_value=h_value,
+                    min_distance=min_distance,
+                    threshold_abs=threshold_abs,
+                    extra_padding=extra_padding,
+                    watershed_backend=watershed_backend,
+                )
+                _results["ase_atoms"] = working_atoms
+                _results["dgrid"] = _results.get("dgrid", current_params["dgrid"])
+                return _results
+
+            results = _run_with_output_capture(_compute_pipeline)
             # Handle minimum box thickness - create supercell if needed
-            working_atoms = atoms
+            working_atoms = results["ase_atoms"]
             if min_box_thickness_enabled:
-                if _is_spaces_deployment() and min_box_thickness > SPACES_MAX_MIN_BOX_THICKNESS:
-                    min_box_thickness = SPACES_MAX_MIN_BOX_THICKNESS
-                    st.info(
-                        f"Minimum box thickness is clamped to {SPACES_MAX_MIN_BOX_THICKNESS:.1f} A on the hosted demo."
-                    )
-                # Get current cell dimensions
-                cell_lengths = atoms.get_cell_lengths_and_angles()[:3]
-                min_current_length = min(cell_lengths)
-                
-                if min_current_length < min_box_thickness:
-                    # Calculate repetitions needed
-                    try:
+                try:
+                    min_current_length = min(atoms.get_cell_lengths_and_angles()[:3])
+                    if _is_spaces_deployment() and min_box_thickness > SPACES_MAX_MIN_BOX_THICKNESS:
+                        min_box_thickness = SPACES_MAX_MIN_BOX_THICKNESS
+                        st.info(
+                            f"Minimum box thickness is clamped to {SPACES_MAX_MIN_BOX_THICKNESS:.1f} A on the hosted demo."
+                        )
+                    if min_current_length < min_box_thickness:
                         repetitions = mgr.get_repetitions_to_meet_cutoff(atoms, min_box_thickness)
-                        if hasattr(repetitions, '__len__') and len(repetitions) >= 3:
+                        if hasattr(repetitions, "__len__") and len(repetitions) >= 3:
                             rep_str = f"{repetitions[0]}x{repetitions[1]}x{repetitions[2]}"
                         else:
                             rep_str = f"{repetitions}x{repetitions}x{repetitions}"
                         st.info(f"Creating {rep_str} supercell to meet minimum box thickness of {min_box_thickness:.1f} Å")
-                        working_atoms = atoms * repetitions
-                    except Exception as e:
-                        st.warning(f"Could not create supercell automatically: {e}. Using original unit cell.")
-            
-            results = _run_segmentation(
-                working_atoms,
-                current_params["dgrid"],
-                spacing=spacing,
-                mask_thickness=mask_thickness,
-                h_value=h_value,
-                min_distance=min_distance,
-                threshold_abs=threshold_abs,
-                extra_padding=extra_padding,
-                watershed_backend=watershed_backend,
-            )
-            results["ase_atoms"] = working_atoms
-            results["dgrid"] = results.get("dgrid", current_params["dgrid"])
+                except Exception:
+                    pass
 
             # Derive final maxima and radii from segmentation results to ensure they are available for the RAG download.
             # This logic mirrors the CLI's --rag option post-processing.
@@ -1417,6 +1575,17 @@ def main() -> None:
     results_data = st.session_state.get("latest_results")
     metadata = st.session_state.get("latest_metadata", {})
     analysis_key = st.session_state.get("analysis_key")
+    if results_data is not None and not mesh_framework:
+        framework_identity = str(
+            st.session_state.get("single_material_atoms_source_key")
+            or getattr(cif_path, "name", "framework")
+        )
+        _queue_mesh_prewarm(
+            results_data,
+            framework_identity,
+            stylize=bool(stylize),
+            show_rings=True,
+        )
 
     visualization_tab, percolation_tab, psd_tab, sa_vol_tab = st.tabs([
         "Visualization", "PLD & Percolation", "Pore Size Distribution", "Surface Areas & Void Volumes",
@@ -1450,6 +1619,8 @@ def main() -> None:
                     plot_layout=layout_choice,
                 ),
             )
+            # Apply selected layout explicitly to avoid theme/template mismatches.
+            fig.update_layout(**(white_layout if layout_choice == "white" else dark_layout))
 
             st.plotly_chart(fig, use_container_width=True)
             # --- Download buttons in a row ---

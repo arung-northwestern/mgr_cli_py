@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 import hashlib
+from threading import Lock
 
 import numpy as np
 import plotly.graph_objects as go
@@ -834,29 +835,47 @@ def prepare_results_for_plot(result: Dict[str, Any], ase_atoms) -> Dict[str, Any
 
 # Cache for framework traces to avoid recomputation
 _framework_cache: Dict[str, Tuple[go.BaseTraceType, ...]] = {}
+_framework_cache_lock = Lock()
 
 
 def _get_framework_cache_key(mat_atoms, style: str, show_rings: bool, stylize: bool) -> str:
     """Generate a unique cache key for framework traces."""
-    import tempfile
-    import os
-    
-    # Create a hash based on atomic positions, numbers, and key parameters
-    positions = mat_atoms.get_positions()
-    numbers = mat_atoms.get_atomic_numbers()
-    cell = mat_atoms.get_cell()
-    
-    # Create a string representation
-    key_data = f"{positions.tobytes().hex()}{numbers.tobytes().hex()}{cell.tobytes().hex()}{style}{show_rings}{stylize}"
-    
-    # Generate hash
-    return hashlib.md5(key_data.encode()).hexdigest()
+    # Hash raw bytes directly (avoid expensive bytes->hex expansion).
+    hasher = hashlib.md5()
+    hasher.update(mat_atoms.get_positions().tobytes())
+    hasher.update(mat_atoms.get_atomic_numbers().tobytes())
+    hasher.update(mat_atoms.get_cell().array.tobytes())
+    hasher.update(style.lower().encode("ascii", errors="ignore"))
+    hasher.update(str(bool(show_rings)).encode("ascii"))
+    hasher.update(str(bool(stylize)).encode("ascii"))
+    return hasher.hexdigest()
 
 
 def clear_framework_cache():
     """Clear the framework cache to free memory."""
     global _framework_cache
-    _framework_cache.clear()
+    with _framework_cache_lock:
+        _framework_cache.clear()
+
+
+def prewarm_framework_cache(mat_atoms, stylize: bool = True, show_rings: bool = True) -> None:
+    """Compute and cache mesh framework traces ahead of user style switch."""
+    cache_key = _get_framework_cache_key(mat_atoms, "mesh", show_rings, stylize)
+    with _framework_cache_lock:
+        if cache_key in _framework_cache:
+            return
+
+    traces = plot_framework_as_mesh(
+        mat_atoms,
+        stylize=stylize,
+        style="mesh",
+        show_rings=show_rings,
+    )
+    with _framework_cache_lock:
+        if len(_framework_cache) > 10:
+            oldest_key = next(iter(_framework_cache))
+            del _framework_cache[oldest_key]
+        _framework_cache[cache_key] = traces
 
 
 def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, Any] | None = None) -> go.Figure:
@@ -900,29 +919,26 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
 
     framework_style = defaults.get("plot_framework_style", "mesh")
     if defaults.get("plot_framework", True):
-        # Check cache first to avoid recomputation
         cache_key = _get_framework_cache_key(
             mat_atoms, 
             framework_style, 
             defaults.get("plot_framework_show_rings", True), 
             stylize
         )
-        
-        if cache_key in _framework_cache:
-            framework_traces = _framework_cache[cache_key]
-        else:
+        with _framework_cache_lock:
+            framework_traces = _framework_cache.get(cache_key)
+        if framework_traces is None:
             framework_traces = plot_framework_as_mesh(
                 mat_atoms,
                 stylize=stylize,
                 style=framework_style,
                 show_rings=defaults.get("plot_framework_show_rings", True),
             )
-            # Cache the result (limit cache size to prevent memory issues)
-            if len(_framework_cache) > 10:  # Keep only last 10 different frameworks
-                oldest_key = next(iter(_framework_cache))
-                del _framework_cache[oldest_key]
-            _framework_cache[cache_key] = framework_traces
-        
+            with _framework_cache_lock:
+                if len(_framework_cache) > 10:
+                    oldest_key = next(iter(_framework_cache))
+                    del _framework_cache[oldest_key]
+                _framework_cache[cache_key] = framework_traces
         traces.extend(framework_traces)
 
     if defaults.get("plot_cell", True):
@@ -1035,5 +1051,6 @@ __all__ = [
     "spheres_for_positions",
     "plot_mesh",
     "prepare_results_for_plot",
+    "prewarm_framework_cache",
     "show_mof",
 ]
