@@ -2088,6 +2088,15 @@ def main() -> None:
                     min_value=5.0,
                     step=5.0,
                 )
+                global_psd_log_bins = st.checkbox(
+                    "Log-spaced bins for global PSD (recommended)",
+                    value=True,
+                    help=(
+                        "Linear bins from 0 Å put almost all diameters smaller than ~grid spacing "
+                        "into one wide first bin, which often looks like a huge spike near zero. "
+                        "Log-spaced bins widen resolution at small Å and match how many papers plot PSD."
+                    ),
+                )
 
                 st.subheader("Pocket-wise PSD")
                 num_samples_per_region = st.number_input(
@@ -2118,6 +2127,7 @@ def main() -> None:
             key_occupiable = (
                 effective_key,
                 "occupiable",
+                bool(global_psd_log_bins),
                 int(num_samples_total),
                 int(uniform_num_bins),
                 float(uniform_max_diameter),
@@ -2128,6 +2138,7 @@ def main() -> None:
             key_accessible = (
                 effective_key,
                 "accessible",
+                bool(global_psd_log_bins),
                 round(float(probe_radius_psd), 3),
                 int(num_samples_total),
                 int(uniform_num_bins),
@@ -2144,7 +2155,26 @@ def main() -> None:
                 )
 
             if compute_psd:
-                bins_uniform = np.linspace(0, float(uniform_max_diameter), int(uniform_num_bins) + 1)
+                if isinstance(metadata, dict) and metadata.get("spacing") is not None:
+                    spacing_ref = float(metadata["spacing"])
+                else:
+                    spacing_ref = float(spacing)
+                d_hi = float(uniform_max_diameter)
+                if global_psd_log_bins:
+                    d_lo = float(
+                        np.clip(
+                            2.0 * spacing_ref,
+                            0.05,
+                            min(2.0, 0.45 * d_hi),
+                        )
+                    )
+                    bins_uniform = np.geomspace(
+                        max(d_lo, 1e-6),
+                        max(d_hi, d_lo + 1e-6),
+                        int(uniform_num_bins) + 1,
+                    )
+                else:
+                    bins_uniform = np.linspace(0.0, d_hi, int(uniform_num_bins) + 1)
                 bins_pocket = np.linspace(0, float(pocket_max_diameter), int(pocket_num_bins) + 1)
                 material_name = getattr(cif_path, "stem", "Material")
 
@@ -2181,7 +2211,13 @@ def main() -> None:
                         else:
                             st.warning("Pocket-wise PSD requires segmented regions; skipping pocket computation.")
                         occ_entry = {
-                            "uniform": {"hist": uniform_hist, "fig": uniform_fig, "bins": bins_uniform, "df": uniform_df},
+                            "uniform": {
+                                "hist": uniform_hist,
+                                "fig": uniform_fig,
+                                "bins": bins_uniform,
+                                "df": uniform_df,
+                                "log_bins": bool(global_psd_log_bins),
+                            },
                             "pocket": pocket_results,
                         }
                         psd_cache[str(key_occupiable)] = occ_entry
@@ -2215,6 +2251,7 @@ def main() -> None:
                                     "fig": acc_uniform_fig,
                                     "bins": bins_uniform,
                                     "df": acc_uniform_df,
+                                    "log_bins": bool(global_psd_log_bins),
                                 },
                                 "pocket": {
                                     "psds": acc_pocket_psds,
@@ -2236,7 +2273,35 @@ def main() -> None:
                 u = entry.get("uniform")
                 if u:
                     st.markdown("**Global PSD**")
-                    st.plotly_chart(u["fig"], use_container_width=True)
+                    if not u.get("log_bins"):
+                        b_edges = np.asarray(u.get("bins", []))
+                        h = np.asarray(u.get("hist", []))
+                        if b_edges.ndim == 1 and h.size and b_edges.size > 2 and np.isfinite(b_edges[0]):
+                            if abs(float(b_edges[0])) <= 1e-9:
+                                w_first = float(b_edges[1] - b_edges[0])
+                                htot = float(np.sum(h))
+                                if htot > 0:
+                                    st.caption(
+                                        f"The first histogram bin **[0–{w_first:.3g}) Å** often holds "
+                                        f"**many** pore diameters (~{100.0 * float(h[0]) / htot:.1f}% of counts here)—mainly "
+                                        f"near-wall voxel centers and widths below ~twice the segmentation grid spacing. "
+                                        f"This is expected for discrete Gelb–Gubbins metrics, not necessarily a plotting bug."
+                                    )
+                    elif u.get("log_bins"):
+                        st.caption(
+                            "**Log-spaced** diameter bins: better resolution where many counts fall at "
+                            "**small Å** (wall-adjacent / sub-resolution on the discrete grid)."
+                        )
+                    if u.get("log_bins"):
+                        _psd_fig = go.Figure(u["fig"])
+                        _psd_fig.update_xaxes(
+                            type="log",
+                            title="Pore diameter (Å, log scale)",
+                            exponentformat="power",
+                        )
+                        st.plotly_chart(_psd_fig, use_container_width=True)
+                    else:
+                        st.plotly_chart(u["fig"], use_container_width=True)
                     st.download_button(
                         label="Download global PSD (CSV)",
                         data=u["df"].to_csv(index=False).encode("utf-8"),
