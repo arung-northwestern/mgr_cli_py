@@ -1,0 +1,5 @@
+# Hugging Face Spaces limits third-party cookies. Streamlit's default XSRF
+# protection relies on cookies, so file uploads fail with AxiosError 403.
+# See: https://huggingface.co/docs/hub/spaces-cookie-limitations
+[server]
+enableXsrfProtection = false

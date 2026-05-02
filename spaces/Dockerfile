@@ -57,6 +57,7 @@ COPY python_cli /app/python_cli
 COPY mgr_src /app/mgr_src
 COPY cifs /app/cifs
 COPY scripts/docker_entrypoint.sh /app/scripts/docker_entrypoint.sh
+COPY spaces/.streamlit/config.toml /app/.streamlit/config.toml
 
 RUN uv pip install --system /app/target/wheels/*.whl \
     && chmod +x /app/scripts/docker_entrypoint.sh

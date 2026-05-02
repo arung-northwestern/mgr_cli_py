@@ -99,7 +99,7 @@ SPACES_MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
 SPACES_MIN_SPACING = 0.25
 SPACES_MAX_EXTRA_PADDING = 10.0
 SPACES_MAX_MIN_BOX_THICKNESS = 12.0
-SPACES_MIN_SECONDS_BETWEEN_RUNS = 25.0
+SPACES_MIN_SECONDS_BETWEEN_RUNS = 15.0
 SPACES_MAX_ATOMS = 5000
 _SPACES_COMPUTE_LOCK = Lock()
 
@@ -1704,6 +1704,16 @@ def main() -> None:
             - Performance mode speeds up surface generation on large unit cells.
             - Orthographic projection pairs best with stylize disabled.
             """)
+            if _is_spaces_deployment():
+                st.markdown(
+                    f"""
+### Hosted demo (Hugging Face Spaces)
+- **Cooldown:** allow about **{int(SPACES_MIN_SECONDS_BETWEEN_RUNS)} seconds** between compute runs; the public Space shares CPU with other visitors.
+- **Uploads:** CIFs up to **{SPACES_MAX_UPLOAD_BYTES / (1024 * 1024):.0f} MB**; structures larger than **{SPACES_MAX_ATOMS:,}** atoms are not supported here.
+- **Parameters:** grid spacing is at least **{SPACES_MIN_SPACING:g} Å** and some padding / box settings are capped compared to running locally.
+- For the full feature set and best performance, run **`mgrcli interactive`** on your machine.
+"""
+                )
 
             main_plot_status.markdown("<div style='padding:6px;background:#06310c;color:#6FE37F;text-align:center;'>✅ Plotting complete</div>", unsafe_allow_html=True)
 
