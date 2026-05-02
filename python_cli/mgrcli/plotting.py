@@ -60,7 +60,10 @@ STYLIZE_LIGHTPOSITION = dict(x=10, y=10, z=30)
 
 white_layout = dict(
     template="plotly_white",
+    paper_bgcolor="#ffffff",
+    plot_bgcolor="#ffffff",
     scene=dict(
+        bgcolor="#ffffff",
         xaxis=dict(zeroline=False, visible=False),
         yaxis_visible=False,
         zaxis_visible=False,
@@ -74,7 +77,10 @@ white_layout = dict(
 
 dark_layout = dict(
     template="plotly_dark",
+    paper_bgcolor="#1f1f1f",
+    plot_bgcolor="#1f1f1f",
     scene=dict(
+        bgcolor="#1f1f1f",
         xaxis=dict(zeroline=False, visible=False),
         yaxis_visible=False,
         zaxis_visible=False,
@@ -1024,12 +1030,10 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         else:
             traces.append(maxima_trace)
 
-    if not traces:
-        base_layout = white_layout if defaults.get("plot_layout", "dark").lower() == "white" else dark_layout
-        fig = go.Figure(layout=base_layout)
-    else:
-        base_layout = white_layout if defaults.get("plot_layout", "dark").lower() == "white" else dark_layout
-        fig = go.Figure(data=traces, layout=base_layout)
+    _plot_layout = str(defaults.get("plot_layout", "dark")).lower().strip()
+    base_layout_dict = dict(white_layout if _plot_layout == "white" else dark_layout)
+    fig = go.Figure(data=traces) if traces else go.Figure()
+    fig.update_layout(**base_layout_dict)
 
     for trace in fig.data:
         _configure_mesh_lighting(trace, stylize=stylize, orthographic=orthographic)

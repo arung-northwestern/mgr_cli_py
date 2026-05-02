@@ -1392,15 +1392,23 @@ def main() -> None:
         stylize = st.checkbox("Stylize plot", value=True, disabled=(projection_choice == "orthographic"))
         if projection_choice == "orthographic":
             stylize = False
-        if "visualization_layout_choice" not in st.session_state:
+        if "viz_background" not in st.session_state:
+            old = st.session_state.get("visualization_layout_choice")
+            if isinstance(old, str) and old.strip().lower() in ("dark", "white"):
+                st.session_state["viz_background"] = old.strip().lower()
+        if "viz_background" not in st.session_state:
             theme_base = str(st.get_option("theme.base") or "").lower()
-            st.session_state["visualization_layout_choice"] = "white" if theme_base == "light" else "dark"
+            # Light Streamlit UI → lighter Plotly defaults; dark UI → plotly_dark default.
+            st.session_state["viz_background"] = "white" if theme_base == "light" else "dark"
         layout_choice = st.selectbox(
             "Background",
             ["dark", "white"],
-            index=0 if st.session_state["visualization_layout_choice"] == "dark" else 1,
-            key="visualization_layout_choice",
+            index=0 if st.session_state["viz_background"] == "dark" else 1,
+            key="viz_background",
         )
+        viz_plot_layout = str(layout_choice or st.session_state.get("viz_background", "dark")).strip().lower()
+        if viz_plot_layout not in ("dark", "white"):
+            viz_plot_layout = "white" if str(st.get_option("theme.base") or "").lower() == "light" else "dark"
     with col_vis2:
         show_surface = st.checkbox(f"Show pore surface at {surface_value:.2f} Å", value=True)
         show_surface_pbc = st.checkbox("Show periodic pore surface", value=True)
@@ -1663,11 +1671,11 @@ def main() -> None:
                     plot_windows=show_windows,
                     plot_maxima_show_spheres=show_maxima_spheres,
                     plot_projection=projection_choice,
-                    plot_layout=layout_choice,
+                    plot_layout=viz_plot_layout,
                 ),
             )
-            # Apply selected layout explicitly to avoid theme/template mismatches.
-            fig.update_layout(**(white_layout if layout_choice == "white" else dark_layout))
+            # Apply selected layout explicitly (includes scene.bgcolor; template alone can miss 3D canvas).
+            fig.update_layout(**dict(white_layout if viz_plot_layout == "white" else dark_layout))
             md_plot = metadata if isinstance(metadata, dict) else {}
             _settings_slug = _viz_settings_title_suffix(
                 spacing=float(md_plot.get("spacing", spacing)),
