@@ -131,6 +131,46 @@ def _spaces_allow_compute_now() -> bool:
     return True
 
 
+def _viz_settings_title_suffix(
+    *,
+    spacing: float,
+    h_value: float,
+    threshold_abs: float,
+    mask_thickness: float,
+) -> str:
+    """Suffix for titles / HTML downloads: basic segmentation settings (underscore-separated)."""
+    return (
+        f"spacing_{spacing:g}_h_{h_value:g}_threshAbs_{threshold_abs:g}_mask_{mask_thickness:g}"
+    )
+
+
+def _percolation_axes_for_display(components: Any) -> Dict[str, Any]:
+    """Normalize winding percolation axis keys (0–2 or x/y/z) for JSON / UI."""
+    out: Dict[str, Any] = {"a-direction": [], "b-direction": [], "c-direction": []}
+    if not isinstance(components, dict):
+        return out
+    letters = ("a-direction", "b-direction", "c-direction")
+    for axis_key, comps in components.items():
+        idx = None
+        if isinstance(axis_key, int) and axis_key in (0, 1, 2):
+            idx = axis_key
+        elif isinstance(axis_key, str):
+            lk = axis_key.lower()
+            if lk in ("x", "a"):
+                idx = 0
+            elif lk in ("y", "b"):
+                idx = 1
+            elif lk in ("z", "c"):
+                idx = 2
+        if idx is None:
+            continue
+        if isinstance(comps, (list, tuple)):
+            out[letters[idx]] = list(comps)
+        else:
+            out[letters[idx]] = [comps] if comps is not None else []
+    return out
+
+
 def _safe_uploaded_cif_path(uploaded_file: Any) -> Path:
     """Persist uploaded CIF to a temp location with a sanitized filename."""
     raw_name = Path(getattr(uploaded_file, "name", "upload.cif")).name
@@ -1053,7 +1093,9 @@ def main() -> None:
     with col_reset:
         if st.button("Clear/Reset", use_container_width=True, key="reset_app"):
             clear_framework_cache()
+            next_gen = int(st.session_state.get("widget_reset_generation", 0)) + 1
             st.session_state.clear()
+            st.session_state["widget_reset_generation"] = next_gen
             st.rerun()
     with col_logs:
         if st.button("Clear Logs", use_container_width=True, key="clear_logs"):
@@ -1113,7 +1155,10 @@ def main() -> None:
     st.markdown("""
     **Note:** If you upload a CIF file, it will be used instead of the selected sample material below.
     """)
-    uploaded_file = st.file_uploader("Upload CIF file", type=["cif"])
+    _upload_key = int(st.session_state.get("widget_reset_generation", 0))
+    uploaded_file = st.file_uploader(
+        "Upload CIF file", type=["cif"], key=f"single_cif_upload_{_upload_key}"
+    )
 
     atoms = None
     cif_path: Optional[Path] = None
@@ -1566,6 +1611,8 @@ def main() -> None:
             "spacing": float(spacing),
             "mask_thickness": float(mask_thickness),
             "surface_value": float(surface_value),
+            "h_value": float(h_value),
+            "threshold_abs": float(threshold_abs),
             "watershed_backend": str(watershed_backend),
         }
         st.session_state["analysis_key"] = cache_key
@@ -1621,18 +1668,28 @@ def main() -> None:
             )
             # Apply selected layout explicitly to avoid theme/template mismatches.
             fig.update_layout(**(white_layout if layout_choice == "white" else dark_layout))
+            md_plot = metadata if isinstance(metadata, dict) else {}
+            _settings_slug = _viz_settings_title_suffix(
+                spacing=float(md_plot.get("spacing", spacing)),
+                h_value=float(md_plot.get("h_value", h_value)),
+                threshold_abs=float(md_plot.get("threshold_abs", threshold_abs)),
+                mask_thickness=float(md_plot.get("mask_thickness", mask_thickness)),
+            )
+            _main_title = f"{material_name} | {_settings_slug}"
+            fig.update_layout(title=dict(text=_main_title))
 
             st.plotly_chart(fig, use_container_width=True)
             # --- Download buttons in a row ---
             html_path = Path("interactive_plot.html")
             fig.write_html(html_path)
+            _html_stem = f"{material_name}_{_settings_slug}".replace(" ", "_").replace("/", "_")
             col_html, col_npz, col_rag = st.columns(3)
             with open(html_path, "rb") as file_handle:
                 with col_html:
                     st.download_button(
                         label="Download interactive HTML",
                         data=file_handle,
-                        file_name=f"{getattr(cif_path, 'stem', 'analysis')}.html",
+                        file_name=f"{_html_stem}.html",
                         mime="text/html",
                     )
             if results_data:
@@ -1855,6 +1912,10 @@ def main() -> None:
                     st.markdown(
                         f"Selected probe radius: **{selected_radius:.2f} Å** (diameter {2*selected_radius:.2f} Å)"
                     )
+                    st.caption(
+                        "Cluster surfaces use an isovalue tied to PLD (not this slider); the slider only selects "
+                        "which percolation threshold / cluster set to visualize."
+                    )
 
                     plot_status = st.empty()
                     plot_status.markdown("<div style='padding:6px;background:#102a43;color:#7FDBFF;text-align:center;'>🎨 Rendering percolation view…</div>", unsafe_allow_html=True)
@@ -1862,16 +1923,19 @@ def main() -> None:
                     try:
                         # Ensure plotly express is accessible for color scale
                         import plotly.express as px
-                        isovalue = min(float(selected_radius) - 0.25, 1.75)
-                        if isovalue <= 0:
-                            raise ValueError(
-                                f"Probe radius {selected_radius:.2f} Å is too small to plot percolated clusters."
-                            )
+                        pld_f = float(analysis.get("pld", 0.0))
+                        fallback_iso = (
+                            float(np.clip(np.minimum(pld_f / 2.0 - 0.25, 1.75), 0.1, np.inf))
+                            if pld_f > 0
+                            else 1.6
+                        )
+                        mesh_isovalue = float(analysis.get("isovalue") or fallback_iso)
+                        mesh_isovalue = max(mesh_isovalue, 0.05)
                         plot_cache = st.session_state.setdefault("percolation_plot_cache", {})
                         plot_key = (
                             analysis_key,
                             float(selected_radius),
-                            float(isovalue),
+                            float(mesh_isovalue),
                             boundary_line_color,
                             int(boundary_line_width),
                         )
@@ -1884,7 +1948,7 @@ def main() -> None:
                                 analysis["regions"],
                                 atoms,
                                 probe_radius=selected_radius,
-                                isovalue=isovalue,
+                                isovalue=mesh_isovalue,
                                 stylize=True,
                                 opacity=1.0,
                                 cscale=px.colors.qualitative.Pastel,
@@ -1892,7 +1956,7 @@ def main() -> None:
                                 boundary_line_color=boundary_line_color,
                             )
                             plot_cache[plot_key] = cluster_traces
-                    except ValueError as exc:
+                    except Exception as exc:
                         st.error(str(exc))
                         cluster_traces = []
 
@@ -1938,8 +2002,19 @@ def main() -> None:
                     # Use the selected layout for percolation plot
                     layout = white_layout if percolation_layout_choice == "white" else dark_layout
                     percolation_fig.update_layout(**layout)
+                    md_p = st.session_state.get("latest_metadata") or {}
+                    if not isinstance(md_p, dict):
+                        md_p = {}
+                    _p_slug = _viz_settings_title_suffix(
+                        spacing=float(md_p.get("spacing", 0.5)),
+                        h_value=float(md_p.get("h_value", 0.4)),
+                        threshold_abs=float(md_p.get("threshold_abs", 1.5)),
+                        mask_thickness=float(md_p.get("mask_thickness", 1.5)),
+                    )
                     percolation_fig.update_layout(
-                        title=f"Percolation clusters at probe radius {selected_radius:.2f} Å"
+                        title=(
+                            f"Percolation probe r={selected_radius:.2f}Å | {material_name} | {_p_slug}"
+                        )
                     )
 
                     for trace in percolation_fig.data:
@@ -1954,15 +2029,15 @@ def main() -> None:
                     plot_status.markdown("<div style='padding:6px;background:#06310c;color:#6FE37F;text-align:center;'>✅ Plotting complete</div>", unsafe_allow_html=True)
 
                     selected_components = next(
-                        (entry[1] for entry in history if np.isclose(entry[0], selected_radius)),
+                        (
+                            entry[1]
+                            for entry in history
+                            if np.isclose(float(entry[0]), float(selected_radius), rtol=0.0, atol=1e-5)
+                        ),
                         {},
                     )
                     with st.expander("Percolation components at selected radius", expanded=False):
-                        st.json({
-                            "a-direction": selected_components.get(0, []),
-                            "b-direction": selected_components.get(1, []),
-                            "c-direction": selected_components.get(2, []),
-                        })
+                        st.json(_percolation_axes_for_display(selected_components))
 
     with psd_tab:
         if results_data is None:
