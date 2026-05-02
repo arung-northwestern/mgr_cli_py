@@ -1913,8 +1913,9 @@ def main() -> None:
                         f"Selected probe radius: **{selected_radius:.2f} Å** (diameter {2*selected_radius:.2f} Å)"
                     )
                     st.caption(
-                        "Cluster surfaces use an isovalue tied to PLD (not this slider); the slider only selects "
-                        "which percolation threshold / cluster set to visualize."
+                        "Cluster pore surfaces use the same **Surface value (Å)** as the Visualization section "
+                        "(main pane pore isosurface). The controls here only pick the percolation probe radius / "
+                        "which cluster set to draw."
                     )
 
                     plot_status = st.empty()
@@ -1923,14 +1924,8 @@ def main() -> None:
                     try:
                         # Ensure plotly express is accessible for color scale
                         import plotly.express as px
-                        pld_f = float(analysis.get("pld", 0.0))
-                        fallback_iso = (
-                            float(np.clip(np.minimum(pld_f / 2.0 - 0.25, 1.75), 0.1, np.inf))
-                            if pld_f > 0
-                            else 1.6
-                        )
-                        mesh_isovalue = float(analysis.get("isovalue") or fallback_iso)
-                        mesh_isovalue = max(mesh_isovalue, 0.05)
+                        # Match main visualization isosurface (same physical meaning as pore surface in first tab).
+                        mesh_isovalue = max(float(surface_value), 0.05)
                         plot_cache = st.session_state.setdefault("percolation_plot_cache", {})
                         plot_key = (
                             analysis_key,
