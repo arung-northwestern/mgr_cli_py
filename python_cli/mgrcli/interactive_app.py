@@ -480,11 +480,15 @@ def _mofography_logo_paths() -> tuple[Optional[Path], Optional[Path]]:
     light_name = "mofography_logo_white_background.png"
     dark_name = "mofography_logo_dark_background.png"
     bases: list[Path] = []
+    # 1. In-repo docs/ (works in Docker / HF Spaces)
+    cli_root = Path(__file__).resolve().parents[2]
+    bases.append(cli_root / "docs")
+    # 2. External MOFOGRAPHY_REPO env override
     env = (os.environ.get("MOFOGRAPHY_REPO") or "").strip()
     if env:
         bases.append(Path(env).expanduser())
+    # 3. Local dev fallback
     bases.append(Path.home() / "repos" / "mofography")
-    cli_root = Path(__file__).resolve().parents[2]
     bases.append(cli_root.parent / "mofography")
 
     light_p: Optional[Path] = None
