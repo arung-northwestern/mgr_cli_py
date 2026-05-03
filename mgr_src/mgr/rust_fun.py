@@ -949,6 +949,26 @@ def compute_pore_sizes_uniform_rust(dgrid, ase_atoms, num_samples_total=10000):
     return sample_points, pore_sizes
 
 
+def _effective_dgrid_uniform_psd_sampling(dgrid, probe_center_min_radius):
+    """Rust uniform PSD collects ``dgrid > 0``; mark sub-threshold void as −1 so it is omitted."""
+    d = np.asarray(dgrid, dtype=np.float32)
+    if probe_center_min_radius is None or float(probe_center_min_radius) <= 0:
+        return d
+    s = np.float32(float(probe_center_min_radius))
+    return np.where(d >= s, d, np.float32(-1.0))
+
+
+def _effective_regions_pocket_psd_sampling(regions_pbc, dgrid, probe_center_min_radius):
+    """Zero region labels wherever clearance would not host the probe center; keep geometric dgrid for sizing."""
+    rg = np.asarray(regions_pbc, dtype=np.uint32)
+    if probe_center_min_radius is None or float(probe_center_min_radius) <= 0:
+        return rg
+    d = np.asarray(dgrid, dtype=np.float32)
+    s = np.float32(float(probe_center_min_radius))
+    valid = (rg > np.uint32(0)) & (d >= s)
+    return np.where(valid, rg, np.uint32(0))
+
+
 def compute_psd_uniform_rust(
     dgrid,
     ase_atoms,
@@ -957,6 +977,7 @@ def compute_psd_uniform_rust(
     density=False,
     return_fig=False,
     material="Material",
+    probe_center_min_radius=None,
 ):
     """Compute pore size distribution using uniform sampling.
 
@@ -977,6 +998,8 @@ def compute_psd_uniform_rust(
     :type return_fig: bool
     :param material: Name of the material for plot title
     :type material: str
+    :param probe_center_min_radius: If > 0, only void voxels with dgrid >= this radius are used as PSD sample sites / sphere centers for uniform PSD.
+    :type probe_center_min_radius: float or None
     :return: If return_fig is False, returns histogram values. If True, returns (histogram, figure)
     :rtype: numpy.ndarray or tuple[numpy.ndarray, plotly.graph_objects.Figure]
     """
@@ -986,17 +1009,37 @@ def compute_psd_uniform_rust(
     from .visualize import get_pore_size_distribution_trace
     from .compute import interpolate_dgrid
 
-    sample_points, pore_sizes = compute_pore_sizes_uniform_rust(
-        dgrid, ase_atoms, num_samples_total=num_samples_total
-    )
+    d_sampling = _effective_dgrid_uniform_psd_sampling(dgrid, probe_center_min_radius)
     if bins is None:
         bins = np.linspace(0, 50, 200)  # histogram bins
+    bins_arr = np.asarray(bins)
+    if not np.any(d_sampling > np.float32(0)):
+        print("\nSkipping uniform PSD Rust sampler: no void voxels with dgrid >= probe-center cutoff.")
+        psd_hist = np.zeros(bins_arr.size - 1, dtype=float)
+        if return_fig:
+            sig_note = ""
+            if probe_center_min_radius is not None and float(probe_center_min_radius) > 0:
+                sig_note = f" (probe-center ≥ {float(probe_center_min_radius):.2g} Å)"
+            fig = go.Figure()
+            fig.update_layout(
+                title=f"Pore Size Distribution — {material}: no pore sites above cutoff{sig_note}",
+                xaxis_title="Pore Diameter (Å)",
+                yaxis_title="Counts",
+                width=1000,
+                height=600,
+            )
+            return psd_hist, fig
+        return psd_hist
+
+    sample_points, pore_sizes = compute_pore_sizes_uniform_rust(
+        d_sampling, ase_atoms, num_samples_total=num_samples_total
+    )
     print("\nCreating region-wise PSD plots...")
 
-    psd_hist, _ = np.histogram(pore_sizes * 2, bins=bins, density=density)
+    psd_hist, _ = np.histogram(pore_sizes * 2, bins=bins_arr, density=density)
     if return_fig:
         histogram_trace = get_pore_size_distribution_trace(
-            pore_sizes * 2, normalize=False, cumulative=False, bins=bins
+            pore_sizes * 2, normalize=False, cumulative=False, bins=bins_arr
         )
         dgrid_interpolator = interpolate_dgrid(dgrid)
         print("UNIFORM SAMPLING STATISTICS:")
@@ -1007,8 +1050,11 @@ def compute_psd_uniform_rust(
         # print(f"  Max probability density: {np.max(hist):.4f}")
         fig = go.Figure()
         fig.add_trace(histogram_trace)
+        sig_note = ""
+        if probe_center_min_radius is not None and float(probe_center_min_radius) > 0:
+            sig_note = f" (probe-center sites ≥ {float(probe_center_min_radius):.2g} Å)"
         fig.update_layout(
-            title=f"Pore Size Distribution with uniform sampling across box {material}",
+            title=f"Pore Size Distribution with uniform sampling{sig_note} — {material}",
             xaxis_title="Pore Diameter (Å)",
             yaxis_title="Counts",
             legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
@@ -1021,7 +1067,11 @@ def compute_psd_uniform_rust(
 
 
 def compute_pore_sizes_pocketwise_rust(
-    dgrid, regions_pbc, ase_atoms, samples_per_region=1000
+    dgrid,
+    regions_pbc,
+    ase_atoms,
+    samples_per_region=1000,
+    probe_center_min_radius=None,
 ):
     """Compute pore sizes for each pocket/region separately.
 
@@ -1044,10 +1094,13 @@ def compute_pore_sizes_pocketwise_rust(
     import numpy as np
 
     cell = cellpar_to_cell(ase_atoms.cell.cellpar()).T
+    regions_eff = _effective_regions_pocket_psd_sampling(
+        regions_pbc, dgrid, probe_center_min_radius
+    )
     sample_points, pore_sizes, region_labels = (
         mgrcli_rust.compute_pore_sizes_for_psd_pocketwise(
             dgrid,
-            regions_pbc,
+            regions_eff,
             cell,
             samples_per_region=samples_per_region,  # Small number for testing
         )
@@ -1063,6 +1116,7 @@ def compute_psds_pocketwise_rust(
     bins=None,
     return_fig=False,
     material="Material",
+    probe_center_min_radius=None,
 ):
     """Compute pore size distributions for each pocket/region.
 
@@ -1092,7 +1146,11 @@ def compute_psds_pocketwise_rust(
     from .visualize import plot_pocket_psds
 
     sample_points, pore_sizes, region_labels = compute_pore_sizes_pocketwise_rust(
-        dgrid, regions_pbc, ase_atoms, samples_per_region=num_samples_per_region
+        dgrid,
+        regions_pbc,
+        ase_atoms,
+        samples_per_region=num_samples_per_region,
+        probe_center_min_radius=probe_center_min_radius,
     )
     if bins is None:
         bins = np.linspace(0, 50, 200)  # histogram bins
@@ -1101,12 +1159,30 @@ def compute_psds_pocketwise_rust(
         region_labels, pore_sizes * 2, bins=bins
     )
     if return_fig:
+        mat_title = material
+        if probe_center_min_radius is not None and float(probe_center_min_radius) > 0:
+            mat_title = f"{material} (probe-center sites ≥ {float(probe_center_min_radius):.2g} Å)"
         fig = plot_pocket_psds(
-            pore_sizes * 2, region_labels, pocket_psds, bins, material_name=material
+            pore_sizes * 2, region_labels, pocket_psds, bins, material_name=mat_title
         )
         return pocket_psds, fig
     else:
         return pocket_psds
+
+
+def _strictly_increasing_bin_edges(bin_edges):
+    """float64 edges with e[i] < e[i+1]; fixes float duplicates that break np.histogram sizing."""
+    e = np.asarray(bin_edges, dtype=np.float64).ravel()
+    if e.size < 2:
+        raise ValueError("bin_edges must have at least two values")
+    if np.any(~np.isfinite(e)):
+        raise ValueError("bin_edges must be finite")
+    if np.any(np.diff(e) <= 0):
+        e = e.copy()
+        for i in range(1, e.size):
+            if e[i] <= e[i - 1]:
+                e[i] = np.nextafter(e[i - 1], np.inf)
+    return e
 
 
 def compute_accessible_psd_from_results(
@@ -1117,6 +1193,7 @@ def compute_accessible_psd_from_results(
     samples_per_region=10000,
     accessible_only=True,
     pb_normalization=False,
+    enforce_probe_center_occupiable=True,
 ):
     """
     Compute a PoreBlazer-style accessible PSD by:
@@ -1139,6 +1216,9 @@ def compute_accessible_psd_from_results(
         Fixed number of samples per pocket for the pocketwise sampler.
     accessible_only : bool
         If True, restrict to percolating (accessible) regions; if False, include all regions.
+    enforce_probe_center_occupiable : bool
+        If True, keep only sample-domain voxels with dgrid >= probe_radius
+        (probe center can host a probe of radius probe_radius).
 
     Returns
     -------
@@ -1158,6 +1238,8 @@ def compute_accessible_psd_from_results(
     dgrid = np.asarray(results.get("dgrid", None))
     if dgrid is None:
         raise ValueError("results does not include 'dgrid'; rerun segmentation with return_dgrid=True or supply dgrid.")
+
+    bin_edges = _strictly_increasing_bin_edges(bin_edges)
 
     # Determine accessible region ids
     if accessible_only:
@@ -1187,6 +1269,8 @@ def compute_accessible_psd_from_results(
 
     # Mask regions to accessible only
     mask = np.isin(regions_pbc, list(accessible_region_ids))
+    if enforce_probe_center_occupiable:
+        mask = mask & (dgrid >= float(probe_radius))
     regions_accessible = np.where(mask, regions_pbc, 0)
 
     # Per-region voxel counts (all voxels have same volume)
@@ -1213,7 +1297,6 @@ def compute_accessible_psd_from_results(
         samples_per_region=int(samples_per_region),
     )
 
-    bin_edges = np.asarray(bin_edges)
     bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
     per_region = {}
     pdf_global = np.zeros(len(bin_edges) - 1, dtype=float)
@@ -1245,9 +1328,10 @@ def compute_accessible_psd_from_results(
         if mid_width is not None:
             psd[1:-1] = -(cum[2:] - cum[:-2]) / (2.0 * mid_width)
         else:
+            # Interior length is n-2; pair each difference with its bin width (not bin_widths[1:] / [:-1]).
             psd[1:-1] = -(
-                (cum[2:] - cum[1:-1]) / bin_widths[1:]
-                - (cum[1:-1] - cum[:-2]) / bin_widths[:-1]
+                (cum[2:] - cum[1:-1]) / bin_widths[1:-1]
+                - (cum[1:-1] - cum[:-2]) / bin_widths[:-2]
             ) / 2.0
 
     pdf_pb = None
@@ -1265,8 +1349,8 @@ def compute_accessible_psd_from_results(
                 psd_pb[1:-1] = -(cum_pb[2:] - cum_pb[:-2]) / (2.0 * mid_width)
             else:
                 psd_pb[1:-1] = -(
-                    (cum_pb[2:] - cum_pb[1:-1]) / bin_widths[1:]
-                    - (cum_pb[1:-1] - cum_pb[:-2]) / bin_widths[:-1]
+                    (cum_pb[2:] - cum_pb[1:-1]) / bin_widths[1:-1]
+                    - (cum_pb[1:-1] - cum_pb[:-2]) / bin_widths[:-2]
                 ) / 2.0
         pdf_pb = psd_pb
 
@@ -1292,6 +1376,7 @@ def compute_psd_global_accessible(
     density=False,
     return_fig=False,
     material="Material",
+    enforce_probe_center_occupiable=True,
 ):
     """Compute global accessible PSD (volume-weighted from percolating regions only).
 
@@ -1333,6 +1418,7 @@ def compute_psd_global_accessible(
         samples_per_region=samples_per_region,
         accessible_only=True,
         pb_normalization=False,
+        enforce_probe_center_occupiable=enforce_probe_center_occupiable,
     )
 
     pdf = out["pdf"]
@@ -1380,6 +1466,7 @@ def compute_psds_pocketwise_accessible(
     bins=None,
     return_fig=False,
     material="Material",
+    enforce_probe_center_occupiable=True,
 ):
     """Compute pocket-wise PSD restricted to accessible (percolating) regions only.
 
@@ -1417,6 +1504,7 @@ def compute_psds_pocketwise_accessible(
         samples_per_region=num_samples_per_region,
         accessible_only=True,
         pb_normalization=False,
+        enforce_probe_center_occupiable=enforce_probe_center_occupiable,
     )
 
     per_region = out["per_region"]

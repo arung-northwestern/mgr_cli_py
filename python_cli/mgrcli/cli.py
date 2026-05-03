@@ -375,7 +375,8 @@ def compute_auto_parameters(mat_atoms, spacing):
 def compute_psd_analysis(dgrid, mat_atoms, regions_pbc=None, spacing=None,
                         num_samples_total=10000, num_samples_per_region=1000,
                         uniform_max_diameter=50.0, pocket_max_diameter=50.0,
-                        uniform_num_bins=200, pocket_num_bins=200):
+                        uniform_num_bins=200, pocket_num_bins=200,
+                        probe_center_min_radius=None):
     """Compute pore size distribution analysis.
 
     This function calculates:
@@ -393,6 +394,7 @@ def compute_psd_analysis(dgrid, mat_atoms, regions_pbc=None, spacing=None,
     - pocket_max_diameter: Maximum diameter for pocket PSD
     - uniform_num_bins: Number of bins for uniform PSD
     - pocket_num_bins: Number of bins for pocket PSD
+    - probe_center_min_radius: If set and > 0, restrict PSD sample sites to dgrid ≥ this radius (uniform + pockets).
 
     Returns:
     - Dictionary with PSD analysis results
@@ -418,6 +420,7 @@ def compute_psd_analysis(dgrid, mat_atoms, regions_pbc=None, spacing=None,
             bins=bins_uniform,
             density=False,
             return_fig=False,
+            probe_center_min_radius=probe_center_min_radius,
         )
         # Handle different return formats
         if isinstance(uniform_result, tuple):
@@ -451,6 +454,7 @@ def compute_psd_analysis(dgrid, mat_atoms, regions_pbc=None, spacing=None,
                 num_samples_per_region=num_samples_per_region,
                 bins=bins_pocket,
                 return_fig=False,
+                probe_center_min_radius=probe_center_min_radius,
             )
             # Handle different return formats
             if isinstance(pocket_result, tuple):

@@ -475,6 +475,41 @@ ASCII_LOGO = r"""
 """
 
 
+def _mofography_logo_paths() -> tuple[Optional[Path], Optional[Path]]:
+    """Resolve official MOFography logos: (light_bg_logo, dark_bg_logo)."""
+    light_name = "mofography_logo_white_background.png"
+    dark_name = "mofography_logo_dark_background.png"
+    bases: list[Path] = []
+    env = (os.environ.get("MOFOGRAPHY_REPO") or "").strip()
+    if env:
+        bases.append(Path(env).expanduser())
+    bases.append(Path.home() / "repos" / "mofography")
+    cli_root = Path(__file__).resolve().parents[2]
+    bases.append(cli_root.parent / "mofography")
+
+    light_p: Optional[Path] = None
+    dark_p: Optional[Path] = None
+    for base in bases:
+        docs = base / "docs"
+        lp, dp = docs / light_name, docs / dark_name
+        if lp.is_file():
+            light_p = lp
+        if dp.is_file():
+            dark_p = dp
+        if light_p and dark_p:
+            break
+    return light_p, dark_p
+
+
+def _encode_image(image_path: Path) -> str:
+    """Encode image file as base64 string for inline HTML."""
+    import base64
+    if not image_path or not image_path.is_file():
+        return ""
+    with open(image_path, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
+
+
 def _get_sample_cifs() -> Dict[str, Path]:
     sample_dir = Path(os.environ.get("MCLI_SAMPLE_CIF_DIR", Path(__file__).resolve().parents[2] / "cifs"))
     samples: Dict[str, Path] = {}
@@ -925,6 +960,7 @@ def _hts_one_material(
                         num_samples_total=n_total, num_samples_per_region=n_per_region,
                         uniform_max_diameter=unif_max_d, pocket_max_diameter=pock_max_d,
                         uniform_num_bins=unif_bins, pocket_num_bins=pock_bins,
+                        probe_center_min_radius=probe_psd,
                     )
                     if out:
                         psd_results.update(out)
@@ -977,7 +1013,13 @@ def _hts_one_material(
                                 title=f"Pore Size Distribution with uniform sampling across box - {material_name}",
                                 xaxis_title="Pore Diameter (Å)",
                                 yaxis_title="Counts",
-                                legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+                                legend=dict(
+                                    orientation="h",
+                                    yanchor="top",
+                                    y=-0.1,
+                                    xanchor="center",
+                                    x=0.5
+                                ),
                                 width=1000,
                                 height=600,
                             )
@@ -1105,11 +1147,62 @@ def main() -> None:
         if st.button("Refresh Logs", use_container_width=True, key="refresh_logs"):
             st.rerun()
 
-    st.markdown(f"""
+    # Detect current Streamlit theme (runtime, not server config)
+    # st.get_option returns server config; st._config.get_option returns runtime value
+    try:
+        _current_theme = st._config.get_option("theme.base") or "dark"
+    except Exception:
+        try:
+            _current_theme = str(st.get_option("theme.base") or "dark").lower()
+        except Exception:
+            _current_theme = "dark"
+    
+    _browser_theme = _current_theme.lower() if _current_theme else "dark"
+    st.session_state["browser_theme"] = _browser_theme
+
+    # Header: logo with a consistent dark background so it works in both themes.
+    # The dark-mode logo has light-colored text on a transparent background.
+    # Wrapping it in a dark container makes it readable regardless of Streamlit theme.
+    logo_path_light, logo_path_dark = _mofography_logo_paths()
+
+    # Prefer the dark-mode logo (light text) since we will pad it with a dark background.
+    if logo_path_dark and logo_path_dark.is_file():
+        _logo_src = f"data:image/png;base64,{_encode_image(logo_path_dark)}"
+    elif logo_path_light and logo_path_light.is_file():
+        _logo_src = f"data:image/png;base64,{_encode_image(logo_path_light)}"
+    else:
+        _logo_src = None
+
+    if _logo_src:
+        st.markdown(
+            f"""
+            <div style="
+                width: 100%;
+                max-width: 800px;
+                margin: 0 auto;
+                background-color: #0e1117;
+                border-radius: 8px;
+                padding: 12px;
+                box-sizing: border-box;
+            ">
+                <img src="{_logo_src}" style="
+                    width: 100%;
+                    max-width: 800px;
+                    height: auto;
+                    display: block;
+                "/>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            f"""
 ```
 {ASCII_LOGO}
 ```
-""")
+"""
+        )
     build_id = os.environ.get("MGRCLI_BUILD", "1")
     app_version = f"{time.strftime('%Y.%m.%d')}.{build_id}"
     st.markdown(
@@ -1392,23 +1485,25 @@ def main() -> None:
         stylize = st.checkbox("Stylize plot", value=True, disabled=(projection_choice == "orthographic"))
         if projection_choice == "orthographic":
             stylize = False
-        if "viz_background" not in st.session_state:
-            old = st.session_state.get("visualization_layout_choice")
-            if isinstance(old, str) and old.strip().lower() in ("dark", "white"):
-                st.session_state["viz_background"] = old.strip().lower()
-        if "viz_background" not in st.session_state:
-            theme_base = str(st.get_option("theme.base") or "").lower()
-            # Light Streamlit UI → lighter Plotly defaults; dark UI → plotly_dark default.
-            st.session_state["viz_background"] = "white" if theme_base == "light" else "dark"
+        # Keep viz background in sync with the current theme.
+        # If the user toggled the Streamlit theme (⚙️ menu), re-default accordingly.
+        _last_viz_theme = st.session_state.get("viz_background_theme")
+        if _last_viz_theme != _browser_theme:
+            st.session_state["viz_background"] = "white" if _browser_theme == "light" else "dark"
+            st.session_state["viz_background_theme"] = _browser_theme
         layout_choice = st.selectbox(
             "Background",
             ["dark", "white"],
-            index=0 if st.session_state["viz_background"] == "dark" else 1,
+            index=0 if st.session_state.get("viz_background", "dark") == "dark" else 1,
             key="viz_background",
         )
         viz_plot_layout = str(layout_choice or st.session_state.get("viz_background", "dark")).strip().lower()
         if viz_plot_layout not in ("dark", "white"):
-            viz_plot_layout = "white" if str(st.get_option("theme.base") or "").lower() == "light" else "dark"
+            viz_plot_layout = "white" if _browser_theme == "light" else "dark"
+        st.caption(
+            "Default matches the server theme. If you toggled the app theme via the ⚙️ menu, "
+            "select the matching background here for best contrast."
+        )
     with col_vis2:
         show_surface = st.checkbox(f"Show pore surface at {surface_value:.2f} Å", value=True)
         show_surface_pbc = st.checkbox("Show periodic pore surface", value=True)
@@ -1684,9 +1779,42 @@ def main() -> None:
                 mask_thickness=float(md_plot.get("mask_thickness", mask_thickness)),
             )
             _main_title = f"{material_name} | {_settings_slug}"
-            fig.update_layout(title=dict(text=_main_title))
+            if viz_plot_layout == "white":
+                fig.update_layout(
+                    title=dict(
+                        text=_main_title,
+                        font=dict(color="#1f1f1f"),
+                        y=0.95,
+                    ),
+                    font=dict(color="#1f1f1f"),
+                    legend_font=dict(color="#1f1f1f"),
+                )
+            else:
+                fig.update_layout(
+                    title=dict(
+                        text=_main_title,
+                        font=dict(color="#ffffff"),
+                        y=0.95,
+                    ),
+                    font=dict(color="#ffffff"),
+                    legend_font=dict(color="#ffffff"),
+                )
 
-            st.plotly_chart(fig, use_container_width=True)
+            _plotly_cfg = {
+                'responsive': True,
+                'scrollZoom': True,
+                'displayModeBar': True,
+                'toImageButtonOptions': {
+                    'format': 'png',
+                    'filename': f'{material_name}_plot',
+                },
+            }
+            st.plotly_chart(fig, use_container_width=True, config=_plotly_cfg)
+            st.info(
+                "Hover over the plot to reveal the toolbar (top-right corner). "
+                "The camera icon downloads a screenshot of the current rotated/zoomed view."
+            )
+
             # --- Download buttons in a row ---
             html_path = Path("interactive_plot.html")
             fig.write_html(html_path)
@@ -1820,17 +1948,28 @@ def main() -> None:
                 metrics_cols[2].metric("DFSD (Å)", f"{analysis['dfsd']:.2f}")
 
                 # Layout selection for percolation plots
-                percolation_layout_choice = st.selectbox("Background", ["dark", "white"], index=0, key="percolation_layout")
+                # Re-default when the detected theme changes so the plot matches the app theme.
+                _last_perc_theme = st.session_state.get("percolation_layout_theme")
+                if _last_perc_theme != _browser_theme:
+                    st.session_state["percolation_layout"] = "white" if _browser_theme == "light" else "dark"
+                    st.session_state["percolation_layout_theme"] = _browser_theme
+                _perc_default = st.session_state.get("percolation_layout", "dark")
+                percolation_layout_choice = st.selectbox(
+                    "Background",
+                    ["dark", "white"],
+                    index=0 if _perc_default == "dark" else 1,
+                    key="percolation_layout",
+                )
 
                 history = analysis["percolation_history"]
                 if not history:
                     st.warning("No percolating clusters detected for the computed grid.")
                 else:
                     history_rows = []
-                    for radius, components in history:
+                    for radius, percolation_components in history:
                         axis_map = {0: "Along a", 1: "Along b", 2: "Along c", "x": "Along a", "y": "Along b", "z": "Along c"}
                         axis_counts = {"Along a": 0, "Along b": 0, "Along c": 0}
-                        for axis_key, comps in components.items():
+                        for axis_key, comps in percolation_components.items():
                             label = axis_map.get(axis_key)
                             if label is not None:
                                 axis_counts[label] = len(comps or [])
@@ -2014,11 +2153,27 @@ def main() -> None:
                         threshold_abs=float(md_p.get("threshold_abs", 1.5)),
                         mask_thickness=float(md_p.get("mask_thickness", 1.5)),
                     )
-                    percolation_fig.update_layout(
-                        title=(
-                            f"Percolation probe r={selected_radius:.2f}Å | {material_name} | {_p_slug}"
+                    _perc_title = f"Percolation probe r={selected_radius:.2f}Å | {material_name} | {_p_slug}"
+                    if percolation_layout_choice == "white":
+                        percolation_fig.update_layout(
+                            title=dict(
+                                text=_perc_title,
+                                font=dict(color="#1f1f1f"),
+                                y=0.95,
+                            ),
+                            font=dict(color="#1f1f1f"),
+                            legend_font=dict(color="#1f1f1f"),
                         )
-                    )
+                    else:
+                        percolation_fig.update_layout(
+                            title=dict(
+                                text=_perc_title,
+                                font=dict(color="#ffffff"),
+                                y=0.95,
+                            ),
+                            font=dict(color="#ffffff"),
+                            legend_font=dict(color="#ffffff"),
+                        )
 
                     for trace in percolation_fig.data:
                         if isinstance(trace, go.Mesh3d):
@@ -2028,7 +2183,17 @@ def main() -> None:
                                 showscale=False,
                             )
 
-                    st.plotly_chart(percolation_fig, use_container_width=True)
+                    _percol_cfg = {
+                        'responsive': True,
+                        'scrollZoom': True,
+                        'displayModeBar': True,
+                        'toImageButtonOptions': {
+                            'format': 'png',
+                            'filename': f'{material_name}_percolation',
+                        },
+                    }
+                    st.plotly_chart(percolation_fig, use_container_width=True, config=_percol_cfg)
+
                     plot_status.markdown("<div style='padding:6px;background:#06310c;color:#6FE37F;text-align:center;'>✅ Plotting complete</div>", unsafe_allow_html=True)
 
                     selected_components = next(
@@ -2056,7 +2221,7 @@ def main() -> None:
                     "Domain",
                     options=["Occupiable only", "Accessible only", "Both"],
                     index=0,
-                    help="Occupiable = all pore space; Accessible = only percolating regions at the probe radius.",
+                    help="Occupiable (probe center): every pore region subject to the clearance rule. Accessible (probe center): only regions that percolate at σ, same clearance rule.",
                 )
                 probe_radius_psd = st.number_input(
                     "Probe radius (Å)",
@@ -2065,7 +2230,7 @@ def main() -> None:
                     max_value=10.0,
                     step=0.05,
                     format="%.2f",
-                    help="Used for accessible PSD (percolation threshold). Any value is valid; percolation uses this threshold directly. Default is helium radius (1.2 Å).",
+                    help="Radius σ of the probe sphere. PSD sample sites are restricted to grid locations where clearance to the framework surface is ≥ σ.",
                 )
 
                 st.subheader("Global PSD (uniform sampling)")
@@ -2089,13 +2254,9 @@ def main() -> None:
                     step=5.0,
                 )
                 global_psd_log_bins = st.checkbox(
-                    "Log-spaced bins for global PSD (recommended)",
-                    value=True,
-                    help=(
-                        "Linear bins from 0 Å put almost all diameters smaller than ~grid spacing "
-                        "into one wide first bin, which often looks like a huge spike near zero. "
-                        "Log-spaced bins widen resolution at small Å and match how many papers plot PSD."
-                    ),
+                    "Log-spaced bins for global PSD",
+                    value=False,
+                    help="Uses log-spaced histogram edges for the global plot (often easier to read at small diameters).",
                 )
 
                 st.subheader("Pocket-wise PSD")
@@ -2121,6 +2282,14 @@ def main() -> None:
 
                 compute_psd = st.form_submit_button("Compute PSDs")
 
+            st.info(
+                "**Distance grid:** geometric clearance to the cavity surface after assigning radii to framework atoms "
+                "(Euclidean distance transform on the pore side of that surface). "
+                "**Probe-centered** means we only draw histogram samples from void voxels where clearance **≥ probe radius σ**. "
+                "**Occupiable (probe center):** PSD over all segmented pore regions under that rule. "
+                "**Accessible (probe center):** same rule, but only regions that **percolate at σ**."
+            )
+
             need_occupiable = psd_domain in ("Occupiable only", "Both")
             need_accessible = psd_domain in ("Accessible only", "Both")
 
@@ -2128,6 +2297,7 @@ def main() -> None:
                 effective_key,
                 "occupiable",
                 bool(global_psd_log_bins),
+                round(float(probe_radius_psd), 3),
                 int(num_samples_total),
                 int(uniform_num_bins),
                 float(uniform_max_diameter),
@@ -2188,6 +2358,7 @@ def main() -> None:
                             density=False,
                             return_fig=True,
                             material=material_name,
+                            probe_center_min_radius=float(probe_radius_psd),
                         )
                         uniform_df = make_uniform_psd_dataframe(bins_uniform, uniform_hist)
                         pocket_results = None
@@ -2200,6 +2371,7 @@ def main() -> None:
                                 bins=bins_pocket,
                                 return_fig=True,
                                 material=material_name,
+                                probe_center_min_radius=float(probe_radius_psd),
                             )
                             pocket_df = make_pocket_psd_dataframe(bins_pocket, pocket_psds)
                             pocket_results = {
@@ -2233,6 +2405,7 @@ def main() -> None:
                                 samples_per_region=int(num_samples_per_region),
                                 return_fig=True,
                                 material=material_name,
+                                enforce_probe_center_occupiable=True,
                             )
                             acc_uniform_df = make_uniform_psd_dataframe(bins_uniform, acc_uniform_hist)
                             acc_pocket_psds, acc_pocket_fig = mgr.compute_psds_pocketwise_accessible(
@@ -2243,6 +2416,7 @@ def main() -> None:
                                 bins=bins_pocket,
                                 return_fig=True,
                                 material=material_name,
+                                enforce_probe_center_occupiable=True,
                             )
                             acc_pocket_df = make_pocket_psd_dataframe(bins_pocket, acc_pocket_psds)
                             acc_entry = {
@@ -2264,7 +2438,7 @@ def main() -> None:
                         except Exception as e:
                             st.error(f"Accessible PSD failed: {e}")
 
-                st.success("Pore size distributions computed. Scroll down to view results.")
+                st.success("PSDs computed.")
 
             def _render_psd_section(entry, section_title: str, file_suffix: str):
                 if not entry:
@@ -2273,25 +2447,6 @@ def main() -> None:
                 u = entry.get("uniform")
                 if u:
                     st.markdown("**Global PSD**")
-                    if not u.get("log_bins"):
-                        b_edges = np.asarray(u.get("bins", []))
-                        h = np.asarray(u.get("hist", []))
-                        if b_edges.ndim == 1 and h.size and b_edges.size > 2 and np.isfinite(b_edges[0]):
-                            if abs(float(b_edges[0])) <= 1e-9:
-                                w_first = float(b_edges[1] - b_edges[0])
-                                htot = float(np.sum(h))
-                                if htot > 0:
-                                    st.caption(
-                                        f"The first histogram bin **[0–{w_first:.3g}) Å** often holds "
-                                        f"**many** pore diameters (~{100.0 * float(h[0]) / htot:.1f}% of counts here)—mainly "
-                                        f"near-wall voxel centers and widths below ~twice the segmentation grid spacing. "
-                                        f"This is expected for discrete Gelb–Gubbins metrics, not necessarily a plotting bug."
-                                    )
-                    elif u.get("log_bins"):
-                        st.caption(
-                            "**Log-spaced** diameter bins: better resolution where many counts fall at "
-                            "**small Å** (wall-adjacent / sub-resolution on the discrete grid)."
-                        )
                     if u.get("log_bins"):
                         _psd_fig = go.Figure(u["fig"])
                         _psd_fig.update_xaxes(
@@ -2299,9 +2454,9 @@ def main() -> None:
                             title="Pore diameter (Å, log scale)",
                             exponentformat="power",
                         )
-                        st.plotly_chart(_psd_fig, use_container_width=True)
+                        st.plotly_chart(_psd_fig, use_container_width=True, config={'responsive': True, 'scrollZoom': True})
                     else:
-                        st.plotly_chart(u["fig"], use_container_width=True)
+                        st.plotly_chart(u["fig"], use_container_width=True, config={'responsive': True, 'scrollZoom': True})
                     st.download_button(
                         label="Download global PSD (CSV)",
                         data=u["df"].to_csv(index=False).encode("utf-8"),
@@ -2313,7 +2468,7 @@ def main() -> None:
                 p = entry.get("pocket")
                 if p:
                     st.markdown("**Pocket-wise PSD**")
-                    st.plotly_chart(p["fig"], use_container_width=True)
+                    st.plotly_chart(p["fig"], use_container_width=True, config={'responsive': True, 'scrollZoom': True})
                     st.download_button(
                         label="Download pocket-wise PSDs (CSV)",
                         data=p["df"].to_csv(index=False).encode("utf-8"),
@@ -2325,11 +2480,19 @@ def main() -> None:
 
             if need_occupiable:
                 occ_entry = psd_cache.get(str(key_occupiable))
-                _render_psd_section(occ_entry, "Occupiable (probe center)", "")
+                _render_psd_section(
+                    occ_entry,
+                    f"Occupiable (probe center), σ = {probe_radius_psd:.2f} Å",
+                    "",
+                )
 
             if need_accessible and has_connections:
                 acc_entry = psd_cache.get(str(key_accessible))
-                _render_psd_section(acc_entry, f"Accessible (probe radius {probe_radius_psd:.2f} Å)", "_accessible")
+                _render_psd_section(
+                    acc_entry,
+                    f"Accessible (probe center), σ = {probe_radius_psd:.2f} Å",
+                    "_accessible",
+                )
 
     with sa_vol_tab:
         if results_data is None:
@@ -2499,7 +2662,7 @@ def main() -> None:
                     fig_sa = px.bar(sa_df, x='Label', y='Surface Area (m²/g)',
                                   color='Type', barmode='group',
                                   title="Surface Area Breakdown by Category")
-                    st.plotly_chart(fig_sa, use_container_width=True)
+                    st.plotly_chart(fig_sa, use_container_width=True, config={'responsive': True, 'scrollZoom': True})
 
                     # Show data table
                     st.dataframe(sa_df, use_container_width=True)
@@ -2579,7 +2742,7 @@ def main() -> None:
                     fig_vol = px.bar(vol_df, x='Label', y='Void Volume (cm³/g)',
                                    color='Type', barmode='group',
                                    title="Void Volume Breakdown by Category")
-                    st.plotly_chart(fig_vol, use_container_width=True)
+                    st.plotly_chart(fig_vol, use_container_width=True, config={'responsive': True, 'scrollZoom': True})
 
                     # Show data table
                     st.dataframe(vol_df, use_container_width=True)

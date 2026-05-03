@@ -16,10 +16,44 @@
 
 
 
+# Dark text on light background (plotly_white + explicit white scene/paper would otherwise
+# sometimes inherit light-colored fonts from mixed template state).
+_WHITE_THEME_TEXT = "#1f1f1f"
+_WHITE_SCENE_AXIS = dict(
+    zeroline=False,
+    visible=False,
+    color=_WHITE_THEME_TEXT,
+    tickfont=dict(color=_WHITE_THEME_TEXT),
+)
+
 global white_layout
-white_layout = dict(template='plotly_white',
-                    scene=dict(xaxis=dict(zeroline=False, visible=False), yaxis_visible=False, zaxis_visible=False, aspectmode='data'),
-                    margin=dict(t=20, b=20, l=20, r=20), showlegend=True, legend=dict(x=1.1, y=0.75, groupclick='togglegroup'))
+white_layout = dict(
+    template="plotly_white",
+    font=dict(color=_WHITE_THEME_TEXT),
+    title=dict(font=dict(color=_WHITE_THEME_TEXT)),
+    paper_bgcolor="#ffffff",
+    plot_bgcolor="#ffffff",
+    scene=dict(
+        bgcolor="#ffffff",
+        xaxis=dict(_WHITE_SCENE_AXIS),
+        yaxis=dict(_WHITE_SCENE_AXIS),
+        zaxis=dict(_WHITE_SCENE_AXIS),
+        aspectmode="data",
+    ),
+    margin=dict(t=20, b=20, l=20, r=20),
+    showlegend=True,
+    legend=dict(
+        x=1.1,
+        y=0.75,
+        groupclick="togglegroup",
+        font=dict(color=_WHITE_THEME_TEXT),
+    ),
+    hoverlabel=dict(
+        font=dict(color=_WHITE_THEME_TEXT),
+        bgcolor="#ffffff",
+        bordercolor="#bdbdbd",
+    ),
+)
 global dark_layout
 dark_layout = dict(template='plotly_dark',
                    scene=dict(xaxis=dict(zeroline=False, visible=False), yaxis_visible=False, zaxis_visible=False, aspectmode='data'),
@@ -489,7 +523,7 @@ def plot_surface_dgrid(dgrid, isovalue, ase_atoms, region_labels=None, select='a
 
             data_plot = go.Mesh3d(x=true_verts[:, 0], y=true_verts[:, 1], z=true_verts[:, 2],
                                   vertexcolor=vertex_colors,
-                                  hoverinfo='all', hovertext=hovertext, flatshading=False,
+                                  hoverinfo='all', hovertext=hovertext,
                                   i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
                                   opacity=opacity, name=name, showlegend=showlegend, showscale=False, **kwargs_mesh)
         else:
@@ -498,7 +532,7 @@ def plot_surface_dgrid(dgrid, isovalue, ase_atoms, region_labels=None, select='a
 
             data_plot = go.Mesh3d(x=true_verts[:, 0], y=true_verts[:, 1], z=true_verts[:, 2],
                                   intensity=colour_indices, intensitymode='vertex',
-                                  hoverinfo='all', hovertext=hovertext, flatshading=False,
+                                  hoverinfo='all', hovertext=hovertext,
                                   colorscale=cscale, i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
                                   opacity=opacity, name=name, showlegend=showlegend, **kwargs_mesh)
     else:
@@ -1091,7 +1125,7 @@ if __name__ == "__main__":
 def plot_aromatic_rings(ase_atoms, isomorphic_aromatic_cycles=None,
                         kwargs_rings=dict(mode='lines', line=dict(color='white', width=2), showlegend= False,
                                         legendgroup='aromatics', legendgrouptitle_text='Aromatic rings', name='Aromatic rings'),
-                        kwargs_highlight=dict(color='skyblue', opacity=0.5, alphahull=-1, showlegend=False,
+                        kwargs_highlight=dict(color='skyblue', opacity=0.5, showlegend=False,
                         legendgroup='aromatics', legendgrouptitle_text='Aromatic rings', name='Aromatic highlights')):
     """
     It takes in a graph and a list of aromatic cycles, and returns a tuple of plotly traces that can be
@@ -1196,7 +1230,7 @@ def plot_aromatic_rings(ase_atoms, isomorphic_aromatic_cycles=None,
 
 
 def plot_cycle_highlights(sgraph, cycles_to_highlight,
-                          kwargs_highlight=dict(color='lightskyblue', opacity=0.3, alphahull=-1,
+                          kwargs_highlight=dict(color='lightskyblue', opacity=0.3,
                                                 name='Aromatic ring highlight')):
     """
     It takes in a graph and a list of aromatic cycles, and returns a tuple of plotly traces that can be
@@ -1729,21 +1763,21 @@ def plot_framework_as_mesh(ase_atoms, show_rings=True, stylize=False, kwargs_fra
     verts = combined.vertices
     faces = combined.faces
     colors = ['rgba(' + ','.join(c.astype(str)) + ')' for c in combined.visual.vertex_colors]
-    framework_mesh_trace = go.Mesh3d(x=verts[:, 0], y=verts[:, 1], z=verts[:, 2], flatshading=False, i=faces[:, 0],
+    framework_mesh_trace = go.Mesh3d(x=verts[:, 0], y=verts[:, 1], z=verts[:, 2], i=faces[:, 0],
                                      j=faces[:, 1], k=faces[:, 2], vertexcolor=colors, **kwargs_frame_mesh) 
     if stylize:
-        framework_mesh_trace.update(lighting=dict(ambient=0.18,
-                                                  diffuse=1,
-                                                  fresnel=0.1,
-                                                  specular=1,
-                                                  roughness=0.05,
-                                                  facenormalsepsilon=1e-15,
-                                                  vertexnormalsepsilon=1e-15),
-                                    lightposition=dict(x=10,
-                                                       y=10,
-                                                       z=30
-                                                       ), **kwargs_frame_mesh
-                                    )
+        framework_mesh_trace.update(
+            lighting=dict(
+                ambient=0.18,
+                diffuse=1,
+                fresnel=0.1,
+                specular=1,
+                roughness=0.05,
+                facenormalsepsilon=1e-15,
+                vertexnormalsepsilon=1e-15,
+            ),
+            lightposition=dict(x=10, y=10, z=30),
+        )
     framework_mesh_trace = add_hoverdata_to_atoms_traces(framework_mesh_trace, ase_atoms)
     traces = (framework_mesh_trace,)
     if show_rings:
@@ -1829,7 +1863,6 @@ def plot_mesh(mesh, stylize=False, **kwargs_plotly_mesh3d):
     colors = ['rgba(' + ','.join(c.astype(str)) + ')' for c in mesh.visual.vertex_colors]
 
     kwargs_plotly_mesh3d.setdefault('name', 'mesh')
-    kwargs_plotly_mesh3d.setdefault('flatshading', False)
     kwargs_plotly_mesh3d.setdefault('vertexcolor', colors)
     kwargs_plotly_mesh3d.setdefault('showlegend', True)
     kwargs_plotly_mesh3d.setdefault('showscale', False)
@@ -2034,7 +2067,8 @@ def plot_windows(connections, **kwargs):
     kwargs.pop('marker_size', None)
     kwargs.pop('opacity', None)
     kwargs.pop('hovertext', None)
-
+    for _mk in ('i', 'j', 'k'):
+        kwargs.pop(_mk, None)
 
     #return the scatter trace
     return go.Scatter3d(x=windows[:,0], y=windows[:,1], z=windows[:,2], mode='markers', marker=dict(size=marker_size, color=marker_color, opacity=opacity), hovertext=hovertext, name=name, **kwargs)

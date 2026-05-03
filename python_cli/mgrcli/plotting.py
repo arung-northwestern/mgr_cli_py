@@ -57,21 +57,44 @@ STYLIZE_LIGHTING = dict(
 
 STYLIZE_LIGHTPOSITION = dict(x=10, y=10, z=30)
 
+# Match mgr.visualize.white_layout text/legend/hover colors (readable on white).
+_WHITE_THEME_TEXT = "#1f1f1f"
+_WHITE_SCENE_AXIS = dict(
+    zeroline=False,
+    visible=False,
+    color=_WHITE_THEME_TEXT,
+    tickfont=dict(color=_WHITE_THEME_TEXT),
+)
 
 white_layout = dict(
     template="plotly_white",
+    font=dict(color=_WHITE_THEME_TEXT),
+    title=dict(font=dict(color=_WHITE_THEME_TEXT)),
     paper_bgcolor="#ffffff",
     plot_bgcolor="#ffffff",
     scene=dict(
         bgcolor="#ffffff",
-        xaxis=dict(zeroline=False, visible=False),
-        yaxis_visible=False,
-        zaxis_visible=False,
+        xaxis=dict(_WHITE_SCENE_AXIS),
+        yaxis=dict(_WHITE_SCENE_AXIS),
+        zaxis=dict(_WHITE_SCENE_AXIS),
         aspectmode="data",
     ),
     margin=dict(t=20, b=20, l=20, r=20),
     showlegend=True,
-    legend=dict(x=1.1, y=0.75, groupclick="toggleitem"),
+    legend=dict(
+        orientation="h",
+        yanchor="top",
+        y=-0.05,
+        xanchor="center",
+        x=0.5,
+        groupclick="toggleitem",
+        font=dict(color=_WHITE_THEME_TEXT),
+    ),
+    hoverlabel=dict(
+        font=dict(color=_WHITE_THEME_TEXT),
+        bgcolor="#ffffff",
+        bordercolor="#bdbdbd",
+    ),
     height=800,
 )
 
@@ -88,7 +111,14 @@ dark_layout = dict(
     ),
     margin=dict(t=20, b=20, l=20, r=20),
     showlegend=True,
-    legend=dict(x=1.1, y=0.75, groupclick="toggleitem"),
+    legend=dict(
+        orientation="h",
+        yanchor="top",
+        y=-0.05,
+        xanchor="center",
+        x=0.5,
+        groupclick="toggleitem",
+    ),
     height=800,
 )
 
@@ -101,6 +131,47 @@ def make_fig_orthographic(fig: go.Figure) -> go.Figure:
             trace.update(lighting=DEFAULT_LIGHTING)
     fig.update_layout(scene_camera_projection_type="orthographic")
     return fig
+
+
+def _normalize_scene_traces(traces: List[Any]) -> List[Any]:
+    """Coerce traces that carry mesh topology (i,j,k + x,y,z) to mesh3d.
+
+    Some code paths produce trace dicts or JSON blobs where ``type`` is missing
+    or incorrectly set to ``scatter``; Plotly then validates against ``Scatter``
+    and rejects ``i``/``j``/``k``. This keeps the hosted app from failing on figure build.
+    """
+    if not traces:
+        return traces
+    out: List[Any] = []
+    for tr in traces:
+        d: Dict[str, Any] | None
+        if hasattr(tr, "to_plotly_json"):
+            pj = tr.to_plotly_json()
+            d = dict(pj) if isinstance(pj, dict) else None
+        elif isinstance(tr, dict):
+            d = dict(tr)
+        else:
+            out.append(tr)
+            continue
+
+        if d is None:
+            out.append(tr)
+            continue
+
+        typ = str(d.get("type") or "").lower()
+        has_mesh_topo = (
+            all(k in d for k in ("x", "y", "z", "i", "j", "k"))
+            and d.get("i") is not None
+            and d.get("j") is not None
+            and d.get("k") is not None
+        )
+        if has_mesh_topo and typ != "mesh3d":
+            d["type"] = "mesh3d"
+            out.append(d)
+        else:
+            out.append(tr)
+
+    return out
 
 
 def _configure_mesh_lighting(trace: go.BaseTraceType, stylize: bool, orthographic: bool) -> None:
@@ -211,6 +282,9 @@ def plot_maxima(dgrid: np.ndarray, maxima: np.ndarray, ase_atoms, **kwargs) -> g
     colorscale = kwargs.pop("marker_colorscale", "Viridis")
     show_spheres = kwargs.pop("show_spheres", False)
     sphere_opacity = kwargs.pop("sphere_opacity", 0.5)
+    # Never forward mesh-only keys into Scatter3d (would break validation).
+    for _mesh_key in ("i", "j", "k"):
+        kwargs.pop(_mesh_key, None)
 
     scatter = go.Scatter3d(
         x=coords[:, 0],
@@ -1032,7 +1106,8 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
 
     _plot_layout = str(defaults.get("plot_layout", "dark")).lower().strip()
     base_layout_dict = dict(white_layout if _plot_layout == "white" else dark_layout)
-    fig = go.Figure(data=traces) if traces else go.Figure()
+    traces = _normalize_scene_traces(traces)
+    fig = go.Figure(data=traces, skip_invalid=True) if traces else go.Figure()
     fig.update_layout(**base_layout_dict)
 
     for trace in fig.data:

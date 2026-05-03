@@ -33,6 +33,8 @@ rsync -a \
   --exclude='*.gz' \
   --exclude='build_space' \
   --exclude='hts_output' \
+  --exclude='graphify-out' \
+  --exclude='docs/theme_detection_issue.md' \
   "${REPO_ROOT}/" "${BUILD_DIR}/"
 
 # Use the Spaces Dockerfile at root (port 7860, MGR_DEPLOYMENT=spaces)
