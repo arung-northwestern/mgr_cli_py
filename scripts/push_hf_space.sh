@@ -67,8 +67,9 @@ fi
 echo "Building Space bundle in: ${BUNDLE}"
 "${REPO_ROOT}/scripts/deploy_to_hf_space.sh" "${BUNDLE}"
 
-# Never ship local HTS artifacts or test junk (Hub rejects large binaries without Xet)
+# Never ship local HTS artifacts, test junk, or binary logos (Hub rejects binaries without Xet)
 rm -f "${BUNDLE}/ZIF-8-RASPA.cif" "${BUNDLE}"/streamlit_*.png "${BUNDLE}/test_streamlit_app.py" 2>/dev/null || true
+rm -f "${BUNDLE}"/docs/*.png 2>/dev/null || true
 rm -rf "${BUNDLE}/hts_output" 2>/dev/null || true
 
 if [[ ! -d "${HF_CLONE_DIR}/.git" ]]; then
