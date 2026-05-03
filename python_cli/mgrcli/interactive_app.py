@@ -1166,8 +1166,16 @@ def main() -> None:
 
     # Header: logo with a consistent dark background so it works in both themes.
     # Use base64-encoded logo embedded in _logos.py (avoids binary files in Docker/HF).
+    _logo_src = None
     try:
-        from ._logos import MOFOGRAPHY_LOGO_DARK as _logo_dark_b64
+        if __package__:
+            from ._logos import MOFOGRAPHY_LOGO_DARK as _logo_dark_b64
+        else:
+            import sys
+            _cli_root = Path(__file__).resolve().parent
+            if str(_cli_root) not in sys.path:
+                sys.path.insert(0, str(_cli_root))
+            from _logos import MOFOGRAPHY_LOGO_DARK as _logo_dark_b64
         _logo_src = f"data:image/png;base64,{_logo_dark_b64}"
     except Exception:
         _logo_src = None
@@ -1195,12 +1203,21 @@ def main() -> None:
             unsafe_allow_html=True,
         )
     else:
+        # Responsive ASCII logo: smaller font on narrow screens, horizontal scroll
         st.markdown(
             f"""
-```
-{ASCII_LOGO}
-```
-"""
+            <div style="width:100%;overflow-x:auto;">
+                <pre style="
+                    font-size: clamp(4px, 1.2vw, 12px);
+                    line-height: 1.1;
+                    margin: 0 auto;
+                    width: fit-content;
+                    min-width: 100%;
+                    white-space: pre;
+                ">{ASCII_LOGO}</pre>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
     build_id = os.environ.get("MGRCLI_BUILD", "1")
     app_version = f"{time.strftime('%Y.%m.%d', time.gmtime())}.{build_id}"
