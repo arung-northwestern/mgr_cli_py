@@ -2,6 +2,10 @@
 # shows message only) and app listens on port 7860. Use this Dockerfile at repo root
 # when deploying to HF Spaces (see scripts/deploy_to_hf_space.sh).
 
+# Cache-busting: change this timestamp to force a full Docker rebuild on HF Spaces.
+# Last updated: 2026-05-04
+ARG BUILD_DATE=2026-05-04
+
 FROM python:3.11-slim AS builder
 
 ENV PYTHONUNBUFFERED=1 \
