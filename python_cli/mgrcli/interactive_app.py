@@ -1204,7 +1204,7 @@ def main() -> None:
 """
         )
     build_id = os.environ.get("MGRCLI_BUILD", "1")
-    app_version = f"{time.strftime('%Y.%m.%d')}.{build_id}"
+    app_version = f"{time.strftime('%Y.%m.%d', time.gmtime())}.{build_id}"
     st.markdown(
         (
             "<div style='line-height:1.2;'>"
