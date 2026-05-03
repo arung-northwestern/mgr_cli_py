@@ -1165,16 +1165,11 @@ def main() -> None:
     st.session_state["browser_theme"] = _browser_theme
 
     # Header: logo with a consistent dark background so it works in both themes.
-    # The dark-mode logo has light-colored text on a transparent background.
-    # Wrapping it in a dark container makes it readable regardless of Streamlit theme.
-    logo_path_light, logo_path_dark = _mofography_logo_paths()
-
-    # Prefer the dark-mode logo (light text) since we will pad it with a dark background.
-    if logo_path_dark and logo_path_dark.is_file():
-        _logo_src = f"data:image/png;base64,{_encode_image(logo_path_dark)}"
-    elif logo_path_light and logo_path_light.is_file():
-        _logo_src = f"data:image/png;base64,{_encode_image(logo_path_light)}"
-    else:
+    # Use base64-encoded logo embedded in _logos.py (avoids binary files in Docker/HF).
+    try:
+        from ._logos import MOFOGRAPHY_LOGO_DARK as _logo_dark_b64
+        _logo_src = f"data:image/png;base64,{_logo_dark_b64}"
+    except Exception:
         _logo_src = None
 
     if _logo_src:
