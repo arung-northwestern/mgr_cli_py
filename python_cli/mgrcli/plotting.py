@@ -700,7 +700,13 @@ def _draw_framework_scatter(ase_atoms, stylize: bool = True) -> Tuple[go.Scatter
     return atoms_trace, bond_trace
 
 
-def plot_framework_as_mesh(ase_atoms, stylize: bool = True, style: str = "mesh", show_rings: bool = True) -> Tuple[go.BaseTraceType, ...]:
+def plot_framework_as_mesh(
+    ase_atoms,
+    stylize: bool = True,
+    style: str = "mesh",
+    show_rings: bool = True,
+    kwargs_mesh_for_atoms: Dict[str, Any] | None = None,
+) -> Tuple[go.BaseTraceType, ...]:
     """Return framework traces, defaulting to mesh rendering with scatter fallback."""
 
     if style.lower() != "mesh":
@@ -711,6 +717,7 @@ def plot_framework_as_mesh(ase_atoms, stylize: bool = True, style: str = "mesh",
     try:
         # Use safe bond update to prevent zero-length bonds
         safe_atoms = _safe_update_with_covalent_bonds(ase_atoms)
+        kw_mesh = kwargs_mesh_for_atoms or {}
         traces = mgr_visualize.plot_framework_as_mesh(
             safe_atoms,
             show_rings=show_rings,
@@ -722,6 +729,7 @@ def plot_framework_as_mesh(ase_atoms, stylize: bool = True, style: str = "mesh",
                 legendgroup="framework",
                 legendgrouptitle_text="Framework",
             ),
+            kwargs_mesh_for_atoms=kw_mesh,
         )
         # Ensure tuple output for consistency
         if not isinstance(traces, (list, tuple)):
@@ -918,7 +926,7 @@ _framework_cache: Dict[str, Tuple[go.BaseTraceType, ...]] = {}
 _framework_cache_lock = Lock()
 
 
-def _get_framework_cache_key(mat_atoms, style: str, show_rings: bool, stylize: bool) -> str:
+def _get_framework_cache_key(mat_atoms, style: str, show_rings: bool, stylize: bool, fast_mesh: bool = False) -> str:
     """Generate a unique cache key for framework traces."""
     # Hash raw bytes directly (avoid expensive bytes->hex expansion).
     hasher = hashlib.md5()
@@ -928,6 +936,7 @@ def _get_framework_cache_key(mat_atoms, style: str, show_rings: bool, stylize: b
     hasher.update(style.lower().encode("ascii", errors="ignore"))
     hasher.update(str(bool(show_rings)).encode("ascii"))
     hasher.update(str(bool(stylize)).encode("ascii"))
+    hasher.update(str(bool(fast_mesh)).encode("ascii"))
     return hasher.hexdigest()
 
 
@@ -938,18 +947,26 @@ def clear_framework_cache():
         _framework_cache.clear()
 
 
-def prewarm_framework_cache(mat_atoms, stylize: bool = True, show_rings: bool = True) -> None:
+def prewarm_framework_cache(mat_atoms, stylize: bool = True, show_rings: bool = True, fast_mesh: bool = False) -> None:
     """Compute and cache mesh framework traces ahead of user style switch."""
-    cache_key = _get_framework_cache_key(mat_atoms, "mesh", show_rings, stylize)
+    cache_key = _get_framework_cache_key(mat_atoms, "mesh", show_rings, stylize, fast_mesh)
     with _framework_cache_lock:
         if cache_key in _framework_cache:
             return
+
+    kwargs_mesh = {}
+    if fast_mesh:
+        kwargs_mesh["kwargs_mesh_for_atoms"] = dict(
+            kwargs_spheres=dict(scale=0.5, radii=None, theta_resolution=4, phi_resolution=4),
+            kwargs_cylinders=dict(radius=0.25, cylinder_resolution=6),
+        )
 
     traces = plot_framework_as_mesh(
         mat_atoms,
         stylize=stylize,
         style="mesh",
         show_rings=show_rings,
+        **kwargs_mesh,
     )
     with _framework_cache_lock:
         if len(_framework_cache) > 10:
@@ -998,27 +1015,43 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
     traces: List[go.BaseTraceType] = []
 
     framework_style = defaults.get("plot_framework_style", "mesh")
+    fast_mesh = bool(defaults.get("plot_framework_fast_mesh", False))
     if defaults.get("plot_framework", True):
+        import time as _time
+        _t0 = _time.time()
         cache_key = _get_framework_cache_key(
-            mat_atoms, 
-            framework_style, 
-            defaults.get("plot_framework_show_rings", True), 
-            stylize
+            mat_atoms,
+            framework_style,
+            defaults.get("plot_framework_show_rings", True),
+            stylize,
+            fast_mesh,
         )
         with _framework_cache_lock:
             framework_traces = _framework_cache.get(cache_key)
+        _t1 = _time.time()
         if framework_traces is None:
+            kwargs_mesh = {}
+            if fast_mesh and framework_style == "mesh":
+                kwargs_mesh["kwargs_mesh_for_atoms"] = dict(
+                    kwargs_spheres=dict(scale=0.5, radii=None, theta_resolution=4, phi_resolution=4),
+                    kwargs_cylinders=dict(radius=0.25, cylinder_resolution=6),
+                )
             framework_traces = plot_framework_as_mesh(
                 mat_atoms,
                 stylize=stylize,
                 style=framework_style,
                 show_rings=defaults.get("plot_framework_show_rings", True),
+                **kwargs_mesh,
             )
+            _t2 = _time.time()
+            print(f"[TIMING] plot_framework_as_mesh ({len(mat_atoms)} atoms, mesh={framework_style}, fast={fast_mesh}): {_t2-_t1:.2f}s")
             with _framework_cache_lock:
                 if len(_framework_cache) > 10:
                     oldest_key = next(iter(_framework_cache))
                     del _framework_cache[oldest_key]
                 _framework_cache[cache_key] = framework_traces
+        else:
+            print(f"[TIMING] framework cache hit: {_t1-_t0:.3f}s")
         traces.extend(framework_traces)
 
     if defaults.get("plot_cell", True):

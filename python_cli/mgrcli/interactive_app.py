@@ -394,11 +394,11 @@ dark_layout = None
 white_layout = None
 
 
-def _queue_mesh_prewarm(results_data: Optional[Dict[str, Any]], cache_identity: str, stylize: bool, show_rings: bool = True) -> None:
+def _queue_mesh_prewarm(results_data: Optional[Dict[str, Any]], cache_identity: str, stylize: bool, show_rings: bool = True, fast_mesh: bool = False) -> None:
     if not results_data or "ase_atoms" not in results_data:
         return
     jobs = st.session_state.setdefault("mesh_prewarm_jobs", {})
-    job_key = f"{cache_identity}::stylize={int(bool(stylize))}::rings={int(bool(show_rings))}"
+    job_key = f"{cache_identity}::stylize={int(bool(stylize))}::rings={int(bool(show_rings))}::fast={int(bool(fast_mesh))}"
     existing = jobs.get(job_key)
     if existing is not None and not existing.done():
         return
@@ -411,6 +411,7 @@ def _queue_mesh_prewarm(results_data: Optional[Dict[str, Any]], cache_identity: 
         atoms_copy,
         bool(stylize),
         bool(show_rings),
+        bool(fast_mesh),
     )
 
 
@@ -1164,19 +1165,19 @@ def main() -> None:
     _browser_theme = _current_theme.lower() if _current_theme else "dark"
     st.session_state["browser_theme"] = _browser_theme
 
-    # Header: logo with a consistent dark background so it works in both themes.
+    # Header: outlined logo (transparent bg + black stroke) works on any theme.
     # Use base64-encoded logo embedded in _logos.py (avoids binary files in Docker/HF).
     _logo_src = None
     try:
         if __package__:
-            from ._logos import MOFOGRAPHY_LOGO_DARK as _logo_dark_b64
+            from ._logos import MOFOGRAPHY_LOGO_OUTLINED as _logo_b64
         else:
             import sys
             _cli_root = Path(__file__).resolve().parent
             if str(_cli_root) not in sys.path:
                 sys.path.insert(0, str(_cli_root))
-            from _logos import MOFOGRAPHY_LOGO_DARK as _logo_dark_b64
-        _logo_src = f"data:image/png;base64,{_logo_dark_b64}"
+            from _logos import MOFOGRAPHY_LOGO_OUTLINED as _logo_b64
+        _logo_src = f"data:image/png;base64,{_logo_b64}"
     except Exception:
         _logo_src = None
 
@@ -1187,8 +1188,6 @@ def main() -> None:
                 width: 100%;
                 max-width: 800px;
                 margin: 0 auto;
-                background-color: #0e1117;
-                border-radius: 8px;
                 padding: 12px;
                 box-sizing: border-box;
             ">
@@ -1494,6 +1493,11 @@ def main() -> None:
     col_vis1, col_vis2 = st.columns(2)
     with col_vis1:
         mesh_framework = st.checkbox("Show framework as mesh", value=False)
+        fast_mesh = st.checkbox(
+            "Fast mesh (lower resolution)", value=False,
+            disabled=not mesh_framework,
+            help="Reduces sphere/cylinder mesh resolution for faster rendering on hosted demos."
+        )
         simple_framework = st.checkbox("Show simple framework scatter", value=True)
         if mesh_framework and simple_framework:
             st.warning("Select either mesh or simple framework.")
@@ -1751,6 +1755,7 @@ def main() -> None:
             framework_identity,
             stylize=bool(stylize),
             show_rings=True,
+            fast_mesh=bool(fast_mesh),
         )
 
     visualization_tab, percolation_tab, psd_tab, sa_vol_tab = st.tabs([
@@ -1772,6 +1777,7 @@ def main() -> None:
                 options=dict(
                     plot_framework_style=framework_style,
                     plot_framework_show_rings=True,
+                    plot_framework_fast_mesh=fast_mesh,
                     plot_surface=show_surface,
                     plot_surface_pbc=show_surface_pbc,
                     plot_surface_isovalue=surface_value,
@@ -1829,6 +1835,97 @@ def main() -> None:
             st.info(
                 "Hover over the plot to reveal the toolbar (top-right corner). "
                 "The camera icon downloads a screenshot of the current rotated/zoomed view."
+            )
+
+            # Camera preservation: inject JS to save/restore Plotly 3D camera between reruns.
+            # Uses localStorage keyed by material name so each structure keeps its own view.
+            _cam_key = html.escape(material_name or "default")
+            components.html(
+                f"""
+                <script>
+                (function() {{
+                    var CAM_KEY = 'mofography_camera_{_cam_key}';
+                    var POLL_MS = 200;
+                    var MAX_TRIES = 50;
+                    var tries = 0;
+
+                    function getPlotlyWindows() {{
+                        var wins = [];
+                        var iframes = document.querySelectorAll('iframe');
+                        for (var i = 0; i < iframes.length; i++) {{
+                            try {{
+                                var cw = iframes[i].contentWindow;
+                                if (cw && cw.Plotly) {{
+                                    wins.push(cw);
+                                }}
+                            }} catch(e) {{}}
+                        }}
+                        // Also check main window (sometimes Plotly is loaded directly)
+                        if (window.Plotly) {{
+                            wins.push(window);
+                        }}
+                        return wins;
+                    }}
+
+                    function findPlotlyDivs(win) {{
+                        if (!win || !win.document) return [];
+                        return win.document.querySelectorAll('.js-plotly-plot');
+                    }}
+
+                    function saveCamera(plotDiv) {{
+                        try {{
+                            var scene = plotDiv._fullLayout.scene;
+                            if (scene && scene.camera) {{
+                                localStorage.setItem(CAM_KEY, JSON.stringify(scene.camera));
+                            }}
+                        }} catch(e) {{}}
+                    }}
+
+                    function restoreCamera(plotDiv, win) {{
+                        try {{
+                            var saved = localStorage.getItem(CAM_KEY);
+                            if (!saved) return;
+                            var cam = JSON.parse(saved);
+                            if (win.Plotly && win.Plotly.relayout) {{
+                                win.Plotly.relayout(plotDiv, {{'scene.camera': cam}});
+                            }}
+                        }} catch(e) {{}}
+                    }}
+
+                    function attachListeners() {{
+                        var wins = getPlotlyWindows();
+                        var attached = false;
+                        for (var w = 0; w < wins.length; w++) {{
+                            var divs = findPlotlyDivs(wins[w]);
+                            for (var d = 0; d < divs.length; d++) {{
+                                var div = divs[d];
+                                if (div._mofCameraAttached) continue;
+                                div._mofCameraAttached = true;
+                                attached = true;
+
+                                // Restore saved camera
+                                restoreCamera(div, wins[w]);
+
+                                // Save camera on interaction
+                                div.on('plotly_relayout', function() {{
+                                    saveCamera(div);
+                                }});
+                            }}
+                        }}
+                        return attached;
+                    }}
+
+                    // Poll until Plotly charts appear (they load asynchronously)
+                    var timer = setInterval(function() {{
+                        if (attachListeners() || tries > MAX_TRIES) {{
+                            clearInterval(timer);
+                        }}
+                        tries++;
+                    }}, POLL_MS);
+                }})();
+                </script>
+                """,
+                height=0,
             )
 
             # --- Download buttons in a row ---
