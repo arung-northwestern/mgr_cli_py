@@ -1639,15 +1639,21 @@ def _batched_spheres_mesh(positions, radii, colors, theta_resolution=8, phi_reso
     faces = f0.reshape(1, Nf, 3) + offsets
     faces = faces.reshape(n * Nf, 3)
 
-    # Stack vertex colors
-    colors = np.asarray(colors, dtype=np.uint8)
+    # Stack vertex colors — auto-detect float 0-1 vs uint8 and expand RGB→RGBA if needed
+    colors = np.asarray(colors)
+    if colors.dtype == np.float64 or colors.dtype == np.float32:
+        if colors.max() <= 1.0:
+            colors = (colors * 255)
+        colors = colors.astype(np.uint8)
     if colors.ndim == 1:
         colors = np.tile(colors.reshape(1, -1), (Nv, 1))
+    # Ensure RGBA
+    if colors.shape[1] == 3:
+        colors = np.hstack([colors, np.full((colors.shape[0], 1), 255, dtype=np.uint8)])
     if colors.shape[0] == n:
-        # One color per sphere — repeat for each vertex
         colors = np.repeat(colors, Nv, axis=0)
     else:
-        raise ValueError("colors shape must be (n, 4)")
+        raise ValueError(f"colors shape must be (n, 3) or (n, 4), got {colors.shape}")
 
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces, vertex_colors=colors, process=False)
     return mesh
@@ -1721,12 +1727,19 @@ def _batched_cylinders_mesh(centers, directions, heights, radius, colors, sectio
     faces = f0.reshape(1, Nf, 3) + offsets
     faces = faces.reshape(n * Nf, 3)
 
-    # Stack colors
-    colors = np.asarray(colors, dtype=np.uint8)
+    # Stack colors — auto-detect float 0-1 vs uint8 and expand RGB→RGBA if needed
+    colors = np.asarray(colors)
+    if colors.dtype == np.float64 or colors.dtype == np.float32:
+        if colors.max() <= 1.0:
+            colors = (colors * 255)
+        colors = colors.astype(np.uint8)
+    # Ensure RGBA
+    if colors.ndim == 2 and colors.shape[1] == 3:
+        colors = np.hstack([colors, np.full((colors.shape[0], 1), 255, dtype=np.uint8)])
     if colors.shape[0] == n:
         colors = np.repeat(colors, Nv, axis=0)
     else:
-        raise ValueError("colors shape must be (n, 4)")
+        raise ValueError(f"colors shape must be (n, 3) or (n, 4), got {colors.shape}")
 
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces, vertex_colors=colors, process=False)
     return mesh
@@ -1761,7 +1774,8 @@ def batched_mesh_for_atoms(ase_atoms, bonds=None, colormap=None, bond_rgba_array
     positions = ase_atoms.get_positions()
     radii = covalent_radii[ase_atoms.get_atomic_numbers()] * scale
     atomic_numbers = ase_atoms.get_atomic_numbers()
-    sphere_colors = np.array([colormap[an] for an in atomic_numbers], dtype=np.uint8)
+    # cpk_colors is float64 RGB 0-1; pass raw floats so _batched_spheres_mesh auto-converts
+    sphere_colors = np.array([colormap[an] for an in atomic_numbers])
 
     sphere_mesh = _batched_spheres_mesh(positions, radii, sphere_colors,
                                         theta_resolution=sphere_sections * 4,
@@ -2062,9 +2076,9 @@ def plot_mesh(mesh, stylize=False, **kwargs_plotly_mesh3d):
     
     
     import trimesh
-    if len(mesh) > 1:
+    if isinstance(mesh, (list, tuple)) and len(mesh) > 1:
         mesh = trimesh.util.concatenate(mesh)
-    else:
+    elif isinstance(mesh, (list, tuple)):
         mesh = mesh[0]
     import plotly.graph_objects as go
     verts = mesh.vertices
