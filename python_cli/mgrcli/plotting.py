@@ -926,7 +926,7 @@ _framework_cache: Dict[str, Tuple[go.BaseTraceType, ...]] = {}
 _framework_cache_lock = Lock()
 
 
-def _get_framework_cache_key(mat_atoms, style: str, show_rings: bool, stylize: bool, fast_mesh: bool = False) -> str:
+def _get_framework_cache_key(mat_atoms, style: str, show_rings: bool, stylize: bool) -> str:
     """Generate a unique cache key for framework traces."""
     # Hash raw bytes directly (avoid expensive bytes->hex expansion).
     hasher = hashlib.md5()
@@ -936,7 +936,6 @@ def _get_framework_cache_key(mat_atoms, style: str, show_rings: bool, stylize: b
     hasher.update(style.lower().encode("ascii", errors="ignore"))
     hasher.update(str(bool(show_rings)).encode("ascii"))
     hasher.update(str(bool(stylize)).encode("ascii"))
-    hasher.update(str(bool(fast_mesh)).encode("ascii"))
     return hasher.hexdigest()
 
 
@@ -947,26 +946,18 @@ def clear_framework_cache():
         _framework_cache.clear()
 
 
-def prewarm_framework_cache(mat_atoms, stylize: bool = True, show_rings: bool = True, fast_mesh: bool = False) -> None:
+def prewarm_framework_cache(mat_atoms, stylize: bool = True, show_rings: bool = True) -> None:
     """Compute and cache mesh framework traces ahead of user style switch."""
-    cache_key = _get_framework_cache_key(mat_atoms, "mesh", show_rings, stylize, fast_mesh)
+    cache_key = _get_framework_cache_key(mat_atoms, "mesh", show_rings, stylize)
     with _framework_cache_lock:
         if cache_key in _framework_cache:
             return
-
-    kwargs_mesh = {}
-    if fast_mesh:
-        kwargs_mesh["kwargs_mesh_for_atoms"] = dict(
-            kwargs_spheres=dict(scale=0.5, radii=None, theta_resolution=4, phi_resolution=4),
-            kwargs_cylinders=dict(radius=0.25, cylinder_resolution=6),
-        )
 
     traces = plot_framework_as_mesh(
         mat_atoms,
         stylize=stylize,
         style="mesh",
         show_rings=show_rings,
-        **kwargs_mesh,
     )
     with _framework_cache_lock:
         if len(_framework_cache) > 10:
@@ -975,7 +966,12 @@ def prewarm_framework_cache(mat_atoms, stylize: bool = True, show_rings: bool = 
         _framework_cache[cache_key] = traces
 
 
-def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, Any] | None = None) -> go.Figure:
+def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, Any] | None = None, on_step=None) -> go.Figure:
+    """Build the full MGR visualization figure.
+
+    :param on_step: Optional callable(step_num, total_steps, label) called before
+                    each major trace-building stage for progress reporting.
+    """
     mat_atoms = results["ase_atoms"]
     dgrid = results["dgrid"]
     regions = results["regions"]
@@ -1012,11 +1008,41 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
     if orthographic:
         stylize = False
 
+    # Pre-compute which steps will run so we can show accurate progress.
+    _step_labels = []
+    if defaults.get("plot_framework", True):
+        _step_labels.append(f"Framework ({framework_style})")
+    if defaults.get("plot_cell", True):
+        _step_labels.append("Unit cell")
+    if defaults.get("plot_surface", True):
+        _step_labels.append("Regions surface")
+    if defaults.get("plot_surface_pbc", True):
+        _step_labels.append("PBC surface")
+    if results.get("pocket_types_detected", False) and "regions_cluster" in results:
+        _step_labels.append("Pocket types")
+    if defaults.get("plot_connections", True):
+        _step_labels.append("Channel connections")
+    if defaults.get("plot_windows", True):
+        _step_labels.append("Windows")
+    if defaults.get("plot_maxima", True) and len(all_maxima[: int(regions.max())]):
+        _step_labels.append("Local maxima")
+    _total_steps = len(_step_labels)
+    _step_idx = 0
+
+    def _emit(label: str):
+        nonlocal _step_idx
+        _step_idx += 1
+        if callable(on_step):
+            try:
+                on_step(_step_idx, _total_steps, label)
+            except Exception:
+                pass
+
     traces: List[go.BaseTraceType] = []
 
     framework_style = defaults.get("plot_framework_style", "mesh")
-    fast_mesh = bool(defaults.get("plot_framework_fast_mesh", False))
     if defaults.get("plot_framework", True):
+        _emit(_step_labels[_step_idx])
         import time as _time
         _t0 = _time.time()
         cache_key = _get_framework_cache_key(
@@ -1024,27 +1050,19 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
             framework_style,
             defaults.get("plot_framework_show_rings", True),
             stylize,
-            fast_mesh,
         )
         with _framework_cache_lock:
             framework_traces = _framework_cache.get(cache_key)
         _t1 = _time.time()
         if framework_traces is None:
-            kwargs_mesh = {}
-            if fast_mesh and framework_style == "mesh":
-                kwargs_mesh["kwargs_mesh_for_atoms"] = dict(
-                    kwargs_spheres=dict(scale=0.5, radii=None, theta_resolution=4, phi_resolution=4),
-                    kwargs_cylinders=dict(radius=0.25, cylinder_resolution=6),
-                )
             framework_traces = plot_framework_as_mesh(
                 mat_atoms,
                 stylize=stylize,
                 style=framework_style,
                 show_rings=defaults.get("plot_framework_show_rings", True),
-                **kwargs_mesh,
             )
             _t2 = _time.time()
-            print(f"[TIMING] plot_framework_as_mesh ({len(mat_atoms)} atoms, mesh={framework_style}, fast={fast_mesh}): {_t2-_t1:.2f}s")
+            print(f"[TIMING] plot_framework_as_mesh ({len(mat_atoms)} atoms, style={framework_style}): {_t2-_t1:.2f}s")
             with _framework_cache_lock:
                 if len(_framework_cache) > 10:
                     oldest_key = next(iter(_framework_cache))
@@ -1055,6 +1073,7 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         traces.extend(framework_traces)
 
     if defaults.get("plot_cell", True):
+        _emit(_step_labels[_step_idx])
         traces.append(plot_cell(mat_atoms))
 
     maxima = all_maxima[: int(regions.max())]
@@ -1066,6 +1085,7 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         connections_trimmed = list(connections)
 
     if defaults.get("plot_surface", True):
+        _emit(_step_labels[_step_idx])
         surface_trace = plot_surface_dgrid(
             dgrid=dgrid,
             isovalue=float(defaults.get("plot_surface_isovalue", 0.75)),
@@ -1077,6 +1097,7 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         traces.append(surface_trace)
 
     if defaults.get("plot_surface_pbc", True):
+        _emit(_step_labels[_step_idx])
         surface_trace_pbc = plot_surface_dgrid(
             dgrid=dgrid,
             isovalue=float(defaults.get("plot_surface_isovalue", 0.75)),
@@ -1089,6 +1110,7 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
 
     # Add pocket type surface if available
     if results.get("pocket_types_detected", False) and "regions_cluster" in results:
+        _emit(_step_labels[_step_idx])
         regions_cluster = results["regions_cluster"]
         cscale = px.colors.qualitative.Pastel
         surface_trace_cluster = plot_surface_dgrid(
@@ -1105,11 +1127,13 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         traces.append(surface_trace_cluster)
 
     if defaults.get("plot_connections", True) and connections_trimmed:
+        _emit(_step_labels[_step_idx])
         connections_traces = mgr_visualize.plot_connections_as_it_is(connections_trimmed, all_maxima, dgrid.shape, mat_atoms)
         traces.extend(connections_traces)
 
     # Windows for internal connections only (same reference as connections: unique_regions via connections_trimmed)
     if defaults.get("plot_windows", True) and connections_trimmed:
+        _emit(_step_labels[_step_idx])
         internal_for_windows = [
             c for c in connections_trimmed
             if c[1] and c[2] == "internal" and len(c) > 3 and c[3] is not None and np.asarray(c[3]).size >= 3
@@ -1125,6 +1149,7 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
             traces.append(window_trace)
 
     if defaults.get("plot_maxima", True) and len(maxima):
+        _emit(_step_labels[_step_idx])
         maxima_trace = plot_maxima(
             dgrid,
             maxima,

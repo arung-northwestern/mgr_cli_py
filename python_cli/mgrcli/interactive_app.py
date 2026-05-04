@@ -63,6 +63,16 @@ def _read_atoms_from_cif(cif_path: Path):
 
     return _read(str(cif_path))
 
+
+def _step_status(step: int, total: int, label: str, color: str = "#7FDBFF", bg: str = "#102a43"):
+    """Render a numbered step status bar for the main plotting pipeline."""
+    return (
+        f"<div style='padding:6px;background:{bg};color:{color};text-align:center;"
+        f"font-family:monospace;font-size:13px;border-radius:4px;'>"
+        f"<b>Step {step}/{total}</b> — {label}</div>"
+    )
+
+
 # Watershed backend labels (selectbox) and descriptions (shown under the selection).
 WATERSHED_BACKEND_LABELS: Dict[str, str] = {
     "rust_det": "rust_det — heap watershed (Rust)",
@@ -394,11 +404,11 @@ dark_layout = None
 white_layout = None
 
 
-def _queue_mesh_prewarm(results_data: Optional[Dict[str, Any]], cache_identity: str, stylize: bool, show_rings: bool = True, fast_mesh: bool = False) -> None:
+def _queue_mesh_prewarm(results_data: Optional[Dict[str, Any]], cache_identity: str, stylize: bool, show_rings: bool = True) -> None:
     if not results_data or "ase_atoms" not in results_data:
         return
     jobs = st.session_state.setdefault("mesh_prewarm_jobs", {})
-    job_key = f"{cache_identity}::stylize={int(bool(stylize))}::rings={int(bool(show_rings))}::fast={int(bool(fast_mesh))}"
+    job_key = f"{cache_identity}::stylize={int(bool(stylize))}::rings={int(bool(show_rings))}"
     existing = jobs.get(job_key)
     if existing is not None and not existing.done():
         return
@@ -411,7 +421,6 @@ def _queue_mesh_prewarm(results_data: Optional[Dict[str, Any]], cache_identity: 
         atoms_copy,
         bool(stylize),
         bool(show_rings),
-        bool(fast_mesh),
     )
 
 
@@ -1493,11 +1502,6 @@ def main() -> None:
     col_vis1, col_vis2 = st.columns(2)
     with col_vis1:
         mesh_framework = st.checkbox("Show framework as mesh", value=False)
-        fast_mesh = st.checkbox(
-            "Fast mesh (lower resolution)", value=False,
-            disabled=not mesh_framework,
-            help="Reduces sphere/cylinder mesh resolution for faster rendering on hosted demos."
-        )
         simple_framework = st.checkbox("Show simple framework scatter", value=True)
         if mesh_framework and simple_framework:
             st.warning("Select either mesh or simple framework.")
@@ -1755,7 +1759,6 @@ def main() -> None:
             framework_identity,
             stylize=bool(stylize),
             show_rings=True,
-            fast_mesh=bool(fast_mesh),
         )
 
     visualization_tab, percolation_tab, psd_tab, sa_vol_tab = st.tabs([
@@ -1770,14 +1773,19 @@ def main() -> None:
             st.markdown(f"## Material: **{material_name}**")
             framework_style = "scatter" if simple_framework and not mesh_framework else "mesh"
             main_plot_status = st.empty()
-            main_plot_status.markdown("<div style='padding:6px;background:#102a43;color:#7FDBFF;text-align:center;'>🎨 Rendering main view…</div>", unsafe_allow_html=True)
+
+            def _update_plot_status(step, total, label):
+                main_plot_status.markdown(
+                    _step_status(step, total, label),
+                    unsafe_allow_html=True,
+                )
+
             fig = show_mof(
                 results_data,
                 stylize=stylize,
                 options=dict(
                     plot_framework_style=framework_style,
                     plot_framework_show_rings=True,
-                    plot_framework_fast_mesh=fast_mesh,
                     plot_surface=show_surface,
                     plot_surface_pbc=show_surface_pbc,
                     plot_surface_isovalue=surface_value,
@@ -1790,6 +1798,7 @@ def main() -> None:
                     plot_projection=projection_choice,
                     plot_layout=viz_plot_layout,
                 ),
+                on_step=_update_plot_status,
             )
             # Apply selected layout explicitly (includes scene.bgcolor; template alone can miss 3D canvas).
             fig.update_layout(**dict(white_layout if viz_plot_layout == "white" else dark_layout))
@@ -1826,12 +1835,24 @@ def main() -> None:
                 'responsive': True,
                 'scrollZoom': True,
                 'displayModeBar': True,
+                'displaylogo': False,
+                'doubleClick': 'reset',
                 'toImageButtonOptions': {
                     'format': 'png',
                     'filename': f'{material_name}_plot',
                 },
             }
             st.plotly_chart(fig, use_container_width=True, config=_plotly_cfg)
+            # Inject CSS to ensure touch gestures reach Plotly inside Streamlit iframes.
+            st.markdown(
+                """
+                <style>
+                .stPlotlyChart iframe { touch-action: none !important; }
+                .js-plotly-plot .plotly { touch-action: none !important; }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
             st.info(
                 "Hover over the plot to reveal the toolbar (top-right corner). "
                 "The camera icon downloads a screenshot of the current rotated/zoomed view."
@@ -2021,7 +2042,7 @@ def main() -> None:
 """
                 )
 
-            main_plot_status.markdown("<div style='padding:6px;background:#06310c;color:#6FE37F;text-align:center;'>✅ Plotting complete</div>", unsafe_allow_html=True)
+            main_plot_status.markdown("<div style='padding:6px;background:#06310c;color:#6FE37F;text-align:center;font-family:monospace;'>✅ Main visualization complete — all traces rendered</div>", unsafe_allow_html=True)
 
     with percolation_tab:
         if results_data is None:
@@ -2179,7 +2200,10 @@ def main() -> None:
                     )
 
                     plot_status = st.empty()
-                    plot_status.markdown("<div style='padding:6px;background:#102a43;color:#7FDBFF;text-align:center;'>🎨 Rendering percolation view…</div>", unsafe_allow_html=True)
+                    plot_status.markdown(
+                        _step_status(1, 3, "Building percolation traces"),
+                        unsafe_allow_html=True,
+                    )
 
                     try:
                         # Ensure plotly express is accessible for color scale
@@ -2215,6 +2239,10 @@ def main() -> None:
                         st.error(str(exc))
                         cluster_traces = []
 
+                    plot_status.markdown(
+                        _step_status(2, 3, "Assembling traces (cell, graph, maxima, PLD)"),
+                        unsafe_allow_html=True,
+                    )
                     plot_traces = []
                     plot_traces.append(mgr.plot_cell(atoms))
                     rag_trace = mgr.plot_rag(analysis["rag"], name="Pore Graph")
@@ -2253,6 +2281,10 @@ def main() -> None:
 
                     plot_traces.extend(cluster_traces)
 
+                    plot_status.markdown(
+                        _step_status(3, 3, "Rendering percolation figure"),
+                        unsafe_allow_html=True,
+                    )
                     percolation_fig = go.Figure(data=plot_traces)
                     # Use the selected layout for percolation plot
                     layout = white_layout if percolation_layout_choice == "white" else dark_layout
@@ -2300,6 +2332,8 @@ def main() -> None:
                         'responsive': True,
                         'scrollZoom': True,
                         'displayModeBar': True,
+                        'displaylogo': False,
+                        'doubleClick': 'reset',
                         'toImageButtonOptions': {
                             'format': 'png',
                             'filename': f'{material_name}_percolation',
@@ -2307,7 +2341,7 @@ def main() -> None:
                     }
                     st.plotly_chart(percolation_fig, use_container_width=True, config=_percol_cfg)
 
-                    plot_status.markdown("<div style='padding:6px;background:#06310c;color:#6FE37F;text-align:center;'>✅ Plotting complete</div>", unsafe_allow_html=True)
+                    plot_status.markdown("<div style='padding:6px;background:#06310c;color:#6FE37F;text-align:center;font-family:monospace;'>✅ Percolation plot complete</div>", unsafe_allow_html=True)
 
                     selected_components = next(
                         (
