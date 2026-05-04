@@ -1008,6 +1008,8 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
     if orthographic:
         stylize = False
 
+    framework_style = defaults.get("plot_framework_style", "mesh")
+
     # Pre-compute which steps will run so we can show accurate progress.
     _step_labels = []
     if defaults.get("plot_framework", True):
@@ -1039,8 +1041,6 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
                 pass
 
     traces: List[go.BaseTraceType] = []
-
-    framework_style = defaults.get("plot_framework_style", "mesh")
     if defaults.get("plot_framework", True):
         _emit(_step_labels[_step_idx])
         import time as _time

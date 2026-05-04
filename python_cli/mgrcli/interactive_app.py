@@ -1847,8 +1847,15 @@ def main() -> None:
             st.markdown(
                 """
                 <style>
-                .stPlotlyChart iframe { touch-action: none !important; }
-                .js-plotly-plot .plotly { touch-action: none !important; }
+                .stPlotlyChart,
+                .stPlotlyChart > div,
+                .stPlotlyChart iframe,
+                .js-plotly-plot,
+                .js-plotly-plot .plotly,
+                .js-plotly-plot .plotly .scene {
+                    touch-action: none !important;
+                    -webkit-touch-callout: none !important;
+                }
                 </style>
                 """,
                 unsafe_allow_html=True,
@@ -1858,13 +1865,27 @@ def main() -> None:
                 "The camera icon downloads a screenshot of the current rotated/zoomed view."
             )
 
-            # Camera preservation: inject JS to save/restore Plotly 3D camera between reruns.
+            # Camera preservation + screenshot fix + mobile viewport fix.
             # Uses localStorage keyed by material name so each structure keeps its own view.
             _cam_key = html.escape(material_name or "default")
             components.html(
                 f"""
                 <script>
                 (function() {{
+                    // Allow pinch-zoom on mobile by making the page scalable.
+                    try {{
+                        var parentDoc = window.parent.document;
+                        var meta = parentDoc.querySelector('meta[name="viewport"]');
+                        if (meta) {{
+                            meta.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes');
+                        }} else {{
+                            meta = parentDoc.createElement('meta');
+                            meta.setAttribute('name', 'viewport');
+                            meta.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes');
+                            parentDoc.head.appendChild(meta);
+                        }}
+                    }} catch(e) {{}}
+
                     var CAM_KEY = 'mofography_camera_{_cam_key}';
                     var POLL_MS = 200;
                     var MAX_TRIES = 50;
@@ -1881,7 +1902,6 @@ def main() -> None:
                                 }}
                             }} catch(e) {{}}
                         }}
-                        // Also check main window (sometimes Plotly is loaded directly)
                         if (window.Plotly) {{
                             wins.push(window);
                         }}
@@ -1924,10 +1944,8 @@ def main() -> None:
                                 div._mofCameraAttached = true;
                                 attached = true;
 
-                                // Restore saved camera
                                 restoreCamera(div, wins[w]);
 
-                                // Save camera on interaction
                                 div.on('plotly_relayout', function() {{
                                     saveCamera(div);
                                 }});
@@ -1936,7 +1954,6 @@ def main() -> None:
                         return attached;
                     }}
 
-                    // Poll until Plotly charts appear (they load asynchronously)
                     var timer = setInterval(function() {{
                         if (attachListeners() || tries > MAX_TRIES) {{
                             clearInterval(timer);
