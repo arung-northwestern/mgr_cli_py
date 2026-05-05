@@ -983,6 +983,8 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         "plot_framework": True,
         "plot_framework_style": "mesh",
         "plot_framework_show_rings": True,
+        "plot_framework_mesh_scale": 0.5,
+        "plot_framework_bond_radius": 0.25,
         "plot_maxima": True,
         "plot_maxima_show_spheres": False,
         "plot_connections": True,
@@ -1055,11 +1057,22 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
             framework_traces = _framework_cache.get(cache_key)
         _t1 = _time.time()
         if framework_traces is None:
+            kwargs_mesh = {}
+            if framework_style == "mesh":
+                kwargs_mesh["kwargs_mesh_for_atoms"] = dict(
+                    kwargs_spheres=dict(
+                        scale=float(defaults.get("plot_framework_mesh_scale", 0.5)),
+                    ),
+                    kwargs_cylinders=dict(
+                        radius=float(defaults.get("plot_framework_bond_radius", 0.25)),
+                    ),
+                )
             framework_traces = plot_framework_as_mesh(
                 mat_atoms,
                 stylize=stylize,
                 style=framework_style,
                 show_rings=defaults.get("plot_framework_show_rings", True),
+                **kwargs_mesh,
             )
             _t2 = _time.time()
             print(f"[TIMING] plot_framework_as_mesh ({len(mat_atoms)} atoms, style={framework_style}): {_t2-_t1:.2f}s")

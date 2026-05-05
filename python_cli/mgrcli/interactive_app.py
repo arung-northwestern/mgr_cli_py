@@ -1502,6 +1502,26 @@ def main() -> None:
     col_vis1, col_vis2 = st.columns(2)
     with col_vis1:
         mesh_framework = st.checkbox("Show framework as mesh", value=False)
+        if mesh_framework:
+            atom_scale = st.slider(
+                "Atom scale",
+                min_value=0.1,
+                max_value=2.0,
+                value=0.5,
+                step=0.05,
+                help="Scale factor for atom sphere radii.",
+            )
+            bond_radius = st.slider(
+                "Bond radius",
+                min_value=0.05,
+                max_value=1.0,
+                value=0.25,
+                step=0.05,
+                help="Radius of bond cylinders.",
+            )
+        else:
+            atom_scale = 0.5
+            bond_radius = 0.25
         simple_framework = st.checkbox("Show simple framework scatter", value=True)
         if mesh_framework and simple_framework:
             st.warning("Select either mesh or simple framework.")
@@ -1784,8 +1804,11 @@ def main() -> None:
                 results_data,
                 stylize=stylize,
                 options=dict(
+                    plot_framework=(simple_framework or mesh_framework),
                     plot_framework_style=framework_style,
                     plot_framework_show_rings=True,
+                    plot_framework_mesh_scale=float(atom_scale),
+                    plot_framework_bond_radius=float(bond_radius),
                     plot_surface=show_surface,
                     plot_surface_pbc=show_surface_pbc,
                     plot_surface_isovalue=surface_value,
@@ -1933,10 +1956,33 @@ def main() -> None:
                         }} catch(e) {{}}
                     }}
 
+                    function patchDownloadImage(win) {{
+                        if (!win.Plotly || win.Plotly._mofDownloadPatched) return;
+                        win.Plotly._mofDownloadPatched = true;
+                        var orig = win.Plotly.downloadImage;
+                        win.Plotly.downloadImage = function(gd, opts) {{
+                            try {{
+                                var scene = gd._fullLayout.scene;
+                                if (scene && scene.camera && win.Plotly.relayout) {{
+                                    win.Plotly.relayout(gd, {{'scene.camera': scene.camera}}).then(function() {{
+                                        orig(gd, opts);
+                                    }}).catch(function() {{
+                                        orig(gd, opts);
+                                    }});
+                                }} else {{
+                                    orig(gd, opts);
+                                }}
+                            }} catch(e) {{
+                                orig(gd, opts);
+                            }}
+                        }};
+                    }}
+
                     function attachListeners() {{
                         var wins = getPlotlyWindows();
                         var attached = false;
                         for (var w = 0; w < wins.length; w++) {{
+                            patchDownloadImage(wins[w]);
                             var divs = findPlotlyDivs(wins[w]);
                             for (var d = 0; d < divs.length; d++) {{
                                 var div = divs[d];
