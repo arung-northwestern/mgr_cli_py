@@ -1964,6 +1964,18 @@ def main() -> None:
                     'filename': f'{material_name}_plot',
                 },
             }
+
+            if plot_log:
+                _plot_total = time.time() - _plot_start
+                with st.expander(
+                    f"Plotting log ({_plot_total:.1f}s, {len(plot_log)} stages)",
+                    expanded=False,
+                ):
+                    st.caption(
+                        "Plot trace rendering stages and cumulative timing."
+                    )
+                    st.code("\n".join(plot_log), language=None)
+
             st.plotly_chart(fig, use_container_width=True, config=_plotly_cfg)
             # Inject CSS to ensure touch gestures reach Plotly inside Streamlit iframes.
             st.markdown(
@@ -2205,15 +2217,6 @@ def main() -> None:
                 )
 
             main_plot_status.markdown("<div style='padding:6px;background:#06310c;color:#6FE37F;text-align:center;font-family:monospace;'>✅ Main visualization complete — all traces rendered</div>", unsafe_allow_html=True)
-
-            if plot_log:
-                _plot_total = time.time() - _plot_start
-                with st.expander(
-                    f"Plotting log ({_plot_total:.1f}s, {len(plot_log)} stages)",
-                    expanded=False,
-                ):
-                    st.caption("Plot trace rendering stages and cumulative timing.")
-                    st.code("\n".join(plot_log), language=None)
 
     with percolation_tab:
         if results_data is None:
