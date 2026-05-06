@@ -1829,6 +1829,13 @@ def main() -> None:
             pld_cache = st.session_state.setdefault("pld_cache", {})
             pld_cache.pop(results_key, None)
 
+        elapsed = time.time() - progress.start_time
+        st.session_state["_compute_log"] = {
+            "lines": list(progress.lines),
+            "elapsed": elapsed,
+            "final_phase": progress.phase,
+        }
+
         if _is_spaces_deployment() and st.session_state.get("_compute_spaces_lock"):
             _SPACES_COMPUTE_LOCK.release()
             st.session_state["spaces_last_compute_duration_sec"] = max(
@@ -1842,6 +1849,20 @@ def main() -> None:
     results_data = st.session_state.get("latest_results")
     metadata = st.session_state.get("latest_metadata", {})
     analysis_key = st.session_state.get("analysis_key")
+
+    if results_data is not None and st.session_state.get("_compute_log"):
+        log = st.session_state["_compute_log"]
+        with st.expander(
+            f"Compute log ({log['elapsed']:.1f}s) — {log['final_phase']}",
+            expanded=False,
+        ):
+            st.caption(
+                "Captured logger output and phase transitions during the last compute run."
+                " Scroll to review timing and diagnostics."
+            )
+            st.code("\n".join(log["lines"]) if log["lines"] else "(no log output)", language=None)
+        del st.session_state["_compute_log"]
+
     if results_data is not None and not mesh_framework:
         framework_identity = str(
             st.session_state.get("single_material_atoms_source_key")
