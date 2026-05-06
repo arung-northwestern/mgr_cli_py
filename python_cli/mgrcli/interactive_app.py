@@ -52,12 +52,6 @@ class _MgrProxy:
 mgr = _MgrProxy()
 
 
-def estimate_h_from_percolation_history(dgrid):
-    from mgr.helper import estimate_h_from_percolation_history as _estimate
-
-    return _estimate(dgrid)
-
-
 def _read_atoms_from_cif(cif_path: Path):
     from ase.io import read as _read
 
@@ -199,7 +193,7 @@ def _watershed_backend_widgets(widget_key_suffix: str) -> str:
     choice = st.selectbox(
         "Watershed backend",
         options=list(WATERSHED_BACKEND_ORDER),
-        index=0,
+        index=1,
         format_func=lambda k: WATERSHED_BACKEND_LABELS[k],
         key=sel_key,
         help="Seeded watershed implementation used on the padded periodic distance grid.",
@@ -533,27 +527,7 @@ def _get_sample_cifs() -> Dict[str, Path]:
     return samples
 
 
-def _auto_parameters(mat_atoms, spacing: float, use_aabb_method: bool = False, block_size: int = 50000) -> Dict[str, float]:
-    # Compute distance grid using selected method
-    if use_aabb_method:
-        # Use CPU-based AABB method with dask
-        from mgr.compute import dgrid_from_atoms_cpu
-        dgrid = dgrid_from_atoms_cpu(mat_atoms, spacing=spacing, block_size=block_size)
-        # Convert to float32 as required by Rust segmentation function
-        dgrid = dgrid.astype(np.float32)
-    else:
-        # Use Rust exact method (default)
-        dgrid = compute_dgrid_rust(mat_atoms, spacing)
-    pore_limiting_radius = mgr.find_pore_limiting_radius(dgrid)
-    mask_thickness = float(np.clip(pore_limiting_radius - 0.25, 0.1, 0.5))
-    h_value = float(max(estimate_h_from_percolation_history(dgrid) - 0.1, 0.2))
-    surface_value = float(min(mask_thickness + 0.5, 2.0))
-    return {
-        "dgrid": dgrid,
-        "mask_thickness": mask_thickness,
-        "h": h_value,
-        "surface_value": surface_value,
-    }
+
 
 
 def _run_segmentation(
@@ -565,7 +539,7 @@ def _run_segmentation(
     min_distance: float = 1.5,
     threshold_abs: float = 1.5,
     extra_padding: float = 5.0,
-    watershed_backend: str = "rust_bucket",
+    watershed_backend: str = "rust_det",
 ) -> Dict[str, np.ndarray]:
     segmentation_kwargs = dict(
         dgrid=dgrid,
@@ -576,7 +550,7 @@ def _run_segmentation(
         threshold_abs=threshold_abs,
         return_padded_regions=False,
         spacing=spacing,
-        minimum_window_separation=None,
+        minimum_window_separation=1.0,
         wall_thickness=0.05,
         extra_padding=extra_padding,
         compactness=0,
@@ -599,7 +573,7 @@ def _compute_pld_analysis(
     min_distance: float,
     extra_padding: float,
     force_cpu_dgrid: bool = True,
-    watershed_backend: str = "rust_bucket",
+    watershed_backend: str = "rust_det",
 ) -> Dict[str, Any]:
     # For percolation, use CPU dgrid + fresh segmentation to match reference behavior.
     if force_cpu_dgrid:
@@ -822,7 +796,7 @@ def _hts_one_material(
             threshold_abs=threshold_abs,
             return_padded_regions=False,
             spacing=spacing,
-            minimum_window_separation=None,
+            minimum_window_separation=1.0,
             wall_thickness=0.05,
             extra_padding=extra_padding,
             compactness=0,
@@ -1393,8 +1367,6 @@ def main() -> None:
                  "Default is 50000. Adjust based on your system's available RAM."
         )
 
-    auto_set_params = st.checkbox("Auto set parameters", value=True)
-    
     # Minimum box thickness option
     min_box_thickness_enabled = st.checkbox(
         "Ensure minimum box thickness", 
@@ -1413,53 +1385,25 @@ def main() -> None:
             help="Minimum dimension for the simulation box. Creates supercell if unit cell is smaller."
         )
 
-    param_state = st.session_state.setdefault("param_cache", {})
-    # Include method and block_size in cache key to avoid incorrect cache hits
-    cache_key = f"{getattr(cif_path, 'name', 'uploaded')}::{spacing:.3f}::aabb={use_aabb_method}::bs={block_size}"
-    if auto_set_params and cache_key not in param_state:
-        with st.spinner("Computing suggested parameters..."):
-            param_state[cache_key] = _run_with_output_capture(
-                _auto_parameters,
-                atoms,
-                spacing,
-                use_aabb_method,
-                block_size,
-            )
-
-    current_params = param_state.get(cache_key)
-    if current_params is None:
-        # Fallback if auto-computation failed
-        if use_aabb_method:
-            from mgr.compute import dgrid_from_atoms_cpu
-            dgrid = dgrid_from_atoms_cpu(atoms, spacing=spacing, block_size=block_size).astype(np.float32)
-        else:
-            dgrid = compute_dgrid_rust(atoms, spacing)
-        current_params = {
-            "dgrid": dgrid,
-            "mask_thickness": 1.5,
-            "h": 0.4,
-            "surface_value": 2.0,
-        }
-
     col1, col2, col3 = st.columns(3)
     with col1:
         mask_thickness = st.number_input(
             "Mask thickness (Å)",
-            value=float(current_params["mask_thickness"]),
+            value=0.5,
             min_value=0.05,
             help="Points closer than this to the framework are excluded.",
         )
     with col2:
         h_value = st.number_input(
             "h (Å)",
-            value=float(current_params["h"]),
+            value=0.2,
             min_value=0.05,
             help="Minimum separation between neighbouring maxima.",
         )
     with col3:
         surface_value = st.number_input(
             "Surface value (Å)",
-            value=float(current_params["surface_value"]),
+            value=1.0,
             min_value=0.1,
             help="Isosurface value for visualization.",
         )
@@ -1573,6 +1517,7 @@ def main() -> None:
 
 
 
+    results_key = f"{getattr(cif_path, 'name', 'uploaded')}::{spacing:.3f}::aabb={use_aabb_method}::bs={block_size}"
     compute_clicked = st.button("Compute and Visualize")
 
     if compute_clicked:
@@ -1605,9 +1550,14 @@ def main() -> None:
                     if min_current_length < _min_box_thickness:
                         repetitions = mgr.get_repetitions_to_meet_cutoff(atoms, _min_box_thickness)
                         working_atoms = atoms * repetitions
+                if use_aabb_method:
+                    from mgr.compute import dgrid_from_atoms_cpu
+                    dgrid = dgrid_from_atoms_cpu(working_atoms, spacing=spacing, block_size=block_size).astype(np.float32)
+                else:
+                    dgrid = compute_dgrid_rust(working_atoms, spacing)
                 _results = _run_segmentation(
                     working_atoms,
-                    current_params["dgrid"],
+                    dgrid,
                     spacing=spacing,
                     mask_thickness=mask_thickness,
                     h_value=h_value,
@@ -1617,7 +1567,7 @@ def main() -> None:
                     watershed_backend=watershed_backend,
                 )
                 _results["ase_atoms"] = working_atoms
-                _results["dgrid"] = _results.get("dgrid", current_params["dgrid"])
+                _results["dgrid"] = _results.get("dgrid", dgrid)
                 return _results
 
             results = _run_with_output_capture(_compute_pipeline)
@@ -1762,9 +1712,9 @@ def main() -> None:
             "threshold_abs": float(threshold_abs),
             "watershed_backend": str(watershed_backend),
         }
-        st.session_state["analysis_key"] = cache_key
+        st.session_state["analysis_key"] = results_key
         pld_cache = st.session_state.setdefault("pld_cache", {})
-        pld_cache.pop(cache_key, None)
+        pld_cache.pop(results_key, None)
 
     results_data = st.session_state.get("latest_results")
     metadata = st.session_state.get("latest_metadata", {})
@@ -2114,7 +2064,7 @@ def main() -> None:
             material_name = getattr(cif_path, 'stem', 'Material')
             st.markdown(f"## Material: **{material_name}**")
             pld_cache = st.session_state.setdefault("pld_cache", {})
-            effective_key = analysis_key or cache_key
+            effective_key = analysis_key or results_key
             compute_pld = st.button("Compute PLD & percolation metrics", key="compute_pld")
             if compute_pld:
                 with st.spinner("Computing PLD and percolation history..."):
@@ -2422,7 +2372,7 @@ def main() -> None:
             st.info("Run the computation to enable pore size distribution analysis.")
         else:
             psd_cache = st.session_state.setdefault("psd_cache", {})
-            effective_key = analysis_key or cache_key
+            effective_key = analysis_key or results_key
             regions_pbc = results_data.get("regions_pbc")
             has_connections = results_data.get("connections") is not None
 
@@ -2736,10 +2686,10 @@ def main() -> None:
 
                     # First, ensure we have percolation analysis data
                     analysis_key = st.session_state.get("analysis_key")
-                    cache_key = analysis_key or st.session_state.setdefault("param_cache", {}).get(f"{getattr(cif_path, 'name', 'uploaded')}::{float(metadata.get('spacing', spacing)):.3f}")
+                    sa_vol_cache_key = analysis_key or f"{getattr(cif_path, 'name', 'uploaded')}::{float(metadata.get('spacing', spacing)):.3f}"
 
                     pld_cache = st.session_state.setdefault("pld_cache", {})
-                    percolation_analysis = pld_cache.get(cache_key)
+                    percolation_analysis = pld_cache.get(sa_vol_cache_key)
 
                     if percolation_analysis is None:
                         with st.spinner("Computing required percolation analysis first..."):
@@ -2756,7 +2706,7 @@ def main() -> None:
                                     metadata.get("watershed_backend", "rust_bucket")
                                 ),
                             )
-                            pld_cache[cache_key] = percolation_analysis
+                            pld_cache[sa_vol_cache_key] = percolation_analysis
 
                     # Prepare complete results dictionary like CLI does
                     modified_results = results_data.copy()

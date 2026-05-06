@@ -926,7 +926,7 @@ _framework_cache: Dict[str, Tuple[go.BaseTraceType, ...]] = {}
 _framework_cache_lock = Lock()
 
 
-def _get_framework_cache_key(mat_atoms, style: str, show_rings: bool, stylize: bool) -> str:
+def _get_framework_cache_key(mat_atoms, style: str, show_rings: bool, stylize: bool, mesh_scale: float = 0.5, bond_radius: float = 0.25) -> str:
     """Generate a unique cache key for framework traces."""
     # Hash raw bytes directly (avoid expensive bytes->hex expansion).
     hasher = hashlib.md5()
@@ -936,6 +936,8 @@ def _get_framework_cache_key(mat_atoms, style: str, show_rings: bool, stylize: b
     hasher.update(style.lower().encode("ascii", errors="ignore"))
     hasher.update(str(bool(show_rings)).encode("ascii"))
     hasher.update(str(bool(stylize)).encode("ascii"))
+    hasher.update(f"{mesh_scale:.3f}".encode("ascii"))
+    hasher.update(f"{bond_radius:.3f}".encode("ascii"))
     return hasher.hexdigest()
 
 
@@ -1052,6 +1054,8 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
             framework_style,
             defaults.get("plot_framework_show_rings", True),
             stylize,
+            mesh_scale=float(defaults.get("plot_framework_mesh_scale", 0.5)),
+            bond_radius=float(defaults.get("plot_framework_bond_radius", 0.25)),
         )
         with _framework_cache_lock:
             framework_traces = _framework_cache.get(cache_key)

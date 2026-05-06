@@ -25,7 +25,7 @@ def _watershed_padded_labels(rust_mod, watershed_backend, padded_grid, markers, 
             markers.astype(np.int32),
             mask=void_mask.astype(bool),
             compactness=compactness,
-            connectivity=2,
+            connectivity=3,
         ).astype(np.uint32)
     raise ValueError(
         f"Unknown watershed_backend {wb!r}. Expected "
