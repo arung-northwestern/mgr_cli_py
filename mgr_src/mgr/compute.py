@@ -336,6 +336,7 @@ def dgrid_from_atoms(
     block_size=50000,
     n_neighbors=10,
     probe_radius=0,
+    progress_callback=None,
 ):
     """
     The function `dgrid_from_atoms` generates a distance grid over atoms using Dask arrays and computes
@@ -508,18 +509,34 @@ def dgrid_from_atoms(
         radii = vdw_radii[ase_atoms.get_chemical_symbols()].values / 100.0
 
     # for block in track(gpoints.blocks, description='Computing distance grid', total=gpoints.npartitions):
-    for block in tqdm(
-        gpoints.blocks, desc="Computing distance grid", total=gpoints.npartitions
-    ):
-        dgrid.append(
-            gpd_aabb(
-                block.compute(),
-                ase_atoms,
-                radii,
-                n_neighbors=n_neighbors,
-                probe_radius=probe_radius,
+    total_blocks = gpoints.npartitions
+    block_iter = enumerate(gpoints.blocks, start=1)
+    if progress_callback is not None:
+        for i, block in block_iter:
+            progress_callback(i, total_blocks, "Distance grid (AABB)")
+            dgrid.append(
+                gpd_aabb(
+                    block.compute(),
+                    ase_atoms,
+                    radii,
+                    n_neighbors=n_neighbors,
+                    probe_radius=probe_radius,
+                )
             )
-        )  # compute grid
+    else:
+        for i, block in tqdm(
+            block_iter, desc="Computing distance grid", total=total_blocks
+        ):
+            # i is already 1-based from enumerate
+            dgrid.append(
+                gpd_aabb(
+                    block.compute(),
+                    ase_atoms,
+                    radii,
+                    n_neighbors=n_neighbors,
+                    probe_radius=probe_radius,
+                )
+            )  # compute grid
     return (
         da.hstack(dgrid).rechunk(chunks=block_size).reshape(shape)
     )  # return in correct shape

@@ -11,7 +11,7 @@ import html
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 from typing import Any, Dict, List, Optional, Tuple
 from io import BytesIO, StringIO
 
@@ -279,15 +279,71 @@ _PLOTTING_SYMBOLS = None
 _MESH_PREWARM_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 
 
+class _StreamingProgress:
+    """Thread-safe progress tracker for compute operations."""
+
+    def __init__(self) -> None:
+        self.lines: List[str] = []
+        self.phase: str = "Starting..."
+        self.start_time: float = time.time()
+        self.done: bool = False
+        self.result: Any = None
+        self.error: Optional[str] = None
+        self._lock = Lock()
+
+    def add_line(self, line: str) -> None:
+        with self._lock:
+            self.lines.append(line)
+            if len(self.lines) > 100:
+                self.lines = self.lines[-80:]
+
+    def set_phase(self, phase: str) -> None:
+        with self._lock:
+            self.phase = phase
+
+    def latest_lines(self, count: int = 5) -> List[str]:
+        with self._lock:
+            return list(self.lines[-count:])
+
+
+_PHASE_PATTERNS: List[Tuple[str, str]] = [
+    ("Maxima detection", "computing maxima with pbc"),
+    ("Pore limiting radius", "pore limiting radius is"),
+    ("Watershed segmentation", "computing regions with pbc"),
+    ("Regions computed", "computed regions without pbc"),
+    ("Computing connections", "compute_connections is True"),
+    ("Processing connections", "reindexng"),
+    ("Padded segmentation complete", "padded segmentation workflow complete"),
+    ("Maxima detection (direct)", "detect_periodic_maxima_direct"),
+    ("Cleaning up regions", "looking to remove regions"),
+    ("Reindexing", "done with reindexing"),
+]
+
+
+def _detect_phase_from_log(line: str) -> Optional[str]:
+    line_lower = line.lower()
+    for phase_label, pattern in _PHASE_PATTERNS:
+        if pattern in line_lower:
+            return phase_label
+    return None
+
+
 class _BufferingLogHandler(logging.Handler):
     """Capture log records emitted during a compute action."""
 
-    def __init__(self) -> None:
+    def __init__(self, streaming_progress: Optional[_StreamingProgress] = None) -> None:
         super().__init__()
         self.lines: List[str] = []
+        self._progress = streaming_progress
 
     def emit(self, record: logging.LogRecord) -> None:
-        self.lines.append(self.format(record))
+        formatted = self.format(record)
+        self.lines.append(formatted)
+        if self._progress is not None:
+            self._progress.add_line(formatted)
+            detected_phase = _detect_phase_from_log(formatted)
+            if detected_phase:
+                self._progress.set_phase(detected_phase)
 
 
 def _load_cli_funcs():
@@ -447,6 +503,127 @@ def _run_with_output_capture(callable_obj, *args, **kwargs):
     captured_lines.extend(stderr_buffer.getvalue().splitlines())
     _append_runtime_logs(captured_lines)
     return result
+
+
+def _start_compute_thread(
+    working_atoms,
+    spacing: float,
+    mask_thickness: float,
+    h_value: float,
+    min_distance: float,
+    threshold_abs: float,
+    extra_padding: float,
+    watershed_backend: str,
+    use_aabb_method: bool,
+    block_size: int,
+    min_box_thickness_enabled: bool = False,
+    min_box_thickness: float = 6.0,
+) -> _StreamingProgress:
+    progress = _StreamingProgress()
+
+    if use_aabb_method:
+        progress.set_phase("Distance grid (AABB)")
+
+    root_logger = logging.getLogger()
+    handler = _BufferingLogHandler(streaming_progress=progress)
+    handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
+    prev_level = root_logger.level
+    root_logger.addHandler(handler)
+    if prev_level > logging.INFO:
+        root_logger.setLevel(logging.INFO)
+
+    def _run():
+        stdout_buffer = StringIO()
+        stderr_buffer = StringIO()
+        try:
+            with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
+                # Handle minimum box thickness
+                w_atoms = working_atoms
+                if min_box_thickness_enabled:
+                    cell_lengths = working_atoms.get_cell_lengths_and_angles()[:3]
+                    if min(cell_lengths) < min_box_thickness:
+                        repetitions = mgr.get_repetitions_to_meet_cutoff(working_atoms, min_box_thickness)
+                        w_atoms = working_atoms * repetitions
+
+                if use_aabb_method:
+                    from mgr.compute import dgrid_from_atoms
+
+                    def _aabb_progress(current: int, total: int, label: str):
+                        progress.set_phase(f"{label} {current}/{total}")
+
+                    dgrid_dask = dgrid_from_atoms(
+                        w_atoms,
+                        spacing=spacing,
+                        block_size=block_size,
+                        progress_callback=_aabb_progress,
+                    )
+                    dgrid = dgrid_dask.compute().astype(np.float32)
+                else:
+                    progress.set_phase("Distance grid (Rust)")
+                    dgrid = compute_dgrid_rust(w_atoms, spacing)
+
+                _results = _run_segmentation(
+                    w_atoms,
+                    dgrid,
+                    spacing=spacing,
+                    mask_thickness=mask_thickness,
+                    h_value=h_value,
+                    min_distance=min_distance,
+                    threshold_abs=threshold_abs,
+                    extra_padding=extra_padding,
+                    watershed_backend=watershed_backend,
+                )
+                _results["ase_atoms"] = w_atoms
+                _results["dgrid"] = _results.get("dgrid", dgrid)
+                progress.result = _results
+        except Exception as exc:
+            progress.error = str(exc)
+        finally:
+            root_logger.removeHandler(handler)
+            root_logger.setLevel(prev_level)
+            captured_lines: List[str] = []
+            captured_lines.extend(handler.lines)
+            captured_lines.extend(stdout_buffer.getvalue().splitlines())
+            captured_lines.extend(stderr_buffer.getvalue().splitlines())
+            _append_runtime_logs(captured_lines)
+            progress.done = True
+
+    thread = Thread(target=_run, daemon=True)
+    thread.start()
+    st.session_state["_compute_thread"] = thread
+    st.session_state["_compute_progress"] = progress
+    return progress
+
+
+def _render_progress_ui(progress: _StreamingProgress) -> None:
+    elapsed = time.time() - progress.start_time
+    phase = progress.phase or "Processing..."
+    lines = progress.latest_lines(4)
+
+    log_rows = ""
+    for line in lines:
+        safe_line = html.escape(line)[:140]
+        log_rows += f'<div style="color:#7f8c8d;font-size:11px;font-family:monospace;line-height:1.3;margin:1px 0;">{safe_line}</div>'
+
+    border_color = "#2ecc71" if not progress.done else "#1f6feb"
+    status_markup = f"""<div style="border:2px solid {border_color};border-radius:8px;background:#0d1117;padding:12px;margin:8px 0;">
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+  <div style="width:24px;height:24px;border:3px solid {border_color};border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;"></div>
+  <div>
+    <div style="color:{border_color};font-weight:bold;font-size:15px;">⚡ {phase}</div>
+    <div style="color:#8b949e;font-size:12px;">Elapsed: {elapsed:.1f}s</div>
+  </div>
+</div>
+{log_rows}
+</div>
+<style>@keyframes spin {{ from {{ transform:rotate(0deg); }} to {{ transform:rotate(360deg); }} }}</style>"""
+
+    components.html(status_markup, height=180)
+    if not progress.done:
+        components.html(
+            '<script>setTimeout(() => parent.location.reload(), 600)</script>',
+            height=0,
+        )
 
 
 def _render_logs_panel(log_text: str) -> None:
@@ -1532,189 +1709,139 @@ def main() -> None:
                 st.error(f"Server busy. Estimated wait: ~{estimated}s.")
                 st.caption("Another user is currently running a compute job on this demo instance.")
                 return
-        status = st.empty()
-        status.markdown("<div style='padding:8px;background:#332700;color:#FFD700;text-align:center;'>⚡ COMPUTING ⚡</div>", unsafe_allow_html=True)
-        compute_started_at = time.time()
+            st.session_state["_compute_spaces_lock"] = True
+        st.session_state["_compute_started_at"] = time.time()
+        _min_box = min_box_thickness
+        if _is_spaces_deployment() and _min_box > SPACES_MAX_MIN_BOX_THICKNESS:
+            _min_box = SPACES_MAX_MIN_BOX_THICKNESS
+            st.info(
+                f"Minimum box thickness is clamped to {SPACES_MAX_MIN_BOX_THICKNESS:.1f} A on the hosted demo."
+            )
+        _start_compute_thread(
+            atoms,
+            spacing=spacing,
+            mask_thickness=mask_thickness,
+            h_value=h_value,
+            min_distance=min_distance,
+            threshold_abs=threshold_abs,
+            extra_padding=extra_padding,
+            watershed_backend=watershed_backend,
+            use_aabb_method=use_aabb_method,
+            block_size=block_size,
+            min_box_thickness_enabled=min_box_thickness_enabled,
+            min_box_thickness=_min_box,
+        )
+        st.rerun()
 
-        try:
-            def _compute_pipeline():
-                # Handle minimum box thickness - create supercell if needed
-                working_atoms = atoms
-                if min_box_thickness_enabled:
-                    if _is_spaces_deployment() and min_box_thickness > SPACES_MAX_MIN_BOX_THICKNESS:
-                        _min_box_thickness = SPACES_MAX_MIN_BOX_THICKNESS
-                    else:
-                        _min_box_thickness = min_box_thickness
-                    cell_lengths = atoms.get_cell_lengths_and_angles()[:3]
-                    min_current_length = min(cell_lengths)
-                    if min_current_length < _min_box_thickness:
-                        repetitions = mgr.get_repetitions_to_meet_cutoff(atoms, _min_box_thickness)
-                        working_atoms = atoms * repetitions
-                if use_aabb_method:
-                    from mgr.compute import dgrid_from_atoms_cpu
-                    dgrid = dgrid_from_atoms_cpu(working_atoms, spacing=spacing, block_size=block_size).astype(np.float32)
-                else:
-                    dgrid = compute_dgrid_rust(working_atoms, spacing)
-                _results = _run_segmentation(
-                    working_atoms,
-                    dgrid,
-                    spacing=spacing,
-                    mask_thickness=mask_thickness,
-                    h_value=h_value,
-                    min_distance=min_distance,
-                    threshold_abs=threshold_abs,
-                    extra_padding=extra_padding,
-                    watershed_backend=watershed_backend,
-                )
-                _results["ase_atoms"] = working_atoms
-                _results["dgrid"] = _results.get("dgrid", dgrid)
-                return _results
+    if st.session_state.get("_compute_progress") is not None:
+        progress = st.session_state["_compute_progress"]
+        if not progress.done:
+            _render_progress_ui(progress)
+            return
 
-            results = _run_with_output_capture(_compute_pipeline)
-            # Handle minimum box thickness - create supercell if needed
-            working_atoms = results["ase_atoms"]
+        if progress.error:
+            st.error(f"Compute failed: {progress.error}")
+        else:
+            results = progress.result
+            working_atoms = results.get("ase_atoms", atoms)
             if min_box_thickness_enabled:
                 try:
                     min_current_length = min(atoms.get_cell_lengths_and_angles()[:3])
-                    if _is_spaces_deployment() and min_box_thickness > SPACES_MAX_MIN_BOX_THICKNESS:
-                        min_box_thickness = SPACES_MAX_MIN_BOX_THICKNESS
-                        st.info(
-                            f"Minimum box thickness is clamped to {SPACES_MAX_MIN_BOX_THICKNESS:.1f} A on the hosted demo."
-                        )
                     if min_current_length < min_box_thickness:
                         repetitions = mgr.get_repetitions_to_meet_cutoff(atoms, min_box_thickness)
                         if hasattr(repetitions, "__len__") and len(repetitions) >= 3:
                             rep_str = f"{repetitions[0]}x{repetitions[1]}x{repetitions[2]}"
                         else:
                             rep_str = f"{repetitions}x{repetitions}x{repetitions}"
-                        st.info(f"Creating {rep_str} supercell to meet minimum box thickness of {min_box_thickness:.1f} Å")
+                        st.info(f"Creating {rep_str} supercell to meet minimum box thickness of {min_box_thickness:.1f} A")
                 except Exception:
                     pass
 
-            # Derive final maxima and radii from segmentation results to ensure they are available for the RAG download.
-            # This logic mirrors the CLI's --rag option post-processing.
             try:
-                dgrid = results.get("dgrid")
+                dgrid_r = results.get("dgrid")
                 regions = results.get("regions")
                 maxima_info = results.get("maxima_info")
                 all_maxima = results.get("all_maxima")
-
-                if dgrid is not None and regions is not None and maxima_info is not None and all_maxima is not None and regions.max() > 0:
-                    all_maxima_radii = dgrid[tuple(maxima_info[:, 1:4].T)]
-                    # Trim the full list of maxima down to the number of regions found.
+                if dgrid_r is not None and regions is not None and maxima_info is not None and all_maxima is not None and regions.max() > 0:
+                    all_maxima_radii = dgrid_r[tuple(maxima_info[:, 1:4].T)]
                     final_maxima = all_maxima[:regions.max()]
                     final_maxima_radii = all_maxima_radii[:regions.max()]
-                    
-                    # Store them back into the main results dictionary
                     results["maxima"] = final_maxima
                     results["maxima_radii"] = final_maxima_radii
                 else:
-                    # Handle case with no regions found or missing data
                     results["maxima"] = np.empty((0, 3), dtype=int)
                     results["maxima_radii"] = np.empty(0, dtype=float)
             except Exception as e:
                 st.warning(f"Could not derive final maxima/radii: {e}. RAG download may fail.")
 
-
-            # Add pocket type detection if requested
             if detect_pocket_types:
                 from skimage.measure import regionprops
                 import plotly.express as px
 
-                # Get required data for clustering
-                dgrid = results["dgrid"]
+                dgrid_r = results["dgrid"]
                 regions = results["regions"]
                 regions_pbc = results["regions_pbc"]
                 maxima_info = results["maxima_info"]
                 all_maxima = results["all_maxima"]
-                all_maxima_radii = dgrid[tuple(maxima_info[:,1:4].T)]
+                all_maxima_radii = dgrid_r[tuple(maxima_info[:, 1:4].T)]
                 connections = results["connections"]
-                unique_regions = results['unique_regions']
-                mat_atoms = results["ase_atoms"]
+                unique_regions = results["unique_regions"]
+                mat_atoms_r = results["ase_atoms"]
 
-                # Compute proper PBC groups using the reference library function
                 pbc_groups_dict = get_pbc_groups(unique_regions, maxima_info)
                 pbc_groups = [v for k, v in pbc_groups_dict.items()]
 
-                # Trim maxima using regions.max() as shown in example
-                maxima = all_maxima[:regions.max()]
-                maxima_radii = all_maxima_radii[:regions.max()]
+                maxima_r = all_maxima[:regions.max()]
+                maxima_radii_r = all_maxima_radii[:regions.max()]
                 connections_trimmed = [c for c in connections if np.any(np.isin(c[0], unique_regions))]
 
                 try:
-                    if len(maxima) > 0:
-                        # Debug output (can be removed in production)
-                        print('regions shape:', regions.shape, 'unique:', np.unique(regions))
-                        print('maxima shape:', maxima.shape, 'values:', maxima)
-                        print('maxima_info shape:', maxima_info.shape, 'values:', maxima_info)
-                        print('pbc_groups:', pbc_groups)
-                        print('connections:', connections)
-                        print('unique_regions:', unique_regions)
-                        print('maxima_radii:', maxima_radii)
-                        print('connections_trimmed:', connections_trimmed)
-
-                        # Build RAG following the example pattern (from scratch)
-                        rag = mgr.rag_from_connections(connections_trimmed, maxima)
-                        print('rag nodes after connections:', rag.nodes())
-                        print('rag edges after connections:', rag.edges())
+                    if len(maxima_r) > 0:
+                        rag = mgr.rag_from_connections(connections_trimmed, maxima_r)
                         rag = mgr.add_pbc_to_rag(rag, pbc_groups)
-                        print('rag nodes after pbc:', rag.nodes())
-                        print('rag edges after pbc:', rag.edges())
-                        rag = mgr.add_maxima_to_rag(rag, maxima, maxima_radii, dgrid.shape, mat_atoms)
-                        print('rag nodes after maxima:', rag.nodes())
-                        print('rag edges after maxima:', rag.edges())
-                        print('pbc groups ', pbc_groups)
+                        rag = mgr.add_maxima_to_rag(rag, maxima_r, maxima_radii_r, dgrid_r.shape, mat_atoms_r)
 
-                        # Add PSD and clustering to RAG
                         props = regionprops(regions)
                         bins = np.linspace(0, 30, 50)
-                        rag = mgr.add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, mat_atoms, dgrid.shape)
-                        print('rag nodes after psd:', rag.nodes())
-                        print('rag edges after psd:', rag.edges())
-                        rag = mgr.add_clustering_to_rag_geometry_js(rag, props, pbc_groups, mat_atoms, dgrid.shape, use_pbc=True, js_threshold=js_threshold)
-                        print('rag nodes after clustering:', rag.nodes())
-                        print('rag edges after clustering:', rag.edges())
+                        rag = mgr.add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, mat_atoms_r, dgrid_r.shape)
+                        rag = mgr.add_clustering_to_rag_geometry_js(rag, props, pbc_groups, mat_atoms_r, dgrid_r.shape, use_pbc=True, js_threshold=js_threshold)
 
-                        # Generate regions cluster
                         regions_cluster = mgr.clustering_grid_from_regions(regions, rag, cluster_key="cluster_geom_pbc")
-                        print('regions_cluster:', regions_cluster)
-
-                        # Store results
                         results["regions_cluster"] = regions_cluster
                         results["rag_clustered"] = rag
                         results["pocket_types_detected"] = True
                         results["js_threshold_used"] = js_threshold
 
-                        print(f"Pocket types detected using JS threshold: {js_threshold}")
-                        num_clusters = len(np.unique(regions_cluster)) - 1  # -1 for background
-                        print(f"Found {num_clusters} different pocket types")
-
+                        num_clusters = len(np.unique(regions_cluster)) - 1
+                        st.info(f"Found {num_clusters} different pocket types using JS threshold: {js_threshold}")
                     else:
-                        print("Warning: Cannot perform pocket type detection - no maxima data found")
                         results["pocket_types_detected"] = False
-
                 except Exception as e:
-                    print(f"Warning: Pocket type detection failed: {e}")
+                    st.warning(f"Pocket type detection failed: {e}")
                     results["pocket_types_detected"] = False
 
-        finally:
-            st.session_state["spaces_last_compute_duration_sec"] = max(1.0, time.time() - compute_started_at)
-            if _is_spaces_deployment() and lock_acquired:
-                _SPACES_COMPUTE_LOCK.release()
-            status.markdown("<div style='padding:8px;background:#003300;color:#00FF00;text-align:center;'>✓ COMPUTE FINISHED ✓</div>", unsafe_allow_html=True)
+            st.session_state["latest_results"] = results
+            st.session_state["latest_metadata"] = {
+                "spacing": float(spacing),
+                "mask_thickness": float(mask_thickness),
+                "surface_value": float(surface_value),
+                "h_value": float(h_value),
+                "threshold_abs": float(threshold_abs),
+                "watershed_backend": str(watershed_backend),
+            }
+            st.session_state["analysis_key"] = results_key
+            pld_cache = st.session_state.setdefault("pld_cache", {})
+            pld_cache.pop(results_key, None)
 
-        st.session_state["latest_results"] = results
-        st.session_state["latest_metadata"] = {
-            "spacing": float(spacing),
-            "mask_thickness": float(mask_thickness),
-            "surface_value": float(surface_value),
-            "h_value": float(h_value),
-            "threshold_abs": float(threshold_abs),
-            "watershed_backend": str(watershed_backend),
-        }
-        st.session_state["analysis_key"] = results_key
-        pld_cache = st.session_state.setdefault("pld_cache", {})
-        pld_cache.pop(results_key, None)
+        if _is_spaces_deployment() and st.session_state.get("_compute_spaces_lock"):
+            _SPACES_COMPUTE_LOCK.release()
+            st.session_state["spaces_last_compute_duration_sec"] = max(
+                1.0, time.time() - st.session_state.get("_compute_started_at", time.time())
+            )
+        del st.session_state["_compute_progress"]
+        del st.session_state["_compute_thread"]
+        st.session_state.pop("_compute_spaces_lock", None)
+        st.session_state.pop("_compute_started_at", None)
 
     results_data = st.session_state.get("latest_results")
     metadata = st.session_state.get("latest_metadata", {})
