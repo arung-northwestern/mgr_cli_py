@@ -619,11 +619,6 @@ def _render_progress_ui(progress: _StreamingProgress) -> None:
 <style>@keyframes spin {{ from {{ transform:rotate(0deg); }} to {{ transform:rotate(360deg); }} }}</style>"""
 
     components.html(status_markup, height=180)
-    if not progress.done:
-        components.html(
-            '<script>setTimeout(() => parent.location.reload(), 600)</script>',
-            height=0,
-        )
 
 
 def _render_logs_panel(log_text: str) -> None:
@@ -1737,7 +1732,8 @@ def main() -> None:
         progress = st.session_state["_compute_progress"]
         if not progress.done:
             _render_progress_ui(progress)
-            return
+            time.sleep(0.6)
+            st.rerun()
 
         if progress.error:
             st.error(f"Compute failed: {progress.error}")
