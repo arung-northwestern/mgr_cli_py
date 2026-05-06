@@ -1028,7 +1028,7 @@ if __name__ == "__main__":
 #     else:
 #         ase_atoms_updated = ase_atoms
 
-#     print("2. Creating bonds' trace\n")
+#     # print("2. Creating bonds' trace\n")
 #     edges_master = []
 #     for b in bonds:
 #         edges_master.append(coord[b[0]])
@@ -2834,7 +2834,7 @@ def draw_framework(ase_atoms, bond_orders=None, show_aromatics=True, show_atom_l
     # mol = Molecule(names, coord)
 
     # print(bonds_atoms_list)
-    print("Creating Plotly figure traces")
+    # print("Creating Plotly figure traces")
     # * Figure out how to plot the framework atoms
 
     import plotly.graph_objects as go
@@ -2860,14 +2860,14 @@ def draw_framework(ase_atoms, bond_orders=None, show_aromatics=True, show_atom_l
     scatter_size = np.round(minmax_scale(atom_dia, feature_range=(12, 30)) * dia_scale)
 
     traces = []
-    print("1. Creating atoms trace\n")
+    # print("1. Creating atoms trace\n")
 
     trace_scatter = go.Scatter3d(x=coord[:, 0], y=coord[:, 1], z=coord[:, 2], mode='markers', hovertext=hovertext, marker=dict(opacity=atoms_opacity, size=scatter_size, color=atom_colors[ase_atoms.get_atomic_numbers() - 1], sizemode='diameter', colorscale=cscale), name='Atoms', text=names, textfont=dict(color=colorlist, size=20), surfaceaxis=-1, legendgroup='framework', legendgrouptitle_text = 'Framework',)
     traces.append(trace_scatter)
 
     if 'covalent_bonds' not in ase_atoms.info.keys():
     # if bonds is None:
-        print("No bonds found in the ASE atoms object. Creating bonds using covalent radii ...")
+        # print("No bonds found in the ASE atoms object. Creating bonds using covalent radii ...")
         ase_atoms_updated = update_with_covalent_bonds(ase_atoms)
         bonds = ase_atoms_updated.info['covalent_bonds']
         if bond_orders is None:
@@ -2875,11 +2875,11 @@ def draw_framework(ase_atoms, bond_orders=None, show_aromatics=True, show_atom_l
         else:
             raise Exception("You can't provide bond orders without including 'covalent_bonds' in ase_atom.info dict!")
     else:
-        print("Bonds found in the ASE atoms object. Using them ...")
+        # print("Bonds found in the ASE atoms object. Using them ...")
         ase_atoms_updated = ase_atoms
         bonds = ase_atoms_updated.info['covalent_bonds']
 
-    print("2. Creating bonds' trace\n")
+    # print("2. Creating bonds' trace\n")
     edges_master = []
 
     for b in bonds:
@@ -2891,7 +2891,7 @@ def draw_framework(ase_atoms, bond_orders=None, show_aromatics=True, show_atom_l
     if bond_color is None:
         bond_color = 'rgba(0,0,0,0.35)'
     elif type(bond_color) == str:
-        print("Using bond color: ", bond_color)
+        # print("Using bond color: ", bond_color)
         if bond_color in ase_atoms.info.keys():
             # key_name = bond_color
             # bond_color = []
@@ -2914,7 +2914,7 @@ def draw_framework(ase_atoms, bond_orders=None, show_aromatics=True, show_atom_l
     traces.append(trace_edges)
 
     if show_aromatics:
-        print('\t2-a. Detecting and plotting aromatic rings\n')
+        # print('\t2-a. Detecting and plotting aromatic rings\n')
 
         # G = sgraph_from_atoms(ase_atoms_updated)
 
@@ -2927,7 +2927,7 @@ def draw_framework(ase_atoms, bond_orders=None, show_aromatics=True, show_atom_l
 
         traces = traces + list(ring_traces)
     if bool(bond_data):
-        print('4. Creating traces for additional bond data provided')
+        # print('4. Creating traces for additional bond data provided')
         # for key in bond_data.keys():
         true_edges = edges_master[edges_master != None].reshape(-2, 3)
         true_edges = 0.5 * (true_edges[0::2] + true_edges[1::2])
@@ -4144,7 +4144,7 @@ def plot_connections_as_it_is( connections, maxima, shape, ase_atoms, plot_perio
     for conn in connections:
         nodes.update(conn[0])  # conn[0] contains both node indices
     nodes = sorted(list(nodes))
-    print('these are all the nodes from connections', nodes)
+    # print('these are all the nodes from connections', nodes)
 
     # Get cell matrix with vectors as columns
     cell = complete_cell(ase_atoms.get_cell()).T
@@ -4196,7 +4196,7 @@ def plot_connections_as_it_is( connections, maxima, shape, ase_atoms, plot_perio
         # }
         #
     node_colors = [node_to_color[node] for node in nodes]
-    print('node to color: ', node_to_color)
+    # print('node to color: ', node_to_color)
     # Create node positions and hover text for internal nodes
     node_x, node_y, node_z = [], [], []
     node_hover = []

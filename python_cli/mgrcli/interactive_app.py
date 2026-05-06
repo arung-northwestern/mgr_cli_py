@@ -1888,7 +1888,12 @@ def main() -> None:
             framework_style = "scatter" if simple_framework and not mesh_framework else "mesh"
             main_plot_status = st.empty()
 
+            plot_log: List[str] = []
+            _plot_start = time.time()
+
             def _update_plot_status(step, total, label):
+                elapsed = time.time() - _plot_start
+                plot_log.append(f"[{elapsed:.2f}s] Step {step}/{total} — {label}")
                 main_plot_status.markdown(
                     _step_status(step, total, label),
                     unsafe_allow_html=True,
@@ -2200,6 +2205,15 @@ def main() -> None:
                 )
 
             main_plot_status.markdown("<div style='padding:6px;background:#06310c;color:#6FE37F;text-align:center;font-family:monospace;'>✅ Main visualization complete — all traces rendered</div>", unsafe_allow_html=True)
+
+            if plot_log:
+                _plot_total = time.time() - _plot_start
+                with st.expander(
+                    f"Plotting log ({_plot_total:.1f}s, {len(plot_log)} stages)",
+                    expanded=False,
+                ):
+                    st.caption("Plot trace rendering stages and cumulative timing.")
+                    st.code("\n".join(plot_log), language=None)
 
     with percolation_tab:
         if results_data is None:
