@@ -43,7 +43,7 @@ ENV PYTHONUNBUFFERED=1 \
     MGR_DASK_DASHBOARD_PORT=8787 \
     MGR_DASK_DASHBOARD_HOST_PORT=8787 \
     MGR_DEPLOYMENT=spaces \
-    MGRCLI_BUILD=2
+    MGRCLI_BUILD=3
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

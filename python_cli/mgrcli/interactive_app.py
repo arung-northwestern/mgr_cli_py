@@ -1837,7 +1837,10 @@ def main() -> None:
         }
 
         if _is_spaces_deployment() and st.session_state.get("_compute_spaces_lock"):
-            _SPACES_COMPUTE_LOCK.release()
+            try:
+                _SPACES_COMPUTE_LOCK.release()
+            except RuntimeError:
+                pass
             st.session_state["spaces_last_compute_duration_sec"] = max(
                 1.0, time.time() - st.session_state.get("_compute_started_at", time.time())
             )
