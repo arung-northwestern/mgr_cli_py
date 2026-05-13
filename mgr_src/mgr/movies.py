@@ -464,7 +464,10 @@ def _serialize_segmentation_surface_mesh(
         }
     cell = atoms.get_cell().array.T
     shape = np.asarray(dgrid.shape, dtype=float)
-    verts_cart = np.dot(cell, (verts / shape).T).T
+    # dgrid is sampled on inclusive [0, 1] fractional endpoints, so
+    # voxel indices map with (n-1), not n.
+    shape_den = np.maximum(shape - 1.0, 1.0)
+    verts_cart = np.dot(cell, (verts / shape_den).T).T
     mesh = trimesh.Trimesh(vertices=verts_cart, faces=faces, process=False)
     mesh = _apply_taubin_smoothing(
         mesh,
@@ -550,7 +553,8 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
     maxima_wrapped = np.mod(maxima, np.asarray(dgrid.shape, dtype=int)).astype(int)
     cage_radii = dgrid[tuple(maxima_wrapped.T)]
     cell = atoms.get_cell().array.T
-    frac = maxima / np.asarray(dgrid.shape, dtype=float)
+    grid_shape = np.maximum(np.asarray(dgrid.shape, dtype=float) - 1.0, 1.0)
+    frac = maxima / grid_shape
     pos = np.dot(cell, frac.T).T
 
     _DEFAULT_CSCALE = [
@@ -611,7 +615,7 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
         return pbc_label, offset
 
     hover = []
-    for i, (g, p, r, rid) in enumerate(zip(maxima, pos, cage_radii, region_labels, strict=False)):
+    for i, (g, p, r, rid, s) in enumerate(zip(maxima, pos, cage_radii, region_labels, sizes, strict=False)):
         pbc_label, offset = _maxima_info_for_idx(i)
         extra = ""
         if pbc_label is not None:
@@ -626,6 +630,7 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
             f"grid: [{int(g[0])}, {int(g[1])}, {int(g[2])}]\n"
             f"xyz: ({float(p[0]):.3f}, {float(p[1]):.3f}, {float(p[2]):.3f})\n"
             f"pore radius (dgrid): {float(r):.3f} A\n"
+            f"maxima size: {float(s):.3f}\n"
             f"region: {int(rid)}"
         )
 
@@ -667,7 +672,7 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
     if maxima_pbc.size:
         pbc_wrapped = np.mod(maxima_pbc, np.asarray(dgrid.shape, dtype=int)).astype(int)
         pbc_radii = dgrid[tuple(pbc_wrapped.T)]
-        pbc_frac = maxima_pbc / np.asarray(dgrid.shape, dtype=float)
+        pbc_frac = maxima_pbc / grid_shape
         pbc_cart = np.dot(cell, pbc_frac.T).T
         pbc_regions = regions[tuple(pbc_wrapped.T)]
         pbc_colors = [list(np.asarray(cmap.get(int(r), [180, 180, 180]), dtype=float) / 255.0) for r in pbc_regions]
@@ -680,9 +685,10 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
                 f"grid: [{int(g[0])}, {int(g[1])}, {int(g[2])}]\n"
                 f"xyz: ({float(p[0]):.3f}, {float(p[1]):.3f}, {float(p[2]):.3f})\n"
                 f"pore radius (dgrid): {float(r):.3f} A\n"
+                f"maxima size: {float(s):.3f}\n"
                 f"region: {int(rid)}"
             )
-            for i, (g, p, r, rid) in enumerate(zip(maxima_pbc, pbc_cart, pbc_radii, pbc_regions, strict=False))
+            for i, (g, p, r, rid, s) in enumerate(zip(maxima_pbc, pbc_cart, pbc_radii, pbc_regions, pbc_sizes_arr, strict=False))
         ]
         pbc_pos = pbc_cart.reshape(-1).tolist()
         pbc_sizes = pbc_sizes_arr.tolist()
@@ -773,7 +779,7 @@ def _serialize_connection_traces(
             "periodic_points": [],
             "periodic_points_hover": [],
         }
-    shape = np.asarray(seg["dgrid"].shape, dtype=float)
+    shape = np.maximum(np.asarray(seg["dgrid"].shape, dtype=float) - 1.0, 1.0)
     cell = atoms.get_cell().array.T
     node_positions: dict[int, np.ndarray] = {}
     nodes: set[int] = set()
@@ -5111,7 +5117,8 @@ def _serialize_percolation_cluster_mesh(
 
     cell = atoms.get_cell().array.T
     shape = np.asarray(dgrid.shape, dtype=float)
-    verts_cart = np.dot(cell, (verts / shape).T).T
+    shape_den = np.maximum(shape - 1.0, 1.0)
+    verts_cart = np.dot(cell, (verts / shape_den).T).T
     mesh = trimesh.Trimesh(vertices=verts_cart, faces=faces, process=False)
 
     frac = get_fractional_coordinates(np.asarray(mesh.vertices, dtype=float), atoms)
