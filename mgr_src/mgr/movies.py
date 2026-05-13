@@ -2479,8 +2479,10 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         <button id="bgGradientLR" title="L→R gradient" style="font-size:8px;padding:1px 3px;">⬌</button>
         <button id="bgGradientTB" title="T→B gradient" style="font-size:8px;padding:1px 3px;">⬍</button>
         <button id="bgGradientRadial" title="Radial gradient" style="font-size:8px;padding:1px 3px;">◎</button>
+        <button id="bgGradientTransparent" title="Transparent background" style="font-size:8px;padding:1px 3px;">⊡</button>
       </div>
       <label>PNG: <select id="pngRes" style="font-size:10px;vertical-align:middle;"><option value="1">1x</option><option value="2">2x</option><option value="4">4x</option></select></label>
+      <label>REC: <select id="recRes" style="font-size:10px;vertical-align:middle;"><option value="1">1x</option><option value="2" selected>2x</option><option value="3">3x</option></select></label>
     </div>
     <div class="checkrow">
       <label id="labelShowCell"><input type="checkbox" id="showCell" checked /> Unit cell</label>
@@ -2698,6 +2700,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     const explodeSlider = document.getElementById("explodeSlider");
     const bgPicker = document.getElementById("bgPicker");
     const pngResSelect = document.getElementById("pngRes");
+    const recResSelect = document.getElementById("recRes");
 
     function getRenderViewport() {
       const hudEl = document.getElementById("hud");
@@ -2708,13 +2711,14 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       return { w, h, hudW };
     }
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     {
       const vp = getRenderViewport();
       renderer.setSize(vp.w, vp.h);
     }
     renderer.outputEncoding = THREE.sRGBEncoding;
+    renderer.setClearColor(0x000000, 1.0);
     app.appendChild(renderer.domElement);
     function makeSprite(drawFn) {
       const c = document.createElement('canvas');
@@ -3590,7 +3594,9 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     // Initialize visibility so only the selected representation is shown
     updateFrameworkVisibility();
     showSurface.addEventListener("change", () => {
-      ["surface", "surface_regions_raw", "surface_regions_pbc", "surface_regions_cluster"].forEach(function(id) {
+      // "Segmentation surface" checkbox controls only the non-PBC/raw surface.
+      // PBC/cluster overlays are controlled by their own legend group toggles.
+      ["surface", "surface_regions_raw"].forEach(function(id) {
         const obj = objectsById[id];
         if (obj) obj.visible = showSurface.checked;
       });
@@ -3820,8 +3826,29 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
 
     // Gradient background modes
     var _bgGradientMode = "none";
+    function setCheckerboardBackground(enabled) {
+      if (enabled) {
+        _app.style.backgroundImage =
+          "linear-gradient(45deg, #d8d8d8 25%, transparent 25%), " +
+          "linear-gradient(-45deg, #d8d8d8 25%, transparent 25%), " +
+          "linear-gradient(45deg, transparent 75%, #d8d8d8 75%), " +
+          "linear-gradient(-45deg, transparent 75%, #d8d8d8 75%)";
+        _app.style.backgroundSize = "20px 20px";
+        _app.style.backgroundPosition = "0 0, 0 10px, 10px -10px, -10px 0px";
+      } else {
+        _app.style.backgroundImage = "";
+      }
+    }
     function updateSceneBackground() {
       var color = new THREE.Color(bgPicker.value);
+      if (_bgGradientMode === "transparent") {
+        scene.background = null;
+        renderer.setClearColor(0x000000, 0.0);
+        setCheckerboardBackground(true);
+        return;
+      }
+      renderer.setClearColor(0x000000, 1.0);
+      setCheckerboardBackground(false);
       if (_bgGradientMode === "none") {
         scene.background = color;
         return;
@@ -3855,6 +3882,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     document.getElementById("bgGradientLR").addEventListener("click", () => { _bgGradientMode = "lr"; updateSceneBackground(); });
     document.getElementById("bgGradientTB").addEventListener("click", () => { _bgGradientMode = "tb"; updateSceneBackground(); });
     document.getElementById("bgGradientRadial").addEventListener("click", () => { _bgGradientMode = "radial"; updateSceneBackground(); });
+    document.getElementById("bgGradientTransparent").addEventListener("click", () => { _bgGradientMode = "transparent"; updateSceneBackground(); });
 
     // Measurement tool
     let measuring = false;
@@ -4092,6 +4120,33 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     let mediaRecorder = null;
     let recordChunks = [];
     let recordTimer = null;
+    let recordRenderState = null;
+    function beginRecordingRenderScale() {
+      const resMult = parseInt(recResSelect.value, 10) || 1;
+      const oldW = renderer.domElement.width;
+      const oldH = renderer.domElement.height;
+      recordRenderState = { oldW, oldH };
+      if (resMult > 1) {
+        const newW = oldW * resMult;
+        const newH = oldH * resMult;
+        renderer.setSize(newW, newH, false);
+        perspectiveCam.aspect = newW / newH;
+        perspectiveCam.updateProjectionMatrix();
+        updateOrthoFrustum();
+        if (composer) composer.setSize(newW, newH);
+      }
+    }
+    function restoreRecordingRenderScale() {
+      if (!recordRenderState) return;
+      const oldW = recordRenderState.oldW;
+      const oldH = recordRenderState.oldH;
+      renderer.setSize(oldW, oldH, false);
+      perspectiveCam.aspect = oldW / oldH;
+      perspectiveCam.updateProjectionMatrix();
+      updateOrthoFrustum();
+      if (composer) composer.setSize(oldW, oldH);
+      recordRenderState = null;
+    }
     recordBtn.addEventListener("click", function() {
       if (mediaRecorder && mediaRecorder.state === "recording") {
         mediaRecorder.stop();
@@ -4101,18 +4156,24 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         if (recordTimer) { clearInterval(recordTimer); recordTimer = null; }
         return;
       }
+      beginRecordingRenderScale();
       let stream;
       try {
-        stream = renderer.domElement.captureStream(30);
+        stream = renderer.domElement.captureStream(60);
       } catch(e) {
+        restoreRecordingRenderScale();
         alert("Video recording not supported in this browser.");
         return;
       }
-      let options = { mimeType: "video/webm; codecs=vp9" };
+      let options = { mimeType: "video/webm;codecs=vp9", videoBitsPerSecond: 22000000 };
       if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-        options = { mimeType: "video/webm" };
+        options = { mimeType: "video/webm;codecs=vp8", videoBitsPerSecond: 16000000 };
       }
       if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+        options = { mimeType: "video/webm", videoBitsPerSecond: 12000000 };
+      }
+      if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+        restoreRecordingRenderScale();
         alert("WebM recording not supported in this browser.");
         return;
       }
@@ -4122,6 +4183,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         if (e.data && e.data.size > 0) recordChunks.push(e.data);
       };
       mediaRecorder.onstop = function() {
+        restoreRecordingRenderScale();
         const blob = new Blob(recordChunks, { type: options.mimeType });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -4129,6 +4191,9 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         a.download = "figure3d_movie.webm";
         a.click();
         setTimeout(function() { URL.revokeObjectURL(url); }, 2000);
+      };
+      mediaRecorder.onerror = function() {
+        restoreRecordingRenderScale();
       };
       mediaRecorder.start(100);
       recordBtn.textContent = "Stop";
