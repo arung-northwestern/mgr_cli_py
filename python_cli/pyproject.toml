@@ -59,9 +59,6 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
 ]
-gpu = [
-    "cupy>=12.0",
-]
 
 [project.scripts]
 mgrcli = "mgrcli.cli:main"

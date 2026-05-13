@@ -1617,7 +1617,21 @@ def main() -> None:
     st.markdown("### 🎨 Visualization Options")
     col_vis1, col_vis2 = st.columns(2)
     with col_vis1:
-        mesh_framework = st.checkbox("Show framework as mesh", value=False)
+        viz_backend = st.radio(
+            "3D Rendering Backend",
+            ["Plotly", "Three.js"],
+            index=0,
+            horizontal=True,
+            help="Three.js: faster WebGL, SSAO, dynamic controls. Plotly: standard, offline-capable.",
+        )
+        percolation_backend = st.radio(
+            "Percolation 3D Backend",
+            ["Plotly", "Three.js"],
+            index=0,
+            horizontal=True,
+            help="Three.js: faster WebGL percolation cluster rendering.",
+        )
+        mesh_framework = st.checkbox("Show framework as mesh", value=(viz_backend == "Three.js"))
         if mesh_framework:
             atom_scale = st.slider(
                 "Atom scale",
@@ -1638,9 +1652,12 @@ def main() -> None:
         else:
             atom_scale = 0.5
             bond_radius = 0.25
-        simple_framework = st.checkbox("Show simple framework scatter", value=True)
-        if mesh_framework and simple_framework:
-            st.warning("Select either mesh or simple framework.")
+        if viz_backend == "Plotly":
+            simple_framework = st.checkbox("Show simple framework scatter", value=True)
+            if mesh_framework and simple_framework:
+                st.warning("Select either mesh or simple framework.")
+        else:
+            simple_framework = False
         projection_choice = st.selectbox("Projection", ["perspective", "orthographic"], index=0)
         stylize = st.checkbox("Stylize plot", value=True, disabled=(projection_choice == "orthographic"))
         if projection_choice == "orthographic":
@@ -1902,31 +1919,25 @@ def main() -> None:
                     unsafe_allow_html=True,
                 )
 
-            fig = show_mof(
-                results_data,
-                stylize=stylize,
-                options=dict(
-                    plot_framework=(simple_framework or mesh_framework),
-                    plot_framework_style=framework_style,
-                    plot_framework_show_rings=True,
-                    plot_framework_mesh_scale=float(atom_scale),
-                    plot_framework_bond_radius=float(bond_radius),
-                    plot_surface=show_surface,
-                    plot_surface_pbc=show_surface_pbc,
-                    plot_surface_isovalue=surface_value,
-                    plot_surface_opacity=surface_opacity,
-                    plot_surface_pbc_opacity=surface_pbc_opacity,
-                    plot_surface_types_opacity=surface_types_opacity,
-                    plot_connections=show_connections,
-                    plot_windows=show_windows,
-                    plot_maxima_show_spheres=show_maxima_spheres,
-                    plot_projection=projection_choice,
-                    plot_layout=viz_plot_layout,
-                ),
-                on_step=_update_plot_status,
+            viz_opts = dict(
+                plot_framework=(simple_framework or mesh_framework),
+                plot_framework_style=framework_style,
+                plot_framework_show_rings=True,
+                plot_framework_mesh_scale=float(atom_scale),
+                plot_framework_bond_radius=float(bond_radius),
+                plot_surface=show_surface,
+                plot_surface_pbc=show_surface_pbc,
+                plot_surface_isovalue=surface_value,
+                plot_surface_opacity=surface_opacity,
+                plot_surface_pbc_opacity=surface_pbc_opacity,
+                plot_surface_types_opacity=surface_types_opacity,
+                plot_connections=show_connections,
+                plot_windows=show_windows,
+                plot_maxima_show_spheres=show_maxima_spheres,
+                plot_projection=projection_choice,
+                plot_layout=viz_plot_layout,
             )
-            # Apply selected layout explicitly (includes scene.bgcolor; template alone can miss 3D canvas).
-            fig.update_layout(**dict(white_layout if viz_plot_layout == "white" else dark_layout))
+
             md_plot = metadata if isinstance(metadata, dict) else {}
             _settings_slug = _viz_settings_title_suffix(
                 spacing=float(md_plot.get("spacing", spacing)),
@@ -1934,73 +1945,107 @@ def main() -> None:
                 threshold_abs=float(md_plot.get("threshold_abs", threshold_abs)),
                 mask_thickness=float(md_plot.get("mask_thickness", mask_thickness)),
             )
-            _main_title = f"{material_name} | {_settings_slug}"
-            if viz_plot_layout == "white":
-                fig.update_layout(
-                    title=dict(
-                        text=_main_title,
-                        font=dict(color="#1f1f1f"),
-                        y=0.95,
-                    ),
-                    font=dict(color="#1f1f1f"),
-                    legend_font=dict(color="#1f1f1f"),
+
+            if viz_backend == "Three.js":
+                from mgr.threejs_plotting import show_mof_threejs
+                html_str = show_mof_threejs(
+                    results_data,
+                    stylize=stylize,
+                    options=viz_opts,
+                    on_step=_update_plot_status,
+                )
+                if plot_log:
+                    _plot_total = time.time() - _plot_start
+                    with st.expander(
+                        f"Plotting log ({_plot_total:.1f}s, {len(plot_log)} stages)",
+                        expanded=False,
+                    ):
+                        st.caption("Plot trace rendering stages and cumulative timing.")
+                        st.code("\n".join(plot_log), language=None)
+                components.html(
+                    html_str,
+                    height=1000,
+                )
+                st.info(
+                    "Three.js viewer: drag to rotate, scroll to zoom. "
+                    "Use the HUD controls for opacity, lighting, and axis views."
                 )
             else:
-                fig.update_layout(
-                    title=dict(
-                        text=_main_title,
-                        font=dict(color="#ffffff"),
-                        y=0.95,
-                    ),
-                    font=dict(color="#ffffff"),
-                    legend_font=dict(color="#ffffff"),
+                fig = show_mof(
+                    results_data,
+                    stylize=stylize,
+                    options=viz_opts,
+                    on_step=_update_plot_status,
                 )
-
-            _plotly_cfg = {
-                'responsive': True,
-                'scrollZoom': True,
-                'displayModeBar': True,
-                'displaylogo': False,
-                'doubleClick': 'reset',
-                'toImageButtonOptions': {
-                    'format': 'png',
-                    'filename': f'{material_name}_plot',
-                },
-            }
-
-            if plot_log:
-                _plot_total = time.time() - _plot_start
-                with st.expander(
-                    f"Plotting log ({_plot_total:.1f}s, {len(plot_log)} stages)",
-                    expanded=False,
-                ):
-                    st.caption(
-                        "Plot trace rendering stages and cumulative timing."
+                # Apply selected layout explicitly (includes scene.bgcolor; template alone can miss 3D canvas).
+                fig.update_layout(**dict(white_layout if viz_plot_layout == "white" else dark_layout))
+                _main_title = f"{material_name} | {_settings_slug}"
+                if viz_plot_layout == "white":
+                    fig.update_layout(
+                        title=dict(
+                            text=_main_title,
+                            font=dict(color="#1f1f1f"),
+                            y=0.95,
+                        ),
+                        font=dict(color="#1f1f1f"),
+                        legend_font=dict(color="#1f1f1f"),
                     )
-                    st.code("\n".join(plot_log), language=None)
+                else:
+                    fig.update_layout(
+                        title=dict(
+                            text=_main_title,
+                            font=dict(color="#ffffff"),
+                            y=0.95,
+                        ),
+                        font=dict(color="#ffffff"),
+                        legend_font=dict(color="#ffffff"),
+                    )
 
-            st.plotly_chart(fig, use_container_width=True, config=_plotly_cfg)
-            # Inject CSS to ensure touch gestures reach Plotly inside Streamlit iframes.
-            st.markdown(
-                """
-                <style>
-                .stPlotlyChart,
-                .stPlotlyChart > div,
-                .stPlotlyChart iframe,
-                .js-plotly-plot,
-                .js-plotly-plot .plotly,
-                .js-plotly-plot .plotly .scene {
-                    touch-action: none !important;
-                    -webkit-touch-callout: none !important;
+                _plotly_cfg = {
+                    'responsive': True,
+                    'scrollZoom': True,
+                    'displayModeBar': True,
+                    'displaylogo': False,
+                    'doubleClick': 'reset',
+                    'toImageButtonOptions': {
+                        'format': 'png',
+                        'filename': f'{material_name}_plot',
+                    },
                 }
-                </style>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.info(
-                "Hover over the plot to reveal the toolbar (top-right corner). "
-                "The camera icon downloads a screenshot of the current rotated/zoomed view."
-            )
+
+                if plot_log:
+                    _plot_total = time.time() - _plot_start
+                    with st.expander(
+                        f"Plotting log ({_plot_total:.1f}s, {len(plot_log)} stages)",
+                        expanded=False,
+                    ):
+                        st.caption(
+                            "Plot trace rendering stages and cumulative timing."
+                        )
+                        st.code("\n".join(plot_log), language=None)
+
+                st.plotly_chart(fig, use_container_width=True, config=_plotly_cfg)
+                # Inject CSS to ensure touch gestures reach Plotly inside Streamlit iframes.
+                st.markdown(
+                    """
+                    <style>
+                    .stPlotlyChart,
+                    .stPlotlyChart > div,
+                    .stPlotlyChart iframe,
+                    .js-plotly-plot,
+                    .js-plotly-plot .plotly,
+                    .js-plotly-plot .plotly .scene {
+                        touch-action: none !important;
+                        -webkit-touch-callout: none !important;
+                    }
+                    </style>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                st.info(
+                    "Hover over the plot to reveal the toolbar (top-right corner). "
+                    "The camera icon downloads a screenshot of the current rotated/zoomed view."
+                )
 
             # Camera preservation + screenshot fix + mobile viewport fix.
             # Uses localStorage keyed by material name so each structure keeps its own view.
@@ -2127,18 +2172,33 @@ def main() -> None:
             )
 
             # --- Download buttons in a row ---
-            html_path = Path("interactive_plot.html")
-            fig.write_html(html_path)
             _html_stem = f"{material_name}_{_settings_slug}".replace(" ", "_").replace("/", "_")
             col_html, col_npz, col_rag = st.columns(3)
-            with open(html_path, "rb") as file_handle:
-                with col_html:
-                    st.download_button(
-                        label="Download interactive HTML",
-                        data=file_handle,
-                        file_name=f"{_html_stem}.html",
-                        mime="text/html",
-                    )
+            if viz_backend == "Three.js":
+                # Three.js: write the already-generated HTML string
+                html_path = Path("interactive_plot.html")
+                with open(html_path, "w") as fh:
+                    fh.write(html_str)
+                with open(html_path, "rb") as file_handle:
+                    with col_html:
+                        st.download_button(
+                            label="Download interactive HTML",
+                            data=file_handle,
+                            file_name=f"{_html_stem}.html",
+                            mime="text/html",
+                        )
+            else:
+                # Plotly
+                html_path = Path("interactive_plot.html")
+                fig.write_html(html_path)
+                with open(html_path, "rb") as file_handle:
+                    with col_html:
+                        st.download_button(
+                            label="Download interactive HTML",
+                            data=file_handle,
+                            file_name=f"{_html_stem}.html",
+                            mime="text/html",
+                        )
             if results_data:
                 npz_bytes = results_data_to_npz(results_data)
                 if npz_bytes:
@@ -2271,7 +2331,6 @@ def main() -> None:
                     index=0 if _perc_default == "dark" else 1,
                     key="percolation_layout",
                 )
-
                 history = analysis["percolation_history"]
                 if not history:
                     st.warning("No percolating clusters detected for the computed grid.")
@@ -2377,148 +2436,170 @@ def main() -> None:
                     )
 
                     plot_status = st.empty()
-                    plot_status.markdown(
-                        _step_status(1, 3, "Building percolation traces"),
-                        unsafe_allow_html=True,
-                    )
 
-                    try:
-                        # Ensure plotly express is accessible for color scale
-                        import plotly.express as px
-                        # Match main visualization isosurface (same physical meaning as pore surface in first tab).
+                    if percolation_backend == "Three.js":
+                        plot_status.markdown(
+                            _step_status(1, 1, "Building Three.js percolation scene"),
+                            unsafe_allow_html=True,
+                        )
+                        from mgr.threejs_plotting import show_percolation_threejs
                         mesh_isovalue = max(float(surface_value), 0.05)
-                        plot_cache = st.session_state.setdefault("percolation_plot_cache", {})
-                        plot_key = (
-                            analysis_key,
-                            float(selected_radius),
-                            float(mesh_isovalue),
-                            boundary_line_color,
-                            int(boundary_line_width),
+                        analysis_copy = dict(analysis)
+                        analysis_copy["isovalue"] = mesh_isovalue
+                        html_str = show_percolation_threejs(
+                            analysis_copy,
+                            atoms,
+                            probe_radius=selected_radius,
+                            options=dict(layout=percolation_layout_choice),
                         )
-                        if plot_key in plot_cache:
-                            cluster_traces = plot_cache[plot_key]
+                        components.html(
+                            html_str,
+                            height=1000,
+                        )
+                        plot_status.markdown("<div style='padding:6px;background:#06310c;color:#6FE37F;text-align:center;font-family:monospace;'>✅ Percolation plot complete (Three.js)</div>", unsafe_allow_html=True)
+                    else:
+                        plot_status.markdown(
+                            _step_status(1, 3, "Building percolation traces"),
+                            unsafe_allow_html=True,
+                        )
+
+                        try:
+                            # Ensure plotly express is accessible for color scale
+                            import plotly.express as px
+                            # Match main visualization isosurface (same physical meaning as pore surface in first tab).
+                            mesh_isovalue = max(float(surface_value), 0.05)
+                            plot_cache = st.session_state.setdefault("percolation_plot_cache", {})
+                            plot_key = (
+                                analysis_key,
+                                float(selected_radius),
+                                float(mesh_isovalue),
+                                boundary_line_color,
+                                int(boundary_line_width),
+                            )
+                            if plot_key in plot_cache:
+                                cluster_traces = plot_cache[plot_key]
+                            else:
+                                cluster_traces = mgr.plot_percolated_cluster_meshes(
+                                    analysis["percolation_history"],
+                                    analysis["dgrid"],
+                                    analysis["regions"],
+                                    atoms,
+                                    probe_radius=selected_radius,
+                                    isovalue=mesh_isovalue,
+                                    stylize=True,
+                                    opacity=1.0,
+                                    cscale=px.colors.qualitative.Pastel,
+                                    boundary_line_width=boundary_line_width,
+                                    boundary_line_color=boundary_line_color,
+                                )
+                                plot_cache[plot_key] = cluster_traces
+                        except Exception as exc:
+                            st.error(str(exc))
+                            cluster_traces = []
+
+                        plot_status.markdown(
+                            _step_status(2, 3, "Assembling traces (cell, graph, maxima, PLD)"),
+                            unsafe_allow_html=True,
+                        )
+                        plot_traces = []
+                        plot_traces.append(mgr.plot_cell(atoms))
+                        rag_trace = mgr.plot_rag(analysis["rag"], name="Pore Graph")
+                        if isinstance(rag_trace, (list, tuple)):
+                            plot_traces.extend(rag_trace)
                         else:
-                            cluster_traces = mgr.plot_percolated_cluster_meshes(
-                                analysis["percolation_history"],
+                            plot_traces.append(rag_trace)
+
+                        if analysis["maxima"].size:
+                            maxima_trace = mgr.plot_maxima(
                                 analysis["dgrid"],
-                                analysis["regions"],
+                                analysis["maxima"],
                                 atoms,
-                                probe_radius=selected_radius,
-                                isovalue=mesh_isovalue,
-                                stylize=True,
-                                opacity=1.0,
-                                cscale=px.colors.qualitative.Pastel,
-                                boundary_line_width=boundary_line_width,
-                                boundary_line_color=boundary_line_color,
+                                show_spheres=False,
+                                sphere_opacity=0.85,
                             )
-                            plot_cache[plot_key] = cluster_traces
-                    except Exception as exc:
-                        st.error(str(exc))
-                        cluster_traces = []
+                            if isinstance(maxima_trace, tuple):
+                                plot_traces.extend(maxima_trace)
+                            else:
+                                plot_traces.append(maxima_trace)
 
-                    plot_status.markdown(
-                        _step_status(2, 3, "Assembling traces (cell, graph, maxima, PLD)"),
-                        unsafe_allow_html=True,
-                    )
-                    plot_traces = []
-                    plot_traces.append(mgr.plot_cell(atoms))
-                    rag_trace = mgr.plot_rag(analysis["rag"], name="Pore Graph")
-                    if isinstance(rag_trace, (list, tuple)):
-                        plot_traces.extend(rag_trace)
-                    else:
-                        plot_traces.append(rag_trace)
+                        if analysis["pld_locations"].size:
+                            pld_traces = mgr.plot_pld_locations(
+                                analysis["dgrid"],
+                                analysis["pld_locations"],
+                                atoms,
+                                show_spheres=False,
+                                sphere_opacity=0.85,
+                                marker_size=10,
+                                marker_color="limegreen",
+                            )
+                            if isinstance(pld_traces, tuple):
+                                plot_traces.extend(pld_traces)
+                            else:
+                                plot_traces.append(pld_traces)
 
-                    if analysis["maxima"].size:
-                        maxima_trace = mgr.plot_maxima(
-                            analysis["dgrid"],
-                            analysis["maxima"],
-                            atoms,
-                            show_spheres=False,
-                            sphere_opacity=0.85,
+                        plot_traces.extend(cluster_traces)
+
+                        plot_status.markdown(
+                            _step_status(3, 3, "Rendering percolation figure"),
+                            unsafe_allow_html=True,
                         )
-                        if isinstance(maxima_trace, tuple):
-                            plot_traces.extend(maxima_trace)
-                        else:
-                            plot_traces.append(maxima_trace)
-
-                    if analysis["pld_locations"].size:
-                        pld_traces = mgr.plot_pld_locations(
-                            analysis["dgrid"],
-                            analysis["pld_locations"],
-                            atoms,
-                            show_spheres=False,
-                            sphere_opacity=0.85,
-                            marker_size=10,
-                            marker_color="limegreen",
+                        percolation_fig = go.Figure(data=plot_traces)
+                        # Use the selected layout for percolation plot
+                        layout = white_layout if percolation_layout_choice == "white" else dark_layout
+                        percolation_fig.update_layout(**layout)
+                        md_p = st.session_state.get("latest_metadata") or {}
+                        if not isinstance(md_p, dict):
+                            md_p = {}
+                        _p_slug = _viz_settings_title_suffix(
+                            spacing=float(md_p.get("spacing", 0.5)),
+                            h_value=float(md_p.get("h_value", 0.4)),
+                            threshold_abs=float(md_p.get("threshold_abs", 1.5)),
+                            mask_thickness=float(md_p.get("mask_thickness", 1.5)),
                         )
-                        if isinstance(pld_traces, tuple):
-                            plot_traces.extend(pld_traces)
-                        else:
-                            plot_traces.append(pld_traces)
-
-                    plot_traces.extend(cluster_traces)
-
-                    plot_status.markdown(
-                        _step_status(3, 3, "Rendering percolation figure"),
-                        unsafe_allow_html=True,
-                    )
-                    percolation_fig = go.Figure(data=plot_traces)
-                    # Use the selected layout for percolation plot
-                    layout = white_layout if percolation_layout_choice == "white" else dark_layout
-                    percolation_fig.update_layout(**layout)
-                    md_p = st.session_state.get("latest_metadata") or {}
-                    if not isinstance(md_p, dict):
-                        md_p = {}
-                    _p_slug = _viz_settings_title_suffix(
-                        spacing=float(md_p.get("spacing", 0.5)),
-                        h_value=float(md_p.get("h_value", 0.4)),
-                        threshold_abs=float(md_p.get("threshold_abs", 1.5)),
-                        mask_thickness=float(md_p.get("mask_thickness", 1.5)),
-                    )
-                    _perc_title = f"Percolation probe r={selected_radius:.2f}Å | {material_name} | {_p_slug}"
-                    if percolation_layout_choice == "white":
-                        percolation_fig.update_layout(
-                            title=dict(
-                                text=_perc_title,
+                        _perc_title = f"Percolation probe r={selected_radius:.2f}Å | {material_name} | {_p_slug}"
+                        if percolation_layout_choice == "white":
+                            percolation_fig.update_layout(
+                                title=dict(
+                                    text=_perc_title,
+                                    font=dict(color="#1f1f1f"),
+                                    y=0.95,
+                                ),
                                 font=dict(color="#1f1f1f"),
-                                y=0.95,
-                            ),
-                            font=dict(color="#1f1f1f"),
-                            legend_font=dict(color="#1f1f1f"),
-                        )
-                    else:
-                        percolation_fig.update_layout(
-                            title=dict(
-                                text=_perc_title,
+                                legend_font=dict(color="#1f1f1f"),
+                            )
+                        else:
+                            percolation_fig.update_layout(
+                                title=dict(
+                                    text=_perc_title,
+                                    font=dict(color="#ffffff"),
+                                    y=0.95,
+                                ),
                                 font=dict(color="#ffffff"),
-                                y=0.95,
-                            ),
-                            font=dict(color="#ffffff"),
-                            legend_font=dict(color="#ffffff"),
-                        )
-
-                    for trace in percolation_fig.data:
-                        if isinstance(trace, go.Mesh3d):
-                            trace.update(
-                                lighting=STYLIZE_LIGHTING,
-                                lightposition=STYLIZE_LIGHTPOSITION,
-                                showscale=False,
+                                legend_font=dict(color="#ffffff"),
                             )
 
-                    _percol_cfg = {
-                        'responsive': True,
-                        'scrollZoom': True,
-                        'displayModeBar': True,
-                        'displaylogo': False,
-                        'doubleClick': 'reset',
-                        'toImageButtonOptions': {
-                            'format': 'png',
-                            'filename': f'{material_name}_percolation',
-                        },
-                    }
-                    st.plotly_chart(percolation_fig, use_container_width=True, config=_percol_cfg)
+                        for trace in percolation_fig.data:
+                            if isinstance(trace, go.Mesh3d):
+                                trace.update(
+                                    lighting=STYLIZE_LIGHTING,
+                                    lightposition=STYLIZE_LIGHTPOSITION,
+                                    showscale=False,
+                                )
 
-                    plot_status.markdown("<div style='padding:6px;background:#06310c;color:#6FE37F;text-align:center;font-family:monospace;'>✅ Percolation plot complete</div>", unsafe_allow_html=True)
+                        _percol_cfg = {
+                            'responsive': True,
+                            'scrollZoom': True,
+                            'displayModeBar': True,
+                            'displaylogo': False,
+                            'doubleClick': 'reset',
+                            'toImageButtonOptions': {
+                                'format': 'png',
+                                'filename': f'{material_name}_percolation',
+                            },
+                        }
+                        st.plotly_chart(percolation_fig, use_container_width=True, config=_percol_cfg)
+
+                        plot_status.markdown("<div style='padding:6px;background:#06310c;color:#6FE37F;text-align:center;font-family:monospace;'>✅ Percolation plot complete</div>", unsafe_allow_html=True)
 
                     selected_components = next(
                         (
