@@ -2456,6 +2456,13 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       <button id="toggleRotate">Auto-Rotate</button>
       <button id="measureTool">Measure</button>
     </div>
+    <div class="checkrow">
+      <label>Rotate axis:
+        <input id="rotAxisX" type="number" step="0.1" value="0" style="width:42px;vertical-align:middle;" />
+        <input id="rotAxisY" type="number" step="0.1" value="0" style="width:42px;vertical-align:middle;" />
+        <input id="rotAxisZ" type="number" step="0.1" value="1" style="width:42px;vertical-align:middle;" />
+      </label>
+    </div>
     <div class="checkrow" id="advancedControls" style="flex-direction:column;gap:6px;">
       <label>Representation:
         <select id="reprSelect" style="font-size:10px;width:100%;"><option value="ball_and_stick">Ball-and-stick</option><option value="stick">Stick</option><option value="space_filling">Space-filling</option></select>
@@ -2680,6 +2687,9 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     const pivotOriginBtn = document.getElementById("pivotOrigin");
     const resetCamBtn = document.getElementById("resetCam");
     const toggleRotateBtn = document.getElementById("toggleRotate");
+    const rotAxisXInput = document.getElementById("rotAxisX");
+    const rotAxisYInput = document.getElementById("rotAxisY");
+    const rotAxisZInput = document.getElementById("rotAxisZ");
     const measureBtn = document.getElementById("measureTool");
     const ptSizeSlider = document.getElementById("ptSizeSlider");
     const speedSlider = document.getElementById("speedSlider");
@@ -2834,7 +2844,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
 
       Object.values(objectsById).forEach(function(obj) {
         if (obj && obj.material && obj.material.isPointsMaterial) {
-          obj.material.depthTest = !isOrtho;
+          obj.material.depthTest = true;
           obj.material.depthWrite = false;
           var base = obj.material.userData && obj.material.userData.baseSize ? obj.material.userData.baseSize : obj.material.size;
           obj.material.size = base * (isOrtho ? 2.0 : 1.0);
@@ -3734,10 +3744,21 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     }
 
     let autoRotating = false;
+    function getAutoRotateAxis() {
+      var x = parseFloat(rotAxisXInput && rotAxisXInput.value);
+      var y = parseFloat(rotAxisYInput && rotAxisYInput.value);
+      var z = parseFloat(rotAxisZInput && rotAxisZInput.value);
+      if (!isFinite(x)) x = 0;
+      if (!isFinite(y)) y = 0;
+      if (!isFinite(z)) z = 1;
+      var axis = new THREE.Vector3(x, y, z);
+      if (axis.lengthSq() < 1e-8) axis.set(0, 0, 1);
+      axis.normalize();
+      return axis;
+    }
     toggleRotateBtn.addEventListener("click", () => {
       autoRotating = !autoRotating;
-      controls.autoRotate = autoRotating;
-      controls.autoRotateSpeed = 2.0;
+      controls.autoRotate = false;
       toggleRotateBtn.textContent = autoRotating ? "Stop Rotate" : "Auto-Rotate";
     });
 
@@ -4005,9 +4026,21 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
 
     function animate(t) {
       requestAnimationFrame(animate);
+      const nowSec = (t || 0) * 0.001;
+      const dt = Math.max(0.0, Math.min(0.1, nowSec - (animate._lastSec || nowSec)));
+      animate._lastSec = nowSec;
       if (playing && getFrameCount() > 1 && (t - lastT) >= frameDtMs) {
         setFrame((frame + 1) % getFrameCount());
         lastT = t;
+      }
+      if (autoRotating) {
+        const target = controls.target.clone();
+        const axis = getAutoRotateAxis();
+        const omega = 0.8; // rad/s
+        const rel = camera.position.clone().sub(target);
+        rel.applyAxisAngle(axis, omega * dt);
+        camera.position.copy(target.clone().add(rel));
+        camera.lookAt(target);
       }
       controls.update();
       if (composer) {

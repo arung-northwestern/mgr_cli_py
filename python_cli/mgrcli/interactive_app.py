@@ -1664,16 +1664,16 @@ def main() -> None:
             stylize = False
         taubin_surface_smooth = st.checkbox(
             "Taubin smooth surfaces",
-            value=False,
+            value=True,
             help="Applies lightweight Taubin smoothing to surface meshes (Three.js and Plotly).",
         )
-        taubin_smooth_strength = 0.35
+        taubin_smooth_strength = 0.05
         if taubin_surface_smooth:
             taubin_smooth_strength = st.slider(
                 "Taubin smoothing intensity",
                 min_value=0.0,
                 max_value=1.0,
-                value=0.35,
+                value=0.05,
                 step=0.05,
                 help="0 = very mild smoothing, 1 = strongest smoothing.",
             )
@@ -1704,7 +1704,10 @@ def main() -> None:
         show_surface_pbc = st.checkbox("Show periodic pore surface", value=True)
         show_connections = st.checkbox("Show pore graph", value=True)
         show_windows = st.checkbox("Show windows (internal)", value=True)
-        show_maxima_spheres = st.checkbox("Show maxima spheres", value=False)
+        if viz_backend == "Three.js":
+            show_maxima_spheres = False
+        else:
+            show_maxima_spheres = st.checkbox("Show maxima spheres", value=False)
         detect_pocket_types = st.checkbox("Detect Pocket Types", value=False)
 
         surface_opacity = st.slider("Surface Opacity", min_value=0.0, max_value=1.0, value=1.0, step=0.1)
