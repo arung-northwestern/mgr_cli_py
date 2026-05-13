@@ -1713,6 +1713,11 @@ def main() -> None:
         surface_opacity = st.slider("Surface Opacity", min_value=0.0, max_value=1.0, value=1.0, step=0.1)
         surface_pbc_opacity = st.slider("Periodic Surface Opacity", min_value=0.0, max_value=1.0, value=1.0, step=0.1)
         surface_types_opacity = st.slider("Pocket Types Opacity", min_value=0.0, max_value=1.0, value=1.0, step=0.1)
+        screen_door_surfaces = st.checkbox(
+            "Screen-door transparency",
+            value=False,
+            help="Uses dithered transparency for surfaces to reduce sorting artifacts in overlapping semi-transparent meshes.",
+        )
 
         js_threshold = 0.2
         if detect_pocket_types:
@@ -1952,6 +1957,7 @@ def main() -> None:
                 plot_surface_opacity=surface_opacity,
                 plot_surface_pbc_opacity=surface_pbc_opacity,
                 plot_surface_types_opacity=surface_types_opacity,
+                plot_surface_screen_door=screen_door_surfaces,
                 plot_surface_taubin_smooth=taubin_surface_smooth,
                 plot_surface_taubin_iterations=taubin_iterations,
                 plot_surface_taubin_lambda=taubin_lambda,

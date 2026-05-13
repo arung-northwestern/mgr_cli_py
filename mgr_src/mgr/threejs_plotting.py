@@ -65,6 +65,7 @@ def show_mof_threejs(
         "plot_surface_taubin_iterations": 10,
         "plot_surface_taubin_lambda": 0.5,
         "plot_surface_taubin_nu": -0.53,
+        "plot_surface_screen_door": False,
         "plot_projection": "perspective",
         "plot_layout": "dark",
     }
@@ -114,6 +115,11 @@ def show_mof_threejs(
                 pass
 
     fig = MovieFigure()
+    fig.update_layout(
+        {
+            "surface_screen_door": bool(defaults.get("plot_surface_screen_door", False)),
+        }
+    )
 
     # Framework
     if defaults.get("plot_framework", True):

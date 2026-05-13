@@ -183,7 +183,7 @@ DEFAULT_STYLES: dict[str, dict[str, Any]] = {
     },
     "internal_nodes": {
         "color": 0x66CCFF,
-        "size": 2.20,
+        "size": 2.5,
     },
     "periodic_nodes": {
         "color": 0xFF9966,
@@ -2574,6 +2574,19 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       <label>Play speed: <input id="speedSlider" type="range" min="0.25" max="4" step="0.25" value="1" style="width:80px;vertical-align:middle;" /></label>
       <label>Ambient: <input id="ambSlider" type="range" min="0" max="1" step="0.05" value="0.28" style="width:80px;vertical-align:middle;" /></label>
       <label>Directional: <input id="dirSlider" type="range" min="0" max="2" step="0.05" value="1" style="width:80px;vertical-align:middle;" /></label>
+      <label><input id="screenDoorToggle" type="checkbox" /> Screen-door transparency</label>
+      <label>Dir light xyz:
+        <input id="lightDirX" type="number" step="0.1" value="5" style="width:40px;vertical-align:middle;" />
+        <input id="lightDirY" type="number" step="0.1" value="10" style="width:40px;vertical-align:middle;" />
+        <input id="lightDirZ" type="number" step="0.1" value="7.5" style="width:40px;vertical-align:middle;" />
+        <button id="applyLightDir" type="button" style="font-size:9px;padding:1px 4px;">Set</button>
+      </label>
+      <label>View dir xyz:
+        <input id="viewDirX" type="number" step="0.1" value="1" style="width:40px;vertical-align:middle;" />
+        <input id="viewDirY" type="number" step="0.1" value="1" style="width:40px;vertical-align:middle;" />
+        <input id="viewDirZ" type="number" step="0.1" value="1" style="width:40px;vertical-align:middle;" />
+        <button id="applyViewDir" type="button" style="font-size:9px;padding:1px 4px;">Set</button>
+      </label>
       <label>Exploded: <input id="explodeSlider" type="range" min="0" max="6" step="0.05" value="0" style="width:140px;vertical-align:middle;" /></label>
       <label>Bg: <input id="bgPicker" type="color" value="#111111" style="width:40px;vertical-align:middle;border:none;height:16px;" /></label>
       <div style="margin-top:2px;display:flex;gap:2px;">
@@ -2799,12 +2812,23 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     const speedSlider = document.getElementById("speedSlider");
     const ambSlider = document.getElementById("ambSlider");
     const dirSlider = document.getElementById("dirSlider");
+    const screenDoorToggle = document.getElementById("screenDoorToggle");
+    const lightDirXInput = document.getElementById("lightDirX");
+    const lightDirYInput = document.getElementById("lightDirY");
+    const lightDirZInput = document.getElementById("lightDirZ");
+    const applyLightDirBtn = document.getElementById("applyLightDir");
+    const viewDirXInput = document.getElementById("viewDirX");
+    const viewDirYInput = document.getElementById("viewDirY");
+    const viewDirZInput = document.getElementById("viewDirZ");
+    const applyViewDirBtn = document.getElementById("applyViewDir");
     const explodeSlider = document.getElementById("explodeSlider");
     const bgPicker = document.getElementById("bgPicker");
     const pngResSelect = document.getElementById("pngRes");
     const recResSelect = document.getElementById("recRes");
     let pointSizeMult = 1.0;
     pointSizeMult = parseFloat(ptSizeSlider.value) || 1.0;
+    const screenDoorDefault = !!(DATA.layout && DATA.layout.surface_screen_door === true);
+    if (screenDoorToggle) screenDoorToggle.checked = screenDoorDefault;
 
     function getRenderViewport() {
       const hudEl = document.getElementById("hud");
@@ -2917,6 +2941,23 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
 
     // Store original light intensities for reversible ortho toggle
     const _lightOrig = {};
+    const _defaultLightDir = new THREE.Vector3(5, 10, 7.5);
+
+    function parseNormalizedVector(xInput, yInput, zInput, fallbackVec) {
+      const x = parseFloat(xInput.value);
+      const y = parseFloat(yInput.value);
+      const z = parseFloat(zInput.value);
+      if (!isFinite(x) || !isFinite(y) || !isFinite(z)) return fallbackVec.clone().normalize();
+      const v = new THREE.Vector3(x, y, z);
+      if (v.lengthSq() < 1e-12) return fallbackVec.clone().normalize();
+      return v.normalize();
+    }
+
+    function applyDirectionalLightVector() {
+      const dirNorm = parseNormalizedVector(lightDirXInput, lightDirYInput, lightDirZInput, _defaultLightDir);
+      const mag = Math.max(dirKey.position.length(), 1e-6);
+      dirKey.position.copy(dirNorm.multiplyScalar(mag));
+    }
 
     toggleOrthoBtn.addEventListener("click", function() {
       isOrtho = !isOrtho;
@@ -2970,6 +3011,10 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     const dirFill = new THREE.DirectionalLight(0xffffff, 0.32);
     dirFill.position.set(-5, -9, -7.5);
     scene.add(dirFill);
+    // Initialize directional-light input fields from current key-light vector.
+    lightDirXInput.value = String(dirKey.position.x.toFixed(2));
+    lightDirYInput.value = String(dirKey.position.y.toFixed(2));
+    lightDirZInput.value = String(dirKey.position.z.toFixed(2));
 
     // Ortho init: compensate for lack of SSAO with stronger directional contrast
     if (isOrtho) {
@@ -3033,6 +3078,97 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       pointsObj.material.needsUpdate = true;
     }
 
+    function isSurfaceMeshId(traceId) {
+      return !!traceId && (
+        traceId === "surface" ||
+        traceId === "surface_pbc" ||
+        traceId === "surface_pocket" ||
+        traceId.indexOf("surface_") === 0
+      );
+    }
+
+    function applySurfaceScreenDoorForObject(obj) {
+      if (!obj || !obj.material) return;
+      const mat = obj.material;
+      if (!obj.userData) obj.userData = {};
+      if (mat.userData.screenDoorOriginalOnBeforeCompile === undefined) {
+        mat.userData.screenDoorOriginalOnBeforeCompile = mat.onBeforeCompile;
+        mat.userData.screenDoorOriginalProgramKey = mat.customProgramCacheKey;
+      }
+      const enabled = !!(screenDoorToggle && screenDoorToggle.checked);
+      if (enabled) {
+        const clampedOpacity = Math.max(0.0, Math.min(1.0, mat.opacity !== undefined ? mat.opacity : 1.0));
+        mat.userData.screenDoorOpacity = clampedOpacity;
+        mat.transparent = false;
+        mat.depthWrite = true;
+        mat.alphaTest = 0.0;
+        mat.dithering = true;
+        mat.onBeforeCompile = function(shader) {
+          const orig = mat.userData.screenDoorOriginalOnBeforeCompile;
+          if (typeof orig === "function") orig(shader);
+          shader.uniforms.uScreenDoorOpacity = { value: mat.userData.screenDoorOpacity !== undefined ? mat.userData.screenDoorOpacity : 1.0 };
+          if (shader.fragmentShader.indexOf("uScreenDoorOpacity") === -1) {
+            shader.fragmentShader = shader.fragmentShader.replace(
+              "void main() {",
+              "uniform float uScreenDoorOpacity;\nvoid main() {"
+            );
+            shader.fragmentShader = shader.fragmentShader.replace(
+              "#include <dithering_fragment>",
+              "float sdOpacity = clamp(uScreenDoorOpacity, 0.0, 1.0);\n" +
+              "if (sdOpacity < 1.0) {\n" +
+              "  vec2 p = mod(gl_FragCoord.xy, 4.0);\n" +
+              "  float x = p.x;\n" +
+              "  float y = p.y;\n" +
+              "  float threshold = 0.0;\n" +
+              "  if (y < 1.0) {\n" +
+              "    threshold = (x < 1.0) ? 0.0/16.0 : ((x < 2.0) ? 8.0/16.0 : ((x < 3.0) ? 2.0/16.0 : 10.0/16.0));\n" +
+              "  } else if (y < 2.0) {\n" +
+              "    threshold = (x < 1.0) ? 12.0/16.0 : ((x < 2.0) ? 4.0/16.0 : ((x < 3.0) ? 14.0/16.0 : 6.0/16.0));\n" +
+              "  } else if (y < 3.0) {\n" +
+              "    threshold = (x < 1.0) ? 3.0/16.0 : ((x < 2.0) ? 11.0/16.0 : ((x < 3.0) ? 1.0/16.0 : 9.0/16.0));\n" +
+              "  } else {\n" +
+              "    threshold = (x < 1.0) ? 15.0/16.0 : ((x < 2.0) ? 7.0/16.0 : ((x < 3.0) ? 13.0/16.0 : 5.0/16.0));\n" +
+              "  }\n" +
+              "  if (sdOpacity <= threshold) discard;\n" +
+              "}\n" +
+              "#include <dithering_fragment>"
+            );
+          }
+          mat.userData.screenDoorUniform = shader.uniforms.uScreenDoorOpacity;
+        };
+        mat.customProgramCacheKey = function() {
+          const orig = mat.userData.screenDoorOriginalProgramKey;
+          const base = (typeof orig === "function") ? orig.call(this) : "";
+          return base + "|screenDoorV1";
+        };
+        if (!mat.userData.screenDoorEnabled) mat.needsUpdate = true;
+        mat.userData.screenDoorEnabled = true;
+        if (mat.userData.screenDoorUniform) {
+          mat.userData.screenDoorUniform.value = clampedOpacity;
+        }
+      } else {
+        mat.transparent = mat.opacity < 1.0;
+        mat.depthWrite = mat.opacity >= 0.999;
+        mat.alphaTest = 0.0;
+        mat.dithering = false;
+        if (mat.userData.screenDoorEnabled) {
+          mat.onBeforeCompile = mat.userData.screenDoorOriginalOnBeforeCompile || function(shader) {};
+          mat.customProgramCacheKey = mat.userData.screenDoorOriginalProgramKey || function() { return ""; };
+          mat.userData.screenDoorUniform = null;
+          mat.userData.screenDoorEnabled = false;
+          mat.needsUpdate = true;
+        }
+      }
+    }
+
+    function applySurfaceScreenDoorAll() {
+      Object.entries(objectsById).forEach(function(entry) {
+        const tid = entry[0];
+        const obj = entry[1];
+        if (isSurfaceMeshId(tid)) applySurfaceScreenDoorForObject(obj);
+      });
+    }
+
     function addMesh(trace) {
       if (!trace.data.positions || !trace.data.positions.length || !trace.data.indices || !trace.data.indices.length) {
         console.warn("Skipping empty mesh trace:", trace.id);
@@ -3077,6 +3213,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const mesh = new THREE.Mesh(geo, mat);
       mesh.name = trace.id;
       mesh.userData.originalSide = mat.side;
+      if (isSurfaceMeshId(trace.id)) applySurfaceScreenDoorForObject(mesh);
       scene.add(mesh);
       objectsById[trace.id] = mesh;
       return mesh;
@@ -3189,6 +3326,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       geo.computeVertexNormals();
       mesh.geometry = geo;
       if (oldGeo) oldGeo.dispose();
+      if (isSurfaceMeshId(trace.id)) applySurfaceScreenDoorForObject(mesh);
     }
 
     function replaceLineGeometry(lines, trace) {
@@ -3593,6 +3731,9 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
               if (obj.userData && obj.userData.originalSide !== undefined) {
                 obj.material.side = obj.userData.originalSide;
               }
+              if (isSurfaceMeshId(tid)) {
+                applySurfaceScreenDoorForObject(obj);
+              }
               obj.material.needsUpdate = true;
             }
           });
@@ -3825,12 +3966,18 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       controls.update();
       updateOrthoFrustum();
     }
+    function setViewDirectionFromInputs() {
+      const dirNorm = parseNormalizedVector(viewDirXInput, viewDirYInput, viewDirZInput, new THREE.Vector3(1, 1, 1));
+      setViewAxis(dirNorm);
+    }
     document.getElementById("viewX").addEventListener("click", () => setViewAxis(new THREE.Vector3(1, 0, 0)));
     document.getElementById("viewNegX").addEventListener("click", () => setViewAxis(new THREE.Vector3(-1, 0, 0)));
     document.getElementById("viewY").addEventListener("click", () => setViewAxis(new THREE.Vector3(0, 1, 0)));
     document.getElementById("viewNegY").addEventListener("click", () => setViewAxis(new THREE.Vector3(0, -1, 0)));
     document.getElementById("viewZ").addEventListener("click", () => setViewAxis(new THREE.Vector3(0, 0, 1)));
     document.getElementById("viewNegZ").addEventListener("click", () => setViewAxis(new THREE.Vector3(0, 0, -1)));
+    applyLightDirBtn.addEventListener("click", applyDirectionalLightVector);
+    applyViewDirBtn.addEventListener("click", setViewDirectionFromInputs);
 
     // HUD toggle — hide/show the legend sidebar
     var _hudVisible = true;
@@ -3895,6 +4042,11 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         }
       });
     });
+    if (screenDoorToggle) {
+      screenDoorToggle.addEventListener("change", () => {
+        applySurfaceScreenDoorAll();
+      });
+    }
 
     let speedMult = 1.0;
     speedSlider.addEventListener("input", () => {
