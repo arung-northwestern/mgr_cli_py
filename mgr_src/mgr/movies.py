@@ -183,7 +183,7 @@ DEFAULT_STYLES: dict[str, dict[str, Any]] = {
     },
     "internal_nodes": {
         "color": 0x66CCFF,
-        "size": 1.10,
+        "size": 2.20,
     },
     "periodic_nodes": {
         "color": 0xFF9966,
@@ -3385,13 +3385,14 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     // Exploded view: multi-directional separation
     //   X-axis: framework+cell_framework left, pore graph+cell_copy right
     //   Y-axis (perpendicular): PBC surface+cell_pbc up, cluster surface+cell_pocket down, raw surface middle
+    //   Keep local maxima in the central cell with raw surface (not in pore-graph copy).
     //   Original cell stays at center and is controlled independently by showCell.
     const _explodeGroups = [
       { ids: ["framework", "framework_stick", "framework_spacefill", "cell_framework"], x: -1, y: 0 },
-      { ids: ["maxima_internal", "windows_internal", "connections_internal", "connections_internal_nodes",
+      { ids: ["windows_internal", "connections_internal", "connections_internal_nodes",
               "maxima_outside", "windows_periodic", "connections_periodic", "connections_periodic_nodes",
               "cell_copy"], x: 1, y: 0 },
-      { ids: ["surface", "surface_regions_raw"], x: 0, y: 0 },
+      { ids: ["surface", "surface_regions_raw", "maxima_internal"], x: 0, y: 0 },
       { ids: ["surface_pbc", "surface_regions_pbc", "cell_pbc"], x: 0, y: 1 },
       { ids: ["surface_pocket", "surface_regions_cluster", "cell_pocket"], x: 0, y: -1 },
     ];
@@ -3640,7 +3641,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const exploded = parseFloat(explodeSlider.value) > 0;
       if (cellCopy) {
         const poreGraphIds = [
-          "maxima_internal", "windows_internal", "connections_internal", "connections_internal_nodes",
+          "windows_internal", "connections_internal", "connections_internal_nodes",
           "maxima_outside", "windows_periodic", "connections_periodic", "connections_periodic_nodes"
         ];
         const anyVisible = poreGraphIds.some(id => {
