@@ -361,7 +361,9 @@ def plot_paths(rag, paths: list, colorscale: str='Pastel', **kwargs) -> list:
     return path_traces
 
 def plot_surface_dgrid(dgrid, isovalue, ase_atoms, region_labels=None, select='all', opacity=1.0, cscale=None,
-                       color='blue', stepsize=1, stylize=False, random_seed=0, hover_label='Region :', region_color_map=None, **kwargs_mesh):
+                       color='blue', stepsize=1, stylize=False, random_seed=0, hover_label='Region :',
+                       region_color_map=None, taubin_smooth=False, taubin_iterations=10,
+                       taubin_lambda=0.5, taubin_nu=-0.53, **kwargs_mesh):
     """
     It takes a 3D grid, an isovalue, an ASE atoms object, and a few other optional parameters and
     returns a plotly mesh3d object that can be plotted using plotly
@@ -403,6 +405,21 @@ def plot_surface_dgrid(dgrid, isovalue, ase_atoms, region_labels=None, select='a
     # * Compute the isosurface using Marching Cubes Lewiner as usual
     from skimage.measure import marching_cubes as mc
     verts, faces, normals, values = mc(dgrid, isovalue, step_size=stepsize)
+
+    if taubin_smooth and len(faces) > 0:
+        try:
+            smooth_mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+            trimesh.smoothing.filter_taubin(
+                smooth_mesh,
+                lamb=float(taubin_lambda),
+                nu=float(taubin_nu),
+                iterations=max(int(taubin_iterations), 1),
+            )
+            verts = np.asarray(smooth_mesh.vertices)
+            faces = np.asarray(smooth_mesh.faces, dtype=int)
+            normals = np.asarray(smooth_mesh.vertex_normals)
+        except Exception:
+            pass
 
 
 

@@ -404,6 +404,30 @@ def _make_region_color_map(regions: np.ndarray, opacity: float) -> Dict[int, str
     return {idx: col for idx, col in zip(positive, colors)}
 
 
+def _apply_taubin_smoothing(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    enabled: bool = False,
+    iterations: int = 10,
+    lamb: float = 0.5,
+    nu: float = -0.53,
+) -> Tuple[np.ndarray, np.ndarray]:
+    if not enabled or len(faces) == 0:
+        return verts, faces
+    try:
+        import trimesh
+        mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+        trimesh.smoothing.filter_taubin(
+            mesh,
+            lamb=float(lamb),
+            nu=float(nu),
+            iterations=max(int(iterations), 1),
+        )
+        return np.asarray(mesh.vertices), np.asarray(mesh.faces, dtype=int)
+    except Exception:
+        return verts, faces
+
+
 def plot_surface_dgrid(
     dgrid: np.ndarray,
     isovalue: float,
@@ -416,6 +440,10 @@ def plot_surface_dgrid(
     hover_label: str = "Region:",
     cscale=None,
     stylize: bool = False,
+    taubin_smooth: bool = False,
+    taubin_iterations: int = 10,
+    taubin_lambda: float = 0.5,
+    taubin_nu: float = -0.53,
     **kwargs: Any,
 ) -> go.Mesh3d:
     """Plot an isosurface of the distance grid, optionally colored by regions."""
@@ -429,6 +457,14 @@ def plot_surface_dgrid(
             grid[mask] = isovalue - 10.0
 
     verts, faces, normals, _ = marching_cubes(grid, level=isovalue, step_size=stepsize)
+    verts, faces = _apply_taubin_smoothing(
+        verts,
+        faces,
+        enabled=taubin_smooth,
+        iterations=taubin_iterations,
+        lamb=taubin_lambda,
+        nu=taubin_nu,
+    )
 
     cell = _compute_cell_matrix(ase_atoms)
     frac = verts / np.asarray(grid.shape)
@@ -660,7 +696,7 @@ def _draw_framework_scatter(ase_atoms, stylize: bool = True) -> Tuple[go.Scatter
         y=positions[:, 1],
         z=positions[:, 2],
         mode="markers",
-        marker=dict(size=sizes, color=atom_colors, opacity=0.9),
+        marker=dict(size=sizes, color=atom_colors, opacity=1.0),
         name="Framework atoms",
         hovertext=hovertext,
         legendgroup="framework",
@@ -841,7 +877,7 @@ def _draw_framework_fallback(ase_atoms, stylize: bool = True, show_rings: bool =
         fallback = mgr_visualize.draw_framework(
             mat_updated,
             show_aromatics=show_rings,
-            atoms_opacity=0.9 if stylize else 0.7,
+            atoms_opacity=1.0,
         )
         if isinstance(fallback, (list, tuple)):
             return tuple(fallback)
@@ -985,8 +1021,8 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         "plot_framework": True,
         "plot_framework_style": "mesh",
         "plot_framework_show_rings": True,
-        "plot_framework_mesh_scale": 0.5,
-        "plot_framework_bond_radius": 0.25,
+        "plot_framework_mesh_scale": 0.65,
+        "plot_framework_bond_radius": 0.15,
         "plot_maxima": True,
         "plot_maxima_show_spheres": False,
         "plot_connections": True,
@@ -997,6 +1033,10 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         "plot_surface_opacity": 1.0,
         "plot_surface_pbc_opacity": 1.0,
         "plot_surface_types_opacity": 1.0,
+        "plot_surface_taubin_smooth": False,
+        "plot_surface_taubin_iterations": 10,
+        "plot_surface_taubin_lambda": 0.5,
+        "plot_surface_taubin_nu": -0.53,
         "plot_projection": "perspective",
         "plot_layout": "dark",
     }
@@ -1054,8 +1094,8 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
             framework_style,
             defaults.get("plot_framework_show_rings", True),
             stylize,
-            mesh_scale=float(defaults.get("plot_framework_mesh_scale", 0.5)),
-            bond_radius=float(defaults.get("plot_framework_bond_radius", 0.25)),
+            mesh_scale=float(defaults.get("plot_framework_mesh_scale", 0.65)),
+            bond_radius=float(defaults.get("plot_framework_bond_radius", 0.15)),
         )
         with _framework_cache_lock:
             framework_traces = _framework_cache.get(cache_key)
@@ -1065,10 +1105,10 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
             if framework_style == "mesh":
                 kwargs_mesh["kwargs_mesh_for_atoms"] = dict(
                     kwargs_spheres=dict(
-                        scale=float(defaults.get("plot_framework_mesh_scale", 0.5)),
+                        scale=float(defaults.get("plot_framework_mesh_scale", 0.65)),
                     ),
                     kwargs_cylinders=dict(
-                        radius=float(defaults.get("plot_framework_bond_radius", 0.25)),
+                        radius=float(defaults.get("plot_framework_bond_radius", 0.15)),
                     ),
                 )
             framework_traces = plot_framework_as_mesh(
@@ -1110,6 +1150,10 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
             region_labels=regions,
             opacity=float(defaults.get("plot_surface_opacity", 1.0)),
             name="Regions Surface",
+            taubin_smooth=bool(defaults.get("plot_surface_taubin_smooth", False)),
+            taubin_iterations=int(defaults.get("plot_surface_taubin_iterations", 10)),
+            taubin_lambda=float(defaults.get("plot_surface_taubin_lambda", 0.5)),
+            taubin_nu=float(defaults.get("plot_surface_taubin_nu", -0.53)),
         )
         traces.append(surface_trace)
 
@@ -1120,8 +1164,12 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
             isovalue=float(defaults.get("plot_surface_isovalue", 0.75)),
             ase_atoms=mat_atoms,
             region_labels=regions_pbc,
-            opacity=float(defaults.get("plot_surface_pbc_opacity", 0.9)),
+            opacity=float(defaults.get("plot_surface_pbc_opacity", 1.0)),
             name="Regions Surface (PBC)",
+            taubin_smooth=bool(defaults.get("plot_surface_taubin_smooth", False)),
+            taubin_iterations=int(defaults.get("plot_surface_taubin_iterations", 10)),
+            taubin_lambda=float(defaults.get("plot_surface_taubin_lambda", 0.5)),
+            taubin_nu=float(defaults.get("plot_surface_taubin_nu", -0.53)),
         )
         traces.append(surface_trace_pbc)
 
@@ -1139,7 +1187,11 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
             name="Pocket Types",
             cscale=cscale,
             stylize=stylize,
-            hover_label="Pocket type :"
+            hover_label="Pocket type :",
+            taubin_smooth=bool(defaults.get("plot_surface_taubin_smooth", False)),
+            taubin_iterations=int(defaults.get("plot_surface_taubin_iterations", 10)),
+            taubin_lambda=float(defaults.get("plot_surface_taubin_lambda", 0.5)),
+            taubin_nu=float(defaults.get("plot_surface_taubin_nu", -0.53)),
         )
         traces.append(surface_trace_cluster)
 

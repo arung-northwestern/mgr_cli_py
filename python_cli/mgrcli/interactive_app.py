@@ -1637,7 +1637,7 @@ def main() -> None:
                 "Atom scale",
                 min_value=0.1,
                 max_value=2.0,
-                value=0.5,
+                value=0.65,
                 step=0.05,
                 help="Scale factor for atom sphere radii.",
             )
@@ -1645,13 +1645,13 @@ def main() -> None:
                 "Bond radius",
                 min_value=0.05,
                 max_value=1.0,
-                value=0.25,
+                value=0.15,
                 step=0.05,
                 help="Radius of bond cylinders.",
             )
         else:
-            atom_scale = 0.5
-            bond_radius = 0.25
+            atom_scale = 0.65
+            bond_radius = 0.15
         if viz_backend == "Plotly":
             simple_framework = st.checkbox("Show simple framework scatter", value=True)
             if mesh_framework and simple_framework:
@@ -1662,6 +1662,24 @@ def main() -> None:
         stylize = st.checkbox("Stylize plot", value=True, disabled=(projection_choice == "orthographic"))
         if projection_choice == "orthographic":
             stylize = False
+        taubin_surface_smooth = st.checkbox(
+            "Taubin smooth surfaces",
+            value=False,
+            help="Applies lightweight Taubin smoothing to surface meshes (Three.js and Plotly).",
+        )
+        taubin_smooth_strength = 0.35
+        if taubin_surface_smooth:
+            taubin_smooth_strength = st.slider(
+                "Taubin smoothing intensity",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.35,
+                step=0.05,
+                help="0 = very mild smoothing, 1 = strongest smoothing.",
+            )
+        taubin_iterations = int(round(3 + 9 * taubin_smooth_strength))
+        taubin_lambda = float(0.20 + 0.35 * taubin_smooth_strength)
+        taubin_nu = float(-0.20 - 0.35 * taubin_smooth_strength)
         # Keep viz background in sync with the current theme.
         # If the user toggled the Streamlit theme (⚙️ menu), re-default accordingly.
         _last_viz_theme = st.session_state.get("viz_background_theme")
@@ -1931,6 +1949,10 @@ def main() -> None:
                 plot_surface_opacity=surface_opacity,
                 plot_surface_pbc_opacity=surface_pbc_opacity,
                 plot_surface_types_opacity=surface_types_opacity,
+                plot_surface_taubin_smooth=taubin_surface_smooth,
+                plot_surface_taubin_iterations=taubin_iterations,
+                plot_surface_taubin_lambda=taubin_lambda,
+                plot_surface_taubin_nu=taubin_nu,
                 plot_connections=show_connections,
                 plot_windows=show_windows,
                 plot_maxima_show_spheres=show_maxima_spheres,
@@ -2450,7 +2472,13 @@ def main() -> None:
                             analysis_copy,
                             atoms,
                             probe_radius=selected_radius,
-                            options=dict(layout=percolation_layout_choice),
+                            options=dict(
+                                layout=percolation_layout_choice,
+                                plot_surface_opacity=1.0,
+                                # Keep percolation cluster meshes unsmoothed:
+                                # smoothing can create patchy/miscolored domains.
+                                plot_surface_taubin_smooth=False,
+                            ),
                         )
                         components.html(
                             html_str,
@@ -2488,6 +2516,7 @@ def main() -> None:
                                     isovalue=mesh_isovalue,
                                     stylize=True,
                                     opacity=1.0,
+                                    taubin_smooth=False,
                                     cscale=px.colors.qualitative.Pastel,
                                     boundary_line_width=boundary_line_width,
                                     boundary_line_color=boundary_line_color,

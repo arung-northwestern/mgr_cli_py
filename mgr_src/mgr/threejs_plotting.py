@@ -46,8 +46,8 @@ def show_mof_threejs(
         "plot_framework": True,
         "plot_framework_style": "mesh",
         "plot_framework_show_rings": True,
-        "plot_framework_mesh_scale": 0.5,
-        "plot_framework_bond_radius": 0.25,
+        "plot_framework_mesh_scale": 0.65,
+        "plot_framework_bond_radius": 0.15,
         "plot_maxima": True,
         "plot_maxima_show_spheres": False,
         "plot_connections": True,
@@ -58,6 +58,10 @@ def show_mof_threejs(
         "plot_surface_opacity": 1.0,
         "plot_surface_pbc_opacity": 1.0,
         "plot_surface_types_opacity": 1.0,
+        "plot_surface_taubin_smooth": False,
+        "plot_surface_taubin_iterations": 10,
+        "plot_surface_taubin_lambda": 0.5,
+        "plot_surface_taubin_nu": -0.53,
         "plot_projection": "perspective",
         "plot_layout": "dark",
     }
@@ -118,10 +122,10 @@ def show_mof_threejs(
         kwargs = {}
         if framework_style == "mesh":
             kwargs["kwargs_spheres"] = {
-                "scale": float(defaults.get("plot_framework_mesh_scale", 0.5)),
+                "scale": float(defaults.get("plot_framework_mesh_scale", 0.65)),
             }
             kwargs["kwargs_cylinders"] = {
-                "radius": float(defaults.get("plot_framework_bond_radius", 0.25)),
+                "radius": float(defaults.get("plot_framework_bond_radius", 0.15)),
             }
         fig.add_framework(
             mat_atoms,
@@ -148,6 +152,10 @@ def show_mof_threejs(
             trace_id="surface",
             style="surface",
             hover_prefix="Region:",
+            taubin_smooth=bool(defaults.get("plot_surface_taubin_smooth", False)),
+            taubin_iterations=int(defaults.get("plot_surface_taubin_iterations", 10)),
+            taubin_lambda=float(defaults.get("plot_surface_taubin_lambda", 0.5)),
+            taubin_nu=float(defaults.get("plot_surface_taubin_nu", -0.53)),
         )
         fig.add_trace(surface_trace)
         fig.update_traces(
@@ -168,10 +176,14 @@ def show_mof_threejs(
             trace_id="surface_regions_pbc",
             style="surface",
             hover_prefix="PBC:",
+            taubin_smooth=bool(defaults.get("plot_surface_taubin_smooth", False)),
+            taubin_iterations=int(defaults.get("plot_surface_taubin_iterations", 10)),
+            taubin_lambda=float(defaults.get("plot_surface_taubin_lambda", 0.5)),
+            taubin_nu=float(defaults.get("plot_surface_taubin_nu", -0.53)),
         )
         fig.add_trace(pbc_trace)
         fig.update_traces(
-            {"opacity": float(defaults.get("plot_surface_pbc_opacity", 0.9))},
+            {"opacity": float(defaults.get("plot_surface_pbc_opacity", 1.0))},
             selector={"id": "surface_regions_pbc"},
         )
 
@@ -191,6 +203,10 @@ def show_mof_threejs(
             trace_id="surface_regions_cluster",
             style="surface",
             hover_prefix="Pocket type:",
+            taubin_smooth=bool(defaults.get("plot_surface_taubin_smooth", False)),
+            taubin_iterations=int(defaults.get("plot_surface_taubin_iterations", 10)),
+            taubin_lambda=float(defaults.get("plot_surface_taubin_lambda", 0.5)),
+            taubin_nu=float(defaults.get("plot_surface_taubin_nu", -0.53)),
         )
         fig.add_trace(cluster_trace)
         fig.update_traces(
@@ -282,7 +298,7 @@ def show_mof_threejs(
     # Stylize: tweak material properties
     if stylize:
         fig.update_traces(
-            {"roughness": 0.05, "metalness": 0.3, "opacity": 0.9},
+            {"roughness": 0.05, "metalness": 0.3},
             selector={"type": "mesh"},
         )
 
@@ -322,6 +338,7 @@ def show_percolation_threejs(
         Self-contained HTML string.
     """
     fig = MovieFigure()
+    opts = options or {}
 
     # Unit cell
     fig.add_cell(atoms)
@@ -384,6 +401,9 @@ def show_percolation_threejs(
             atoms,
             probe_radius=probe_radius,
             isovalue=analysis.get("isovalue", 1.6),
+            cluster_opacity=float(opts.get("plot_surface_opacity", 1.0)),
+            # Keep percolation clusters unsmoothed to avoid patchy/miscolored domains.
+            taubin_smooth=False,
         )
         fig.add_traces(cluster_traces)
         # Set up legend groups — one per component, labeled by direction
@@ -400,7 +420,6 @@ def show_percolation_threejs(
     )
 
     # Appearance
-    opts = options or {}
     layout = opts.get("layout", "dark")
     if layout == "white":
         fig.set_appearance(

@@ -128,7 +128,7 @@ from .helper import get_fractional_coordinates, interpolate_labels
 DEFAULT_STYLES: dict[str, dict[str, Any]] = {
     "framework": {
         "color": [0.7, 0.7, 0.7],
-        "opacity": 0.95,
+        "opacity": 1.0,
         "roughness": 0.38,
         "metalness": 0.0,
         "side": "FrontSide",
@@ -144,7 +144,7 @@ DEFAULT_STYLES: dict[str, dict[str, Any]] = {
         "linewidth": 2,
     },
     "surface": {
-        "opacity": 0.92,
+        "opacity": 1.0,
         "roughness": 0.15,
         "metalness": 0.05,
         "side": "DoubleSide",
@@ -385,8 +385,8 @@ def _serialize_framework_mesh(
     mesh = mesh_for_atoms(
         atoms,
         bonds=bonds,
-        kwargs_spheres=kwargs_spheres or {"scale": 0.8},
-        kwargs_cylinders=kwargs_cylinders or {"radius": 0.25},
+        kwargs_spheres=kwargs_spheres or {"scale": 0.65},
+        kwargs_cylinders=kwargs_cylinders or {"radius": 0.15},
         representation=representation,
     )
     payload = _serialize_trimesh(mesh)
@@ -416,12 +416,37 @@ def _serialize_cell_lines(atoms: Atoms) -> dict[str, Any]:
     return {"positions": arr.reshape(-1).tolist(), "n_segments": len(edges)}
 
 
+def _apply_taubin_smoothing(
+    mesh: trimesh.Trimesh,
+    enabled: bool = False,
+    iterations: int = 10,
+    lamb: float = 0.5,
+    nu: float = -0.53,
+) -> trimesh.Trimesh:
+    if not enabled or mesh.vertices.size == 0 or mesh.faces.size == 0:
+        return mesh
+    try:
+        trimesh.smoothing.filter_taubin(
+            mesh,
+            lamb=float(lamb),
+            nu=float(nu),
+            iterations=max(int(iterations), 1),
+        )
+    except Exception:
+        return mesh
+    return mesh
+
+
 def _serialize_segmentation_surface_mesh(
     atoms: Atoms,
     seg: dict[str, Any],
     isovalue: float,
     step_size: int,
     cscale: list[list[float]] | None = None,
+    taubin_smooth: bool = False,
+    taubin_iterations: int = 10,
+    taubin_lambda: float = 0.5,
+    taubin_nu: float = -0.53,
 ) -> dict[str, Any]:
     dgrid = seg["dgrid"]
     regions = seg["regions"]
@@ -441,6 +466,13 @@ def _serialize_segmentation_surface_mesh(
     shape = np.asarray(dgrid.shape, dtype=float)
     verts_cart = np.dot(cell, (verts / shape).T).T
     mesh = trimesh.Trimesh(vertices=verts_cart, faces=faces, process=False)
+    mesh = _apply_taubin_smoothing(
+        mesh,
+        enabled=taubin_smooth,
+        iterations=taubin_iterations,
+        lamb=taubin_lambda,
+        nu=taubin_nu,
+    )
 
     frac = get_fractional_coordinates(np.asarray(mesh.vertices, dtype=float), atoms)
     interp = interpolate_labels(regions)
@@ -1151,10 +1183,22 @@ def make_surface_trace(
     trace_id: str = "surface",
     cscale: list[list[float]] | None = None,
     hover_prefix: str | None = None,
+    taubin_smooth: bool = False,
+    taubin_iterations: int = 10,
+    taubin_lambda: float = 0.5,
+    taubin_nu: float = -0.53,
 ) -> dict[str, Any]:
     seg = {"dgrid": dgrid, "regions": regions}
     payload = _serialize_segmentation_surface_mesh(
-        atoms=atoms, seg=seg, isovalue=isovalue, step_size=step_size, cscale=cscale
+        atoms=atoms,
+        seg=seg,
+        isovalue=isovalue,
+        step_size=step_size,
+        cscale=cscale,
+        taubin_smooth=taubin_smooth,
+        taubin_iterations=taubin_iterations,
+        taubin_lambda=taubin_lambda,
+        taubin_nu=taubin_nu,
     )
     hover = None
     if hover_prefix and payload.get("labels"):
@@ -4676,6 +4720,10 @@ def _serialize_percolation_cluster_mesh(
     base_color,
     isovalue=1.6,
     step_size=1,
+    taubin_smooth: bool = False,
+    taubin_iterations: int = 10,
+    taubin_lambda: float = 0.5,
+    taubin_nu: float = -0.53,
 ):
     """Serialize a percolation cluster mesh for Three.js."""
     verts, faces, _normals, _vals = marching_cubes(
@@ -4747,6 +4795,14 @@ def _serialize_percolation_cluster_mesh(
             "n_triangles": 0,
         }
 
+    submesh = _apply_taubin_smoothing(
+        submesh,
+        enabled=taubin_smooth,
+        iterations=taubin_iterations,
+        lamb=taubin_lambda,
+        nu=taubin_nu,
+    )
+
     sub_frac = get_fractional_coordinates(np.asarray(submesh.vertices, dtype=float), atoms)
     sub_labels = interp(sub_frac % 1).astype(int)
 
@@ -4794,6 +4850,11 @@ def make_percolation_clusters_trace(
     cscale=None,
     style="surface",
     trace_id="percolation_clusters",
+    cluster_opacity: float = 1.0,
+    taubin_smooth: bool = False,
+    taubin_iterations: int = 10,
+    taubin_lambda: float = 0.5,
+    taubin_nu: float = -0.53,
 ):
     """Build Three.js mesh traces for percolated clusters at a given probe radius."""
     if probe_radius is None:
@@ -4857,6 +4918,10 @@ def make_percolation_clusters_trace(
             base_color=base_color,
             isovalue=isovalue,
             step_size=1,
+            taubin_smooth=taubin_smooth,
+            taubin_iterations=taubin_iterations,
+            taubin_lambda=taubin_lambda,
+            taubin_nu=taubin_nu,
         )
 
         if payload["n_vertices"] == 0:
@@ -4867,7 +4932,7 @@ def make_percolation_clusters_trace(
             trace_type="mesh",
             name=f"Component {i}_{dir_str}",
             data=payload,
-            style=style,
+            style={"opacity": float(cluster_opacity), "side": "FrontSide"} if style == "surface" else style,
             hover=None,
             visible=True,
         )
