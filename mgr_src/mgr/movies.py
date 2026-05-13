@@ -540,6 +540,11 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
             "outside_colors": [],
             "outside_hover": [],
             "outside_n_points": 0,
+            "pbc_positions": [],
+            "pbc_sizes": [],
+            "pbc_colors": [],
+            "pbc_hover": [],
+            "pbc_n_points": 0,
             "n_points": 0,
         }
     maxima_wrapped = np.mod(maxima, np.asarray(dgrid.shape, dtype=int)).astype(int)
@@ -580,11 +585,44 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
     denom = max(vmax - vmin, 1e-12)
     norm = (vals - vmin) / denom
     sizes = (3.0 + 2.5 * norm).astype(float).tolist()
+    maxima_info = np.asarray(seg.get("maxima_info", []), dtype=int)
+    maxima_pbc_dict_raw = seg.get("maxima_pbc_dict", {}) or {}
+
+    def _lookup_pbc_label(coord: tuple[int, int, int]) -> int | None:
+        # Preferred path: tuple-indexed mapping from base maxima coords -> pbc label.
+        if coord in maxima_pbc_dict_raw:
+            return int(maxima_pbc_dict_raw[coord])
+        # Defensive fallbacks for stringified dict keys.
+        key_csv = f"{coord[0]},{coord[1]},{coord[2]}"
+        if key_csv in maxima_pbc_dict_raw:
+            return int(maxima_pbc_dict_raw[key_csv])
+        key_tuple_str = str(coord)
+        if key_tuple_str in maxima_pbc_dict_raw:
+            return int(maxima_pbc_dict_raw[key_tuple_str])
+        return None
+
+    def _maxima_info_for_idx(i: int) -> tuple[int | None, list[int] | None]:
+        if maxima_info.ndim != 2 or maxima_info.shape[1] < 7 or i >= maxima_info.shape[0]:
+            return None, None
+        row = maxima_info[i]
+        base_coord = (int(row[1]), int(row[2]), int(row[3]))
+        pbc_label = _lookup_pbc_label(base_coord)
+        offset = [int(row[4]), int(row[5]), int(row[6])]
+        return pbc_label, offset
+
     hover = []
     for i, (g, p, r, rid) in enumerate(zip(maxima, pos, cage_radii, region_labels, strict=False)):
+        pbc_label, offset = _maxima_info_for_idx(i)
+        extra = ""
+        if pbc_label is not None:
+            extra += f"\nmaxima pbc label: {pbc_label}"
+        if offset is not None:
+            extra += f"\noffset: [{offset[0]}, {offset[1]}, {offset[2]}]"
         hover.append(
             f"trace: local maxima\n"
             f"index: {i + 1}\n"
+            f"maxima label: {i + 1}"
+            f"{extra}\n"
             f"grid: [{int(g[0])}, {int(g[1])}, {int(g[2])}]\n"
             f"xyz: ({float(p[0]):.3f}, {float(p[1]):.3f}, {float(p[2]):.3f})\n"
             f"pore radius (dgrid): {float(r):.3f} A\n"
@@ -615,6 +653,42 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
         h = [hover[i] for i in idx]
         return p.reshape(-1).tolist(), s.tolist(), c.reshape(-1).tolist(), h, int(len(ids))
 
+    maxima_pbc = np.asarray(seg.get("maxima_pbc", []), dtype=float)
+    if maxima_pbc.size == 0 and maxima_info.ndim == 2 and maxima_info.shape[1] >= 7:
+        zero_mask = np.all(maxima_info[:, 4:7] == 0, axis=1)
+        maxima_pbc = np.asarray(maxima_info[zero_mask, 1:4], dtype=float)
+    if maxima_pbc.ndim == 1:
+        maxima_pbc = maxima_pbc.reshape(-1, 3) if maxima_pbc.size else np.zeros((0, 3), dtype=float)
+    pbc_pos = []
+    pbc_sizes = []
+    pbc_cols = []
+    pbc_hover = []
+    pbc_n = 0
+    if maxima_pbc.size:
+        pbc_wrapped = np.mod(maxima_pbc, np.asarray(dgrid.shape, dtype=int)).astype(int)
+        pbc_radii = dgrid[tuple(pbc_wrapped.T)]
+        pbc_frac = maxima_pbc / np.asarray(dgrid.shape, dtype=float)
+        pbc_cart = np.dot(cell, pbc_frac.T).T
+        pbc_regions = regions[tuple(pbc_wrapped.T)]
+        pbc_colors = [list(np.asarray(cmap.get(int(r), [180, 180, 180]), dtype=float) / 255.0) for r in pbc_regions]
+        pbc_norm = (np.asarray(pbc_radii, dtype=float) - vmin) / denom
+        pbc_sizes_arr = (3.0 + 2.5 * pbc_norm).astype(float)
+        pbc_hover = [
+            (
+                f"trace: maxima pbc\n"
+                f"pbc index: {i + 1}\n"
+                f"grid: [{int(g[0])}, {int(g[1])}, {int(g[2])}]\n"
+                f"xyz: ({float(p[0]):.3f}, {float(p[1]):.3f}, {float(p[2]):.3f})\n"
+                f"pore radius (dgrid): {float(r):.3f} A\n"
+                f"region: {int(rid)}"
+            )
+            for i, (g, p, r, rid) in enumerate(zip(maxima_pbc, pbc_cart, pbc_radii, pbc_regions, strict=False))
+        ]
+        pbc_pos = pbc_cart.reshape(-1).tolist()
+        pbc_sizes = pbc_sizes_arr.tolist()
+        pbc_cols = np.asarray(pbc_colors, dtype=float).reshape(-1).tolist()
+        pbc_n = int(len(maxima_pbc))
+
     in_pos, in_sizes, in_cols, in_hover, in_n = _pack(inside_nodes)
     out_pos, out_sizes, out_cols, out_hover, out_n = _pack(outside_nodes)
     return {
@@ -628,6 +702,11 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
         "outside_colors": out_cols,
         "outside_hover": out_hover,
         "outside_n_points": out_n,
+        "pbc_positions": pbc_pos,
+        "pbc_sizes": pbc_sizes,
+        "pbc_colors": pbc_cols,
+        "pbc_hover": pbc_hover,
+        "pbc_n_points": pbc_n,
         "n_points": int(len(pos)),
     }
 
@@ -1261,7 +1340,21 @@ def make_maxima_trace(
         hover=payload["outside_hover"],
         visible=True,
     )
-    return {"internal": internal, "outside": outside, "payload": payload}
+    pbc = _make_trace(
+        trace_id=f"{trace_id}_pbc",
+        trace_type="points",
+        name=f"{name} (PBC reps)",
+        data={
+            "positions": payload["pbc_positions"],
+            "colors": payload["pbc_colors"],
+            "sizes": payload["pbc_sizes"],
+            "n_points": payload["pbc_n_points"],
+        },
+        style=style,
+        hover=payload["pbc_hover"],
+        visible=True,
+    )
+    return {"internal": internal, "outside": outside, "pbc": pbc, "payload": payload}
 
 
 def make_windows_trace(
@@ -2190,6 +2283,7 @@ class MovieFigure:
         if hide_periodic:
             maxima["outside"]["visible"] = False
         self.add_trace(maxima["outside"])
+        self.add_trace(maxima["pbc"])
         return self
 
     def add_connections(
@@ -3393,7 +3487,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
               "maxima_outside", "windows_periodic", "connections_periodic", "connections_periodic_nodes",
               "cell_copy"], x: 1, y: 0 },
       { ids: ["surface", "surface_regions_raw", "maxima_internal"], x: 0, y: 0 },
-      { ids: ["surface_pbc", "surface_regions_pbc", "cell_pbc"], x: 0, y: 1 },
+      { ids: ["surface_pbc", "surface_regions_pbc", "maxima_pbc", "cell_pbc"], x: 0, y: 1 },
       { ids: ["surface_pocket", "surface_regions_cluster", "cell_pocket"], x: 0, y: -1 },
     ];
 
@@ -3654,7 +3748,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     function updateSurfaceCellVisibility() {
       const exploded = parseFloat(explodeSlider.value) > 0;
       if (cellPbc) {
-        const ids = ["surface_pbc", "surface_regions_pbc"];
+        const ids = ["surface_pbc", "surface_regions_pbc", "maxima_pbc"];
         const anyVisible = ids.some(id => { const obj = objectsById[id]; return obj && obj.visible; });
         cellPbc.visible = exploded && anyVisible;
       }

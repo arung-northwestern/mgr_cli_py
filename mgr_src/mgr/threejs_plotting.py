@@ -38,6 +38,9 @@ def show_mof_threejs(
     regions = results["regions"]
     regions_pbc = results.get("regions_pbc")
     all_maxima = results.get("all_maxima")
+    maxima_pbc = results.get("maxima_pbc")
+    maxima_info = results.get("maxima_info")
+    maxima_pbc_dict = results.get("maxima_pbc_dict")
     connections = results.get("connections", [])
 
     defaults = {
@@ -222,6 +225,9 @@ def show_mof_threejs(
             "dgrid": dgrid,
             "regions": regions,
             "all_maxima": all_maxima if all_maxima is not None else np.zeros((0, 3)),
+            "maxima_pbc": maxima_pbc if maxima_pbc is not None else np.zeros((0, 3), dtype=int),
+            "maxima_info": maxima_info if maxima_info is not None else np.zeros((0, 7), dtype=int),
+            "maxima_pbc_dict": maxima_pbc_dict if maxima_pbc_dict is not None else {},
             "connections": connections,
         }
         fig.add_connections(seg, mat_atoms, hide_periodic=True)
@@ -233,6 +239,9 @@ def show_mof_threejs(
             "dgrid": dgrid,
             "regions": regions,
             "all_maxima": all_maxima if all_maxima is not None else np.zeros((0, 3)),
+            "maxima_pbc": maxima_pbc if maxima_pbc is not None else np.zeros((0, 3), dtype=int),
+            "maxima_info": maxima_info if maxima_info is not None else np.zeros((0, 7), dtype=int),
+            "maxima_pbc_dict": maxima_pbc_dict if maxima_pbc_dict is not None else {},
             "connections": connections,
         }
         fig.add_windows(seg, hide_periodic=True)
@@ -244,6 +253,9 @@ def show_mof_threejs(
             "dgrid": dgrid,
             "regions": regions,
             "all_maxima": all_maxima,
+            "maxima_pbc": maxima_pbc if maxima_pbc is not None else np.zeros((0, 3), dtype=int),
+            "maxima_info": maxima_info if maxima_info is not None else np.zeros((0, 7), dtype=int),
+            "maxima_pbc_dict": maxima_pbc_dict if maxima_pbc_dict is not None else {},
             "connections": connections,
         }
         fig.add_maxima(seg, mat_atoms, hide_periodic=True)
@@ -277,6 +289,11 @@ def show_mof_threejs(
         fig.groups["maxima_internal"] = {
             "traces": ["maxima_internal"],
             "label": "Local maxima",
+        }
+    if defaults.get("plot_maxima", True) and "maxima_pbc" in trace_ids:
+        fig.groups["maxima_pbc"] = {
+            "traces": ["maxima_pbc"],
+            "label": "Maxima (PBC reps)",
         }
 
     # Camera
