@@ -1223,6 +1223,14 @@ def make_maxima_trace(
     cscale: list[list[float]] | None = None,
 ) -> dict[str, Any]:
     payload = _serialize_maxima_trace(seg, atoms, cscale=cscale)
+    # Some systems classify all maxima as periodic; keep a visible local-maxima
+    # scatter by mirroring periodic points into the internal trace as fallback.
+    if payload["internal_n_points"] == 0 and payload["outside_n_points"] > 0:
+        payload["internal_positions"] = payload["outside_positions"]
+        payload["internal_colors"] = payload["outside_colors"]
+        payload["internal_sizes"] = payload["outside_sizes"]
+        payload["internal_n_points"] = payload["outside_n_points"]
+        payload["internal_hover"] = payload["outside_hover"]
     # Internal maxima points
     internal = _make_trace(
         trace_id=f"{trace_id}_internal",
@@ -2468,7 +2476,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         <select id="reprSelect" style="font-size:10px;width:100%;"><option value="ball_and_stick">Ball-and-stick</option><option value="stick">Stick</option><option value="space_filling">Space-filling</option></select>
       </label>
       <div id="meshOpacityContainer" style="display:flex;flex-direction:column;gap:2px;max-height:120px;overflow-y:auto;font-size:10px;"></div>
-      <label>Point size: <input id="ptSizeSlider" type="range" min="0.5" max="3" step="0.1" value="1" style="width:80px;vertical-align:middle;" /></label>
+      <label>Point size: <input id="ptSizeSlider" type="range" min="0.5" max="4.5" step="0.1" value="1" style="width:80px;vertical-align:middle;" /></label>
       <label>Play speed: <input id="speedSlider" type="range" min="0.25" max="4" step="0.25" value="1" style="width:80px;vertical-align:middle;" /></label>
       <label>Ambient: <input id="ambSlider" type="range" min="0" max="1" step="0.05" value="0.28" style="width:80px;vertical-align:middle;" /></label>
       <label>Directional: <input id="dirSlider" type="range" min="0" max="2" step="0.05" value="1" style="width:80px;vertical-align:middle;" /></label>
@@ -2482,7 +2490,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         <button id="bgGradientTransparent" title="Transparent background" style="font-size:8px;padding:1px 3px;">⊡</button>
       </div>
       <label>PNG: <select id="pngRes" style="font-size:10px;vertical-align:middle;"><option value="1">1x</option><option value="2">2x</option><option value="4">4x</option></select></label>
-      <label>REC: <select id="recRes" style="font-size:10px;vertical-align:middle;"><option value="1">1x</option><option value="2" selected>2x</option><option value="3">3x</option></select></label>
+      <label>REC: <select id="recRes" style="font-size:10px;vertical-align:middle;"><option value="1" selected>1x</option><option value="2">2x</option><option value="3">3x</option></select></label>
     </div>
     <div class="checkrow">
       <label id="labelShowCell"><input type="checkbox" id="showCell" checked /> Unit cell</label>
@@ -2701,6 +2709,8 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     const bgPicker = document.getElementById("bgPicker");
     const pngResSelect = document.getElementById("pngRes");
     const recResSelect = document.getElementById("recRes");
+    let pointSizeMult = 1.0;
+    pointSizeMult = parseFloat(ptSizeSlider.value) || 1.0;
 
     function getRenderViewport() {
       const hudEl = document.getElementById("hud");
@@ -2851,8 +2861,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           obj.material.depthTest = true;
           obj.material.depthWrite = false;
           var base = obj.material.userData && obj.material.userData.baseSize ? obj.material.userData.baseSize : obj.material.size;
-          obj.material.size = base * (isOrtho ? 2.0 : 1.0);
-          obj.material.needsUpdate = true;
+          applyPointSize(obj, base);
         }
       });
     });
@@ -2917,6 +2926,17 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         if (mx > 0) size = mx;
       }
       return size;
+    }
+
+    function applyPointSize(pointsObj, baseSize) {
+      if (!pointsObj || !pointsObj.material || !pointsObj.material.isPointsMaterial) return;
+      const base = baseSize !== undefined ? baseSize : (
+        pointsObj.material.userData && pointsObj.material.userData.baseSize
+          ? pointsObj.material.userData.baseSize
+          : pointsObj.material.size
+      );
+      pointsObj.material.size = base * pointSizeMult * (isOrtho ? 2.0 : 1.0);
+      pointsObj.material.needsUpdate = true;
     }
 
     function addMesh(trace) {
@@ -3005,14 +3025,14 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       }
       const style = styleFor(trace);
       const baseSize = (sizeOverride !== undefined ? sizeOverride : pointsBaseSize(trace)) * 1.3;
-      const size = baseSize * (isOrtho ? 2.0 : 1.0);
+      const size = baseSize * pointSizeMult * (isOrtho ? 2.0 : 1.0);
       const sym = style.symbol || "circle";
       const tex = spriteTextures[sym] || spriteTextures["circle"];
       const mat = new THREE.PointsMaterial({
         size: size,
         map: tex,
         vertexColors: !!(trace.data.colors && trace.data.colors.length),
-        sizeAttenuation: true,
+        sizeAttenuation: false,
         transparent: true,
         opacity: 0.95,
       });
@@ -3099,9 +3119,10 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       if (oldGeo) oldGeo.dispose();
       const style = styleFor(trace);
       const baseSize = pointsBaseSize(trace) * 1.3;
-      points.material.size = baseSize * (isOrtho ? 2.0 : 1.0);
       points.material.userData.baseSize = baseSize;
+      applyPointSize(points, baseSize);
       points.material.vertexColors = !!(trace.data.colors && trace.data.colors.length);
+      points.material.sizeAttenuation = false;
       if (!trace.data.colors || !trace.data.colors.length) {
         points.material.color.copy(threeColorFromStyle(style.color, 0xffffff));
       }
@@ -3771,12 +3792,11 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     // Per-mesh opacity sliders are populated dynamically after scene init
 
     ptSizeSlider.addEventListener("input", () => {
-      const mult = parseFloat(ptSizeSlider.value);
+      pointSizeMult = parseFloat(ptSizeSlider.value) || 1.0;
       Object.values(objectsById).forEach(function(obj) {
         if (obj && obj.material && obj.material.isPointsMaterial) {
           var base = obj.material.userData && obj.material.userData.baseSize ? obj.material.userData.baseSize : obj.material.size;
-          obj.material.size = base * mult * (isOrtho ? 2.0 : 1.0);
-          obj.material.needsUpdate = true;
+          applyPointSize(obj, base);
         }
       });
     });
@@ -4052,6 +4072,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       }
     });
 
+    let isRecordingVideo = false;
     function animate(t) {
       requestAnimationFrame(animate);
       const nowSec = (t || 0) * 0.001;
@@ -4064,7 +4085,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       if (autoRotating) {
         const target = controls.target.clone();
         const axis = getAutoRotateAxis();
-        const omega = 0.8; // rad/s
+        const omega = 0.8 * (isRecordingVideo ? 0.55 : 1.0); // rad/s (slow slightly while recording)
         const rel = camera.position.clone().sub(target);
         rel.applyAxisAngle(axis, omega * dt);
         camera.position.copy(target.clone().add(rel));
@@ -4150,6 +4171,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     recordBtn.addEventListener("click", function() {
       if (mediaRecorder && mediaRecorder.state === "recording") {
         mediaRecorder.stop();
+        isRecordingVideo = false;
         recordBtn.textContent = "Record";
         recordBtn.style.background = "";
         recordBtn.style.color = "";
@@ -4159,7 +4181,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       beginRecordingRenderScale();
       let stream;
       try {
-        stream = renderer.domElement.captureStream(60);
+        stream = renderer.domElement.captureStream(30);
       } catch(e) {
         restoreRecordingRenderScale();
         alert("Video recording not supported in this browser.");
@@ -4178,11 +4200,13 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         return;
       }
       mediaRecorder = new MediaRecorder(stream, options);
+      isRecordingVideo = true;
       recordChunks = [];
       mediaRecorder.ondataavailable = function(e) {
         if (e.data && e.data.size > 0) recordChunks.push(e.data);
       };
       mediaRecorder.onstop = function() {
+        isRecordingVideo = false;
         restoreRecordingRenderScale();
         const blob = new Blob(recordChunks, { type: options.mimeType });
         const url = URL.createObjectURL(blob);
@@ -4193,6 +4217,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         setTimeout(function() { URL.revokeObjectURL(url); }, 2000);
       };
       mediaRecorder.onerror = function() {
+        isRecordingVideo = false;
         restoreRecordingRenderScale();
       };
       mediaRecorder.start(100);

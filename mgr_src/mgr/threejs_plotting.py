@@ -271,8 +271,13 @@ def show_mof_threejs(
             "traces": ["surface_regions_cluster"],
             "label": "Pocket types (cluster)",
         }
-    # Connections/windows/maxima are already covered by dedicated static checkboxes
-    # in the HUD. Avoid duplicating them in dynamic legend groups.
+    # Keep a dedicated maxima legend entry so users can toggle the local-maxima
+    # scatter trace directly from the trace legend.
+    if defaults.get("plot_maxima", True) and "maxima_internal" in trace_ids:
+        fig.groups["maxima_internal"] = {
+            "traces": ["maxima_internal"],
+            "label": "Local maxima",
+        }
 
     # Camera
     fig.set_camera(
