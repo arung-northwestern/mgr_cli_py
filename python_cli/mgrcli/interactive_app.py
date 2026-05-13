@@ -1573,12 +1573,13 @@ def main() -> None:
             help="Minimum separation between neighbouring maxima.",
         )
     with col3:
-        surface_value = st.number_input(
-            "Surface value (Å)",
-            value=1.0,
-            min_value=0.1,
-            help="Isosurface value for visualization.",
+        st.caption(
+            "Surface isovalue is configured in Visualization Options "
+            "when surface plotting is enabled."
         )
+
+    # Persisted visualization isovalue control (shown in Visualization Options).
+    surface_value = float(st.session_state.get("viz_surface_value", 1.0))
 
     # Additional segmentation parameters
     with st.expander("Advanced Segmentation Parameters", expanded=False):
@@ -1631,7 +1632,11 @@ def main() -> None:
             horizontal=True,
             help="Three.js: faster WebGL percolation cluster rendering.",
         )
-        mesh_framework = st.checkbox("Show framework as mesh", value=(viz_backend == "Three.js"))
+        mesh_framework = st.checkbox(
+            "Show framework as mesh",
+            value=(viz_backend == "Three.js"),
+            help="Renders the framework as atom spheres + bonds (mesh/ball-and-stick style).",
+        )
         if mesh_framework:
             atom_scale = st.slider(
                 "Atom scale",
@@ -1653,13 +1658,27 @@ def main() -> None:
             atom_scale = 0.65
             bond_radius = 0.15
         if viz_backend == "Plotly":
-            simple_framework = st.checkbox("Show simple framework scatter", value=True)
+            simple_framework = st.checkbox(
+                "Show simple framework scatter",
+                value=True,
+                help="Plotly-only lightweight framework point rendering.",
+            )
             if mesh_framework and simple_framework:
                 st.warning("Select either mesh or simple framework.")
         else:
             simple_framework = False
-        projection_choice = st.selectbox("Projection", ["perspective", "orthographic"], index=0)
-        stylize = st.checkbox("Stylize plot", value=True, disabled=(projection_choice == "orthographic"))
+        projection_choice = st.selectbox(
+            "Projection",
+            ["perspective", "orthographic"],
+            index=0,
+            help="Perspective gives depth foreshortening; orthographic preserves scale.",
+        )
+        stylize = st.checkbox(
+            "Stylize plot",
+            value=True,
+            disabled=(projection_choice == "orthographic"),
+            help="Adds visual polish effects; disabled in orthographic mode.",
+        )
         if projection_choice == "orthographic":
             stylize = False
         taubin_surface_smooth = st.checkbox(
@@ -1691,6 +1710,7 @@ def main() -> None:
             ["dark", "white"],
             index=0 if st.session_state.get("viz_background", "dark") == "dark" else 1,
             key="viz_background",
+            help="Sets the base app background for plot rendering contrast.",
         )
         viz_plot_layout = str(layout_choice or st.session_state.get("viz_background", "dark")).strip().lower()
         if viz_plot_layout not in ("dark", "white"):
@@ -1700,19 +1720,107 @@ def main() -> None:
             "select the matching background here for best contrast."
         )
     with col_vis2:
-        show_surface = st.checkbox(f"Show pore surface at {surface_value:.2f} Å", value=True)
-        show_surface_pbc = st.checkbox("Show periodic pore surface", value=True)
-        show_connections = st.checkbox("Show pore graph", value=True)
-        show_windows = st.checkbox("Show windows (internal)", value=True)
+        show_surface = st.checkbox(
+            "Show pore surface",
+            value=True,
+            help="Show the raw segmentation pore-surface mesh.",
+        )
+        if show_surface:
+            # Lower bound follows mask safety margin. Upper bound optionally follows
+            # LCD (if available from PLD cache) minus 1 A.
+            iso_min = max(0.1, float(mask_thickness) + 0.25)
+            lcd_cap = None
+            _active_key = f"{getattr(cif_path, 'name', 'uploaded')}::{spacing:.3f}::aabb={use_aabb_method}::bs={block_size}"
+            _pld_cache = st.session_state.get("pld_cache", {})
+            _pld_entry = _pld_cache.get(_active_key) if isinstance(_pld_cache, dict) else None
+            if isinstance(_pld_entry, dict):
+                try:
+                    _lcd = float(_pld_entry.get("lcd"))
+                    if np.isfinite(_lcd):
+                        lcd_cap = max(iso_min, _lcd - 1.0)
+                except Exception:
+                    lcd_cap = None
+            default_iso = max(iso_min, float(st.session_state.get("viz_surface_value", surface_value)))
+            if lcd_cap is not None:
+                default_iso = min(default_iso, lcd_cap)
+                surface_value = st.number_input(
+                    "Surface value (Å)",
+                    min_value=float(iso_min),
+                    max_value=float(lcd_cap),
+                    value=float(default_iso),
+                    step=0.05,
+                    key="viz_surface_value",
+                    help="Isovalue used for surface plotting in Plotly and Three.js. "
+                         "Lower bound is mask thickness + 0.25 Å; upper bound uses LCD - 1 Å when available.",
+                )
+                st.caption(f"Current cap: {iso_min:.2f} Å to {lcd_cap:.2f} Å (LCD-based).")
+            else:
+                surface_value = st.number_input(
+                    "Surface value (Å)",
+                    min_value=float(iso_min),
+                    value=float(default_iso),
+                    step=0.05,
+                    key="viz_surface_value",
+                    help="Isovalue used for surface plotting in Plotly and Three.js. "
+                         "Lower bound is mask thickness + 0.25 Å. LCD cap is applied once PLD is available.",
+                )
+                st.caption(
+                    "LCD-based upper cap is unavailable until PLD is computed; "
+                    "very high values may produce no visible surface."
+                )
+        show_surface_pbc = st.checkbox(
+            "Show periodic pore surface",
+            value=True,
+            help="Show the PBC-merged surface mesh.",
+        )
+        show_connections = st.checkbox(
+            "Show pore graph",
+            value=True,
+            help="Show pore graph connection lines and nodes.",
+        )
+        show_windows = st.checkbox(
+            "Show windows (internal)",
+            value=True,
+            help="Show internal window points from graph connectivity.",
+        )
         if viz_backend == "Three.js":
             show_maxima_spheres = False
         else:
-            show_maxima_spheres = st.checkbox("Show maxima spheres", value=False)
-        detect_pocket_types = st.checkbox("Detect Pocket Types", value=False)
+            show_maxima_spheres = st.checkbox(
+                "Show maxima spheres",
+                value=False,
+                help="Plotly-only spherical markers centered at local maxima.",
+            )
+        detect_pocket_types = st.checkbox(
+            "Detect Pocket Types",
+            value=False,
+            help="Cluster cavities into pocket-type groups and add cluster surface coloring.",
+        )
 
-        surface_opacity = st.slider("Surface Opacity", min_value=0.0, max_value=1.0, value=1.0, step=0.1)
-        surface_pbc_opacity = st.slider("Periodic Surface Opacity", min_value=0.0, max_value=1.0, value=1.0, step=0.1)
-        surface_types_opacity = st.slider("Pocket Types Opacity", min_value=0.0, max_value=1.0, value=1.0, step=0.1)
+        surface_opacity = st.slider(
+            "Surface Opacity",
+            min_value=0.0,
+            max_value=1.0,
+            value=1.0,
+            step=0.1,
+            help="Opacity for the raw regions surface mesh.",
+        )
+        surface_pbc_opacity = st.slider(
+            "Periodic Surface Opacity",
+            min_value=0.0,
+            max_value=1.0,
+            value=1.0,
+            step=0.1,
+            help="Opacity for the periodic (PBC-merged) regions surface.",
+        )
+        surface_types_opacity = st.slider(
+            "Pocket Types Opacity",
+            min_value=0.0,
+            max_value=1.0,
+            value=1.0,
+            step=0.1,
+            help="Opacity for pocket-type clustered surface mesh.",
+        )
         screen_door_surfaces = st.checkbox(
             "Screen-door transparency",
             value=False,
@@ -2299,6 +2407,15 @@ def main() -> None:
             - Performance mode speeds up surface generation on large unit cells.
             - Orthographic projection pairs best with stylize disabled.
             """)
+            if viz_backend == "Three.js":
+                st.markdown("""
+### Try This in Three.js
+- **Overlapping surfaces:** if lower surfaces disappear, hide upper surfaces in the legend or set their opacity to **0.0**.
+- **Screen-door mode:** useful for overlapping semi-transparent surfaces (especially in orthographic); turn it off for cleaner screenshots.
+- **Exploded-view mini experiment:** click **+Z view**, then increase **Exploded** slider to separate surface copies and inspect trace grouping.
+- **Smoothing check:** toggle Taubin smoothing/intensity in the sidebar and rerun compute to compare edge sharpness vs smoothness.
+- **Fun controls:** try auto-rotate plus different backgrounds/gradients to quickly inspect occluded channels.
+""")
             if _is_spaces_deployment():
                 st.markdown(
                     f"""

@@ -3477,8 +3477,29 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     // Populate dynamic group checkboxes from DATA.groups
     const groupChecksDiv = document.getElementById("groupChecks");
     const groups = DATA.groups || {};
+    const mergedGroups = Object.assign({}, groups);
+    const groupedTraceIds = new Set();
+    Object.values(groups).forEach(function(g) {
+      (g && g.traces ? g.traces : []).forEach(function(tid) { groupedTraceIds.add(tid); });
+    });
+    // Fallback: if surface traces exist but caller did not declare groups,
+    // auto-register legend entries so legend and mesh-opacity controls stay in sync.
+    [
+      ["surface", "Surface"],
+      ["surface_regions_raw", "Regions (raw)"],
+      ["surface_pbc", "Surface (PBC)"],
+      ["surface_regions_pbc", "Regions (PBC merged)"],
+      ["surface_pocket", "Pocket types"],
+      ["surface_regions_cluster", "Pocket types (cluster)"],
+    ].forEach(function(defn) {
+      const tid = defn[0];
+      const label = defn[1];
+      if (objectsById[tid] && !groupedTraceIds.has(tid)) {
+        mergedGroups["__auto_" + tid] = { traces: [tid], label: label };
+      }
+    });
     const seenGroupKeys = new Set();
-    Object.entries(groups).forEach(function(entry) {
+    Object.entries(mergedGroups).forEach(function(entry) {
       const groupId = entry[0];
       const group = entry[1];
       const traces = group.traces || [];
@@ -4368,6 +4389,13 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     // Export PNG button
     document.getElementById("exportPng").addEventListener("click", function() {
       const resMult = parseInt(pngResSelect.value, 10) || 1;
+      // Screen-door (shader-discard) can produce moire-like export artifacts
+      // at high-resolution readback. Export with standard alpha path, then restore.
+      const restoreScreenDoor = !!(screenDoorToggle && screenDoorToggle.checked);
+      if (restoreScreenDoor) {
+        screenDoorToggle.checked = false;
+        applySurfaceScreenDoorAll();
+      }
       const oldW = renderer.domElement.width;
       const oldH = renderer.domElement.height;
       if (resMult > 1) {
@@ -4386,6 +4414,11 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         camera.aspect = oldW / oldH;
         camera.updateProjectionMatrix();
         updateOrthoFrustum();
+      }
+      if (restoreScreenDoor) {
+        screenDoorToggle.checked = true;
+        applySurfaceScreenDoorAll();
+        if (composer) { composer.render(); } else { renderer.render(scene, camera); }
       }
     });
 
