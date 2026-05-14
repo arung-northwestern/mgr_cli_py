@@ -189,6 +189,16 @@ DEFAULT_STYLES: dict[str, dict[str, Any]] = {
         "color": 0xFF9966,
         "size": 1.10,
     },
+    "aromatic_rings": {
+        "color": 0xFFFFFF,
+        "linewidth": 2,
+    },
+    "aromatic_highlights": {
+        "color": [0.12, 0.44, 0.85],
+        "opacity": 0.3,
+        "roughness": 0.5,
+        "side": "DoubleSide",
+    },
 }
 
 # CPK colors for hover text generation
@@ -1299,6 +1309,133 @@ def make_surface_trace(
     )
 
 
+def make_aromatic_rings_trace(
+    atoms: Atoms,
+    cycles: list[list[int]] | None = None,
+    style_circles: str | dict | None = "aromatic_rings",
+    style_highlights: str | dict | None = "aromatic_highlights",
+    n_circle_points: int = 72,
+) -> dict[str, dict[str, Any]]:
+    """Build aromatic ring circle outlines (line_segments) + fill discs (mesh).
+
+    Parameters
+    ----------
+    atoms
+        ASE Atoms with covalent bonds (calls ``update_with_covalent_bonds`` if missing).
+    cycles
+        Precomputed aromatic cycles as list of atom-index lists.  If *None* the
+        function detects them via ``analyze.find_aromatic_cycles_in_sgraph``.
+    style_circles, style_highlights
+        Style name from ``DEFAULT_STYLES`` or a raw style dict.
+    n_circle_points
+        Number of vertices per circle outline and per fill disc polygon.
+
+    Returns
+    -------
+    dict  {"circles": trace_dict, "highlights": trace_dict}
+    """
+    from .analyze import find_aromatic_cycles_in_sgraph, sgraph_from_atoms
+    from scipy.spatial.transform import Rotation as _Rot
+
+    if "covalent_bonds" not in atoms.info:
+        from .analyze import update_with_covalent_bonds
+        atoms = update_with_covalent_bonds(atoms)
+
+    if cycles is None:
+        try:
+            cycles = find_aromatic_cycles_in_sgraph(sgraph_from_atoms(atoms))
+        except Exception:
+            cycles = []
+
+    if not cycles:
+        empty_circles = _make_trace("aromatic_rings", "line_segments", "Aromatic rings",
+                                   {"positions": [], "n_segments": 0}, style=style_circles)
+        empty_highlights = _make_trace("aromatic_highlights", "mesh", "Aromatic highlights",
+                                       {"positions": [], "indices": [],
+                                        "n_vertices": 0, "n_triangles": 0}, style=style_highlights)
+        return {"circles": empty_circles, "highlights": empty_highlights}
+
+    positions = atoms.get_positions()
+    theta = np.linspace(0, 2 * np.pi, n_circle_points, endpoint=False)
+    unit_circle = np.column_stack([np.cos(theta), np.sin(theta), np.zeros_like(theta)])
+
+    line_positions: list[float] = []
+    all_verts: list[np.ndarray] = []
+    all_faces: list[np.ndarray] = []
+
+    for ring in cycles:
+        ring_pos = positions[ring]
+        center = ring_pos.mean(axis=0)
+        edge1 = ring_pos[1] - ring_pos[0]
+        edge2 = ring_pos[2] - ring_pos[1]
+        normal = np.cross(edge1, edge2)
+        norm_len = np.linalg.norm(normal)
+        if norm_len < 1e-10:
+            continue
+        normal /= norm_len
+        radius = np.mean(np.linalg.norm(ring_pos - center, axis=1))
+
+        rot, _ = _Rot.align_vectors(normal.reshape(-1, 3), np.array([[0.0, 0.0, 1.0]]))
+
+        # Circle outline at ~40% of ring radius (chemistry textbook style)
+        inner_radius = radius * 0.4
+        circle_3d = rot.apply(unit_circle * inner_radius) + center
+        for i in range(n_circle_points):
+            j = (i + 1) % n_circle_points
+            line_positions.extend(circle_3d[i].tolist())
+            line_positions.extend(circle_3d[j].tolist())
+
+        # Fill polygon — regular n-gon in the ring plane, matching Plotly's
+        # pv.Polygon(center=c, radius=np.linalg.norm(r[0]-c)*0.95,
+        #            normal=..., n_sides=len(r)).delaunay_2d()
+        n_sides = len(ring)
+        radius = np.mean(np.linalg.norm(ring_pos - center, axis=1)) * 0.95
+        angles = np.linspace(0, 2 * np.pi, n_sides, endpoint=False)
+        poly_local = np.column_stack([
+            radius * np.cos(angles),
+            radius * np.sin(angles),
+            np.zeros(n_sides),
+        ])
+        poly_3d = rot.apply(poly_local) + center
+
+        # Center point + fan triangulation (convex regular polygon)
+        verts = np.vstack([poly_3d, center.reshape(1, -1)])
+        faces = np.array(
+            [[n_sides, i, (i + 1) % n_sides] for i in range(n_sides)],
+            dtype=int,
+        )
+        all_verts.append(verts)
+        all_faces.append(faces)
+
+    circles_trace = _make_trace(
+        "aromatic_rings", "line_segments", "Aromatic rings",
+        {"positions": line_positions, "n_segments": len(cycles) * n_circle_points},
+        style=style_circles,
+    )
+
+    if all_verts:
+        v_offsets = np.cumsum([0] + [len(v) for v in all_verts[:-1]])
+        merged_verts = np.vstack(all_verts)
+        merged_faces = np.vstack([
+            f + off for f, off in zip(all_faces, v_offsets)
+        ])
+        payload = {
+            "positions": merged_verts.reshape(-1).tolist(),
+            "indices": merged_faces.reshape(-1).tolist(),
+            "n_vertices": int(len(merged_verts)),
+            "n_triangles": int(len(merged_faces)),
+        }
+    else:
+        payload = {"positions": [], "indices": [], "n_vertices": 0, "n_triangles": 0}
+
+    highlights_trace = _make_trace(
+        "aromatic_highlights", "mesh", "Aromatic highlights",
+        payload, style=style_highlights,
+    )
+
+    return {"circles": circles_trace, "highlights": highlights_trace}
+
+
 def make_maxima_trace(
     seg: dict[str, Any],
     atoms: Atoms,
@@ -2246,6 +2383,17 @@ class MovieFigure:
                 kwargs_cylinders=kwargs_cylinders,
             )
             self.add_trace(trace)
+        return self
+
+    def add_aromatic_rings(
+        self,
+        atoms: Atoms,
+        cycles: list[list[int]] | None = None,
+        **style: Any,
+    ) -> "MovieFigure":
+        traces = make_aromatic_rings_trace(atoms, cycles=cycles)
+        self.add_trace(traces["circles"])
+        self.add_trace(traces["highlights"])
         return self
 
     def add_cell(self, atoms: Atoms, **style: Any) -> "MovieFigure":
@@ -3647,7 +3795,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     //   Keep local maxima in the central cell with raw surface (not in pore-graph copy).
     //   Original cell stays at center and is controlled independently by showCell.
     const _explodeGroups = [
-      { ids: ["framework", "framework_stick", "framework_spacefill", "cell_framework"], x: -1, y: 0 },
+      { ids: ["framework", "framework_stick", "framework_spacefill", "aromatic_rings", "aromatic_highlights", "cell_framework"], x: -1, y: 0 },
       { ids: ["windows_internal", "connections_internal", "connections_internal_nodes",
               "maxima_outside", "windows_periodic", "connections_periodic", "connections_periodic_nodes",
               "cell_copy"], x: 1, y: 0 },
@@ -3702,6 +3850,8 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         if (trace.id === "framework_stick" || trace.id === "framework_spacefill") return;
         // Skip percolation cluster meshes — grouped by direction in legend
         if (trace.id && trace.id.startsWith("percolation_clusters_")) return;
+        // Skip aromatic traces — opacity is hard-coded in style
+        if (trace.id === "aromatic_rings" || trace.id === "aromatic_highlights") return;
         const wrapper = document.createElement("div");
         wrapper.style.cssText = "display:flex;align-items:center;gap:4px;";
         const label = document.createElement("label");
@@ -3722,7 +3872,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           const targetIds = [trace.id];
           // If this is the main framework slider, also update alternate representations
           if (trace.id === "framework") {
-            targetIds.push("framework_stick", "framework_spacefill");
+            targetIds.push("framework_stick", "framework_spacefill", "aromatic_rings", "aromatic_highlights");
           }
           targetIds.forEach(tid => {
             const obj = objectsById[tid];
@@ -3868,9 +4018,13 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const fw = objectsById["framework"];
       const stick = objectsById["framework_stick"];
       const sf = objectsById["framework_spacefill"];
+      const arRings = objectsById["aromatic_rings"];
+      const arHigh = objectsById["aromatic_highlights"];
       if (fw) fw.visible = showFramework.checked && val === "ball_and_stick";
       if (stick) stick.visible = showFramework.checked && val === "stick";
       if (sf) sf.visible = showFramework.checked && val === "space_filling";
+      if (arRings) arRings.visible = showFramework.checked;
+      if (arHigh) arHigh.visible = showFramework.checked;
       updateFrameworkCellVisibility();
     }
     showFramework.addEventListener("change", updateFrameworkVisibility);
@@ -5021,6 +5175,7 @@ def build_static_scene(
     hide_periodic: bool = True,
     spacing: float = 0.25,
     bonds: str | list | None = "auto",
+    show_aromatics: bool = True,
     eye: tuple[float, float, float] = (2.0, 0.0, 1.35),
     center: tuple[float, float, float] = (0.0, 0.0, 0.0),
     up: tuple[float, float, float] = (0.0, 0.0, 1.0),
@@ -5051,6 +5206,8 @@ def build_static_scene(
         Ignored unless *dgrid* must be computed on-the-fly (not yet implemented).
     bonds
         Passed to ``make_framework_trace`` (*"auto"* uses ASE neighbourlist).
+    show_aromatics
+        If True, detect and render aromatic ring outlines + fill discs.
     eye, center, up
         Initial camera position.
 
@@ -5065,6 +5222,10 @@ def build_static_scene(
     # --- Framework + cell (always) ---
     fig.add_framework(atoms, bonds=bonds)
     fig.add_cell(atoms)
+
+    # --- Aromatic rings (grouped with framework) ---
+    if show_aromatics:
+        fig.add_aromatic_rings(atoms)
 
     # --- Surface (if we have dgrid + regions) ---
     if dgrid is not None and regions is not None:

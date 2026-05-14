@@ -88,6 +88,8 @@ def show_mof_threejs(
     _step_labels = []
     if defaults.get("plot_framework", True):
         _step_labels.append(f"Framework ({framework_style})")
+    if defaults.get("plot_framework", True) and defaults.get("plot_framework_show_rings", True):
+        _step_labels.append("Aromatic rings")
     if defaults.get("plot_cell", True):
         _step_labels.append("Unit cell")
     if defaults.get("plot_surface", True):
@@ -142,6 +144,9 @@ def show_mof_threejs(
             representation=representation,
             **kwargs,
         )
+        if defaults.get("plot_framework_show_rings", True):
+            _emit(_step_labels[_step_idx])
+            fig.add_aromatic_rings(mat_atoms)
 
     # Cell
     if defaults.get("plot_cell", True):

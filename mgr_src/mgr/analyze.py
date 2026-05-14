@@ -525,15 +525,16 @@ def find_aromatic_cycles_in_sgraph(sgraph, default_ring_sizes=[5,6,7,8,9]):
     
     bond_types = nx.get_edge_attributes(sgraph,'bond_type')
     cycles_edges = [list(zip(cycle,(cycle[1:]+cycle[:1]))) for cycle in small_cycles]
-    cycle_bond_types = [[bond_types[tuple(sorted(edge))] for edge in cycle_edges] for cycle_edges in cycles_edges]
+    cycle_bond_types = [[bond_types.get(tuple(sorted(edge)), 'single') for edge in cycle_edges] for cycle_edges in cycles_edges]
     selected_cycles = [np.all(np.array(cycle_bonds) == 'double') for cycle_bonds in cycle_bond_types]
-    aromatic_cycles = np.array(small_cycles)[selected_cycles]
+    aromatic_cycles = [c for c, s in zip(small_cycles, selected_cycles) if s]
     ic(aromatic_cycles)
-    
+
     cycle_graphs = [sgraph.subgraph(cycle) for cycle in aromatic_cycles]
     unique_cycles = set(tuple(sorted(a)) for a in aromatic_cycles)
     unique_cycles = [list(u) for u in unique_cycles]
-    chemically_unique_cycles = np.array(unique_cycles)[find_chemically_unique_cycles(unique_cycles, sgraph)]
+    _unique_indices = find_chemically_unique_cycles(unique_cycles, sgraph)
+    chemically_unique_cycles = [unique_cycles[i] for i in _unique_indices]
     # unique_cycle_indices = find_unique_cycles(aromatic_cycles, sgraph) #np.unique([ps.write_smiles(cycle) for cycle in cycle_graphs], return_index=True)[1]
     # unique_aromatic_cycles = np.array(cycle_graphs)[unique_cycle_indices]
     ic(chemically_unique_cycles)
@@ -612,6 +613,7 @@ def sgraph_from_atoms(ase_atoms,node_props_dict=None, edge_props_dict=None):
                 edge_props_dict = dict(bond_order = ase_atoms.info['covalent_bond_orders'], bond_type=get_bond_types(ase_atoms.info['covalent_bond_orders']))
             except:
                 print("'covalent_bond_orders' not in ase_atoms.info. Hence no edge_properties added for now.")
+                edge_props_dict = {}
         sgraph.add_edges_from([tuple((bonds[i][0], bonds[i][1], {key:value[i] for key,value in edge_props_dict.items()})) for i in range(len(bonds))])
     # else :
     #     print('Making a pymatgen StructureGraph.graph using CrystalNN')
