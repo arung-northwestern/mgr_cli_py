@@ -125,6 +125,27 @@ from .helper import get_fractional_coordinates, interpolate_labels
 # Default styles registry (shared between Plotly and Three.js layers)
 # ---------------------------------------------------------------------------
 
+# Keys passed from ``update_traces(..., {"opacity": ...})`` etc. must merge into
+# ``trace["style"]`` — the Three.js viewer's ``styleFor()`` only reads ``trace.style``.
+_TRACE_STYLE_TOPLEVEL_KEYS = frozenset(
+    {
+        "opacity",
+        "color",
+        "roughness",
+        "metalness",
+        "side",
+        "clearcoat",
+        "clearcoatRoughness",
+        "linewidth",
+        "dashSize",
+        "gapSize",
+        "size",
+        "shininess",
+        "specular",
+    }
+)
+
+
 DEFAULT_STYLES: dict[str, dict[str, Any]] = {
     "framework": {
         "color": [0.7, 0.7, 0.7],
@@ -487,9 +508,27 @@ def _serialize_segmentation_surface_mesh(
         nu=taubin_nu,
     )
 
-    frac = get_fractional_coordinates(np.asarray(mesh.vertices, dtype=float), atoms)
-    interp = interpolate_labels(regions)
-    labels = interp(frac % 1).astype(int)
+    # Sample region IDs in **grid index space** at marching-cubes vertices (same idea as
+    # mgrcli.plotting.plot_surface_dgrid). Fractional-cell interpolation maps padded
+    # vertices incorrectly into [0,1) and yields label 0 everywhere → flat grey meshes.
+    from scipy.interpolate import RegularGridInterpolator
+
+    regs = np.asarray(regions)
+    nx, ny, nz = regs.shape
+    gx = np.arange(nx, dtype=float)
+    gy = np.arange(ny, dtype=float)
+    gz = np.arange(nz, dtype=float)
+    lbl_interp = RegularGridInterpolator(
+        (gx, gy, gz),
+        regs.astype(float, copy=False),
+        method="nearest",
+        bounds_error=False,
+        fill_value=0,
+    )
+    cell_inv = np.linalg.inv(cell)
+    v_world = np.asarray(mesh.vertices, dtype=float)
+    idx_like = np.dot(v_world, cell_inv.T) * shape_den
+    labels = lbl_interp(idx_like).astype(int)
 
     # Clamp negative labels to 0 (can arise from regions_cluster - 1 in pocket types)
     labels = np.maximum(labels, 0)
@@ -501,8 +540,9 @@ def _serialize_segmentation_surface_mesh(
         nonzero_idx = np.where(~zero_mask)[0]
         zero_idx = np.where(zero_mask)[0]
         from scipy.spatial import cKDTree
-        tree = cKDTree(verts_cart[nonzero_idx])
-        _, nn = tree.query(verts_cart[zero_idx], k=1)
+
+        tree = cKDTree(v_world[nonzero_idx])
+        _, nn = tree.query(v_world[zero_idx], k=1)
         labels[zero_idx] = labels[nonzero_idx[nn]]
 
     _DEFAULT_CSCALE = [
@@ -661,12 +701,16 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
     def _pack(ids: set[int]):
         if not ids:
             return [], [], [], [], 0
-        idx = np.asarray([i - 1 for i in ids], dtype=int)
+        n_m = int(len(maxima))
+        valid_ids = sorted(i for i in ids if 1 <= i <= n_m)
+        if not valid_ids:
+            return [], [], [], [], 0
+        idx = np.asarray([i - 1 for i in valid_ids], dtype=int)
         p = pos[idx]
         s = np.asarray(sizes, dtype=float)[idx]
         c = np.asarray(colors, dtype=float)[idx]
-        h = [hover[i] for i in idx]
-        return p.reshape(-1).tolist(), s.tolist(), c.reshape(-1).tolist(), h, int(len(ids))
+        h = [hover[int(i)] for i in idx]
+        return p.reshape(-1).tolist(), s.tolist(), c.reshape(-1).tolist(), h, int(len(valid_ids))
 
     maxima_pbc = np.asarray(seg.get("maxima_pbc", []), dtype=float)
     if maxima_pbc.size == 0 and maxima_info.ndim == 2 and maxima_info.shape[1] >= 7:
@@ -2040,7 +2084,22 @@ class MovieFigure:
         targets = self.data if frame is None else self.frames[frame]["traces"]
         for t in targets:
             if selector is None or all(t.get(k) == v for k, v in selector.items()):
-                t.update(patch)
+                merged = dict(patch)
+                style_ov = {
+                    k: merged.pop(k)
+                    for k in list(merged.keys())
+                    if k in _TRACE_STYLE_TOPLEVEL_KEYS
+                }
+                if style_ov:
+                    st = t.get("style")
+                    if isinstance(st, dict):
+                        st.update(style_ov)
+                    else:
+                        base = dict(_resolve_style(st))
+                        base.update(style_ov)
+                        t["style"] = base
+                if merged:
+                    t.update(merged)
         return self
 
     @staticmethod
@@ -3190,10 +3249,14 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     const objectsById = {};
 
     function styleFor(trace) {
-      const s = trace && trace.style;
-      if (s && typeof s === "object" && !Array.isArray(s)) return s;
-      if (typeof s === "string" && STYLES[s]) return STYLES[s];
-      return {};
+      if (!trace) return {};
+      const s = trace.style;
+      let base = {};
+      if (s && typeof s === "object" && !Array.isArray(s)) base = Object.assign({}, s);
+      else if (typeof s === "string" && STYLES[s]) base = Object.assign({}, STYLES[s]);
+      // Legacy / mistaken top-level keys (see MovieFigure.update_traces on Python side)
+      if (trace.opacity !== undefined) base.opacity = trace.opacity;
+      return base;
     }
 
     function hasColorsAttr(obj) {
@@ -3284,16 +3347,22 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
               "    threshold = (x < 1.0) ? 15.0/16.0 : ((x < 2.0) ? 7.0/16.0 : ((x < 3.0) ? 13.0/16.0 : 5.0/16.0));\n" +
               "  }\n" +
               "  if (sdOpacity <= threshold) discard;\n" +
+              "  gl_FragColor.rgb *= sdOpacity;\n" +
               "}\n" +
               "#include <dithering_fragment>"
             );
           }
           mat.userData.screenDoorUniform = shader.uniforms.uScreenDoorOpacity;
         };
+        // Distinct cache key per mesh instance so Three.js never reuses one compiled
+        // program for multiple segmentation surfaces. Shared programs would alias
+        // uScreenDoorOpacity and break screen-door + per-mesh opacity when several
+        // surfaces exist (e.g. regions + PBC + pocket types).
+        const screenDoorMeshKey = (obj && obj.uuid) ? String(obj.uuid) : String(mat.uuid || "");
         mat.customProgramCacheKey = function() {
           const orig = mat.userData.screenDoorOriginalProgramKey;
           const base = (typeof orig === "function") ? orig.call(this) : "";
-          return base + "|screenDoorV1";
+          return base + "|screenDoorV3|" + screenDoorMeshKey;
         };
         if (!mat.userData.screenDoorEnabled) mat.needsUpdate = true;
         mat.userData.screenDoorEnabled = true;
@@ -5315,10 +5384,6 @@ def _serialize_percolation_cluster_mesh(
     verts_cart = np.dot(cell, (verts / shape_den).T).T
     mesh = trimesh.Trimesh(vertices=verts_cart, faces=faces, process=False)
 
-    frac = get_fractional_coordinates(np.asarray(mesh.vertices, dtype=float), atoms)
-    interp = interpolate_labels(regions)
-    labels = interp(frac % 1).astype(int)
-
     # For face filtering, use grid-coordinate interpolation directly on marching-cubes
     # verts (matching Plotly's approach) to avoid fractional-coord round-trip errors
     # near cell boundaries that can cause patches of skipped faces.
@@ -5374,8 +5439,20 @@ def _serialize_percolation_cluster_mesh(
         nu=taubin_nu,
     )
 
-    sub_frac = get_fractional_coordinates(np.asarray(submesh.vertices, dtype=float), atoms)
-    sub_labels = interp(sub_frac % 1).astype(int)
+    cell_inv = np.linalg.inv(cell)
+    v_sub = np.asarray(submesh.vertices, dtype=float)
+    idx_like = np.dot(v_sub, cell_inv.T) * shape_den
+    gx = np.arange(regions.shape[0], dtype=float)
+    gy = np.arange(regions.shape[1], dtype=float)
+    gz = np.arange(regions.shape[2], dtype=float)
+    lbl_paint = RGI(
+        (gx, gy, gz),
+        np.asarray(regions, dtype=float),
+        method="nearest",
+        bounds_error=False,
+        fill_value=0,
+    )
+    sub_labels = lbl_paint(idx_like).astype(int)
 
     comp_sorted = sorted(comp_set)
     n_regions = len(comp_sorted)

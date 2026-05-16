@@ -82,6 +82,33 @@ default_mesh_lighting= dict(
 import numpy as np
 
 # =============================================================================
+# Surface Taubin parameters (Plotly + Three.js; matches interactive_app slider)
+# =============================================================================
+
+
+def resolve_plot_surface_taubin_params(defaults: dict, options=None) -> None:
+    """Fill iterations/lambda/nu from ``plot_surface_taubin_intensity``.
+
+    When *options* already passes legacy keys (Streamlit passes iterations explicitly),
+    this is a no-op. When Taubin is disabled, no iteration weights are written.
+    """
+    opts = options or {}
+    if (
+        "plot_surface_taubin_iterations" in opts
+        or "plot_surface_taubin_lambda" in opts
+        or "plot_surface_taubin_nu" in opts
+    ):
+        return
+    if not bool(defaults.get("plot_surface_taubin_smooth", True)):
+        return
+    intensity = float(defaults.get("plot_surface_taubin_intensity", 0.05))
+    intensity = max(0.0, min(1.0, intensity))
+    defaults["plot_surface_taubin_iterations"] = int(round(3 + 9 * intensity))
+    defaults["plot_surface_taubin_lambda"] = float(0.20 + 0.35 * intensity)
+    defaults["plot_surface_taubin_nu"] = float(-0.20 - 0.35 * intensity)
+
+
+# =============================================================================
 # Cluster-based coloring utilities
 # =============================================================================
 

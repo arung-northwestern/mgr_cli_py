@@ -16,6 +16,7 @@ from .movies import (
     make_surface_trace,
     _make_trace,
 )
+from .visualize import resolve_plot_surface_taubin_params
 
 
 def show_mof_threejs(
@@ -41,7 +42,32 @@ def show_mof_threejs(
     maxima_pbc = results.get("maxima_pbc")
     maxima_info = results.get("maxima_info")
     maxima_pbc_dict = results.get("maxima_pbc_dict")
-    connections = results.get("connections", [])
+    connections_raw = results.get("connections", [])
+    unique_regions = np.asarray(results.get("unique_regions", []), dtype=int)
+    if unique_regions.size:
+        connections = [c for c in connections_raw if np.any(np.isin(c[0], unique_regions))]
+    else:
+        connections = list(connections_raw)
+
+    # Match Plotly show_mof: only plot the first regions.max() maxima (excludes padding-only sites).
+    regions_arr = np.asarray(regions)
+    n_cap = int(regions_arr.max()) if regions_arr.size else 0
+    am_full = (
+        np.asarray(all_maxima, dtype=float)
+        if all_maxima is not None
+        else np.zeros((0, 3), dtype=float)
+    )
+    all_maxima_plot = am_full[:n_cap] if n_cap > 0 else am_full[:0]
+    m_plot = len(all_maxima_plot)
+    mi_src = maxima_info
+    if mi_src is not None:
+        mi_arr = np.asarray(mi_src, dtype=int)
+        if mi_arr.ndim == 2 and mi_arr.shape[0] >= m_plot and m_plot > 0:
+            maxima_info_plot = mi_arr[:m_plot]
+        else:
+            maxima_info_plot = np.zeros((0, 7), dtype=int)
+    else:
+        maxima_info_plot = np.zeros((0, 7), dtype=int)
 
     defaults = {
         "plot_enable": True,
@@ -57,20 +83,20 @@ def show_mof_threejs(
         "plot_windows": True,
         "plot_surface": True,
         "plot_surface_pbc": True,
-        "plot_surface_isovalue": 0.75,
+        "plot_surface_isovalue": 1.0,
         "plot_surface_opacity": 1.0,
         "plot_surface_pbc_opacity": 1.0,
         "plot_surface_types_opacity": 1.0,
-        "plot_surface_taubin_smooth": False,
-        "plot_surface_taubin_iterations": 10,
-        "plot_surface_taubin_lambda": 0.5,
-        "plot_surface_taubin_nu": -0.53,
+        "plot_surface_taubin_smooth": True,
+        "plot_surface_taubin_intensity": 0.05,
         "plot_surface_screen_door": False,
         "plot_projection": "perspective",
         "plot_layout": "dark",
     }
     if options:
         defaults.update({k: v for k, v in options.items() if v is not None})
+
+    resolve_plot_surface_taubin_params(defaults, options)
 
     if not defaults.get("plot_enable", True):
         for key in ("plot_cell", "plot_framework", "plot_maxima",
@@ -160,13 +186,13 @@ def show_mof_threejs(
             dgrid=dgrid,
             regions=regions,
             atoms=mat_atoms,
-            isovalue=float(defaults.get("plot_surface_isovalue", 0.75)),
+            isovalue=float(defaults.get("plot_surface_isovalue", 1.0)),
             step_size=1,
             name="Regions (raw)",
             trace_id="surface",
             style="surface",
             hover_prefix="Region:",
-            taubin_smooth=bool(defaults.get("plot_surface_taubin_smooth", False)),
+            taubin_smooth=bool(defaults.get("plot_surface_taubin_smooth", True)),
             taubin_iterations=int(defaults.get("plot_surface_taubin_iterations", 10)),
             taubin_lambda=float(defaults.get("plot_surface_taubin_lambda", 0.5)),
             taubin_nu=float(defaults.get("plot_surface_taubin_nu", -0.53)),
@@ -184,13 +210,13 @@ def show_mof_threejs(
             dgrid=dgrid,
             regions=regions_pbc,
             atoms=mat_atoms,
-            isovalue=float(defaults.get("plot_surface_isovalue", 0.75)),
+            isovalue=float(defaults.get("plot_surface_isovalue", 1.0)),
             step_size=1,
             name="Regions (PBC merged)",
             trace_id="surface_regions_pbc",
             style="surface",
             hover_prefix="PBC:",
-            taubin_smooth=bool(defaults.get("plot_surface_taubin_smooth", False)),
+            taubin_smooth=bool(defaults.get("plot_surface_taubin_smooth", True)),
             taubin_iterations=int(defaults.get("plot_surface_taubin_iterations", 10)),
             taubin_lambda=float(defaults.get("plot_surface_taubin_lambda", 0.5)),
             taubin_nu=float(defaults.get("plot_surface_taubin_nu", -0.53)),
@@ -211,13 +237,13 @@ def show_mof_threejs(
             dgrid=dgrid,
             regions=regions_cluster,
             atoms=mat_atoms,
-            isovalue=float(defaults.get("plot_surface_isovalue", 0.75)),
+            isovalue=float(defaults.get("plot_surface_isovalue", 1.0)),
             step_size=1,
             name="Pocket types (cluster)",
             trace_id="surface_regions_cluster",
             style="surface",
             hover_prefix="Pocket type:",
-            taubin_smooth=bool(defaults.get("plot_surface_taubin_smooth", False)),
+            taubin_smooth=bool(defaults.get("plot_surface_taubin_smooth", True)),
             taubin_iterations=int(defaults.get("plot_surface_taubin_iterations", 10)),
             taubin_lambda=float(defaults.get("plot_surface_taubin_lambda", 0.5)),
             taubin_nu=float(defaults.get("plot_surface_taubin_nu", -0.53)),
@@ -258,14 +284,14 @@ def show_mof_threejs(
         fig.add_windows(seg, hide_periodic=True)
 
     # Maxima
-    if defaults.get("plot_maxima", True) and all_maxima is not None and len(all_maxima):
+    if defaults.get("plot_maxima", True) and len(all_maxima_plot):
         _emit(_step_labels[_step_idx])
         seg = {
             "dgrid": dgrid,
             "regions": regions,
-            "all_maxima": all_maxima,
+            "all_maxima": all_maxima_plot,
             "maxima_pbc": maxima_pbc if maxima_pbc is not None else np.zeros((0, 3), dtype=int),
-            "maxima_info": maxima_info if maxima_info is not None else np.zeros((0, 7), dtype=int),
+            "maxima_info": maxima_info_plot,
             "maxima_pbc_dict": maxima_pbc_dict if maxima_pbc_dict is not None else {},
             "connections": connections,
         }

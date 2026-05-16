@@ -48,7 +48,8 @@ class TestMGRCLI(unittest.TestCase):
                 'spacing', 'h', 'mask_thickness', 'threshold_abs',
                 'min_distance', 'minimum_window_separation', 'wall_thickness',
                 'extra_padding', 'min_region_size', 'compute_connections',
-                'return_padded_regions', 'return_dgrid', 'disable_tqdm'
+                'return_padded_regions', 'return_dgrid', 'disable_tqdm',
+                'plot_backend',
             ]
 
             for key in expected_keys:

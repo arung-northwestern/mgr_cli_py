@@ -210,7 +210,7 @@ def compute_pore_diameter_analysis(dgrid, mat_atoms, spacing=None, segmentation_
                     'maxima_info': segmentation_results['maxima_info'],
                     'connections': segmentation_results['connections'],
                     'regions': segmentation_results['regions'],
-                    'mask_thickness': segmentation_results.get('kwargs', {}).get('mask_thickness', 1.5),
+                    'mask_thickness': segmentation_results.get('kwargs', {}).get('mask_thickness', 0.5),
                 }
 
                 # Compute percolation history using winding percolation
@@ -592,7 +592,7 @@ def compute_surface_area_analysis(results_dict, mat_atoms, probe_radius=None):
         print(f"Warning: Surface area computation failed with error: {e}")
         print("This might be due to inappropriate parameters for this material structure.")
         print("Try using --auto-params to automatically estimate optimal parameters, or adjust:")
-        print("  - --mask-thickness (default: 1.5)")
+        print("  - --mask-thickness (default: 0.5)")
         print("  - --threshold-abs (default: 1.5)")
         print("  - --spacing (default: 0.5)")
         print("  - --h (default: 0.2)")
@@ -636,7 +636,7 @@ def compute_void_volume_analysis(results_dict, mat_atoms, probe_radius=None):
         print(f"Warning: Void volume computation failed with error: {e}")
         print("This might be due to inappropriate parameters for this material structure.")
         print("Try using --auto-params to automatically estimate optimal parameters, or adjust:")
-        print("  - --mask-thickness (default: 1.5)")
+        print("  - --mask-thickness (default: 0.5)")
         print("  - --threshold-abs (default: 1.5)")
         print("  - --spacing (default: 0.5)")
         print("  - --h (default: 0.2)")
@@ -806,26 +806,36 @@ class MCLI:
     USE_STANDALONE = False  # Set to True for standalone builds
 
     PLOT_DEFAULTS = {
+        'plot_backend': 'plotly',
         'plot_enable': True,
         'plot_cell': True,
         'plot_framework': True,
         'plot_framework_style': 'mesh',
+        'plot_framework_show_rings': True,
+        'plot_framework_mesh_scale': 0.65,
+        'plot_framework_bond_radius': 0.15,
         'plot_maxima': True,
         'plot_maxima_show_spheres': False,
         'plot_connections': True,
+        'plot_windows': True,
         'plot_surface': True,
         'plot_surface_pbc': True,
-        'plot_surface_isovalue': 0.75,
+        'plot_surface_isovalue': 1.0,
         'plot_surface_opacity': 1.0,
         'plot_surface_pbc_opacity': 1.0,
         'plot_surface_types_opacity': 1.0,
+        'plot_surface_taubin_smooth': True,
+        'plot_surface_taubin_intensity': 0.05,
+        'plot_surface_screen_door': False,
+        'plot_projection': 'perspective',
+        'plot_layout': 'dark',
     }
 
     # Default configuration values
     DEFAULTS = {
         'spacing': 0.5,
         'h': 0.2,
-        'mask_thickness': 1.5,
+        'mask_thickness': 0.5,
         'threshold_abs': 1.5,
         'min_distance': 1.5,
         'minimum_window_separation': None,
@@ -884,6 +894,7 @@ Examples:
   %(prog)s process *.cif -o ./results/
   %(prog)s process structure.cif --types   # Detect pocket types and save RAG pickle
   %(prog)s process structure.cif --rag     # Save RAG pickle only (no clustering)
+  %(prog)s process structure.cif --plot-html --plot-backend threejs
   %(prog)s generate-config -mt 1.0 -ta 2.0 -o config.json
   %(prog)s config-building
   %(prog)s interactive
@@ -982,6 +993,18 @@ Notes:
             '--js-threshold', type=float, default=0.15,
             help='Jensen-Shannon threshold for pocket type clustering (default: 0.15)'
         )
+        param_group.add_argument(
+            '--no-surface-taubin',
+            action='store_true',
+            help='Disable Taubin smoothing on region surfaces in HTML plots',
+        )
+        param_group.add_argument(
+            '--surface-taubin-intensity',
+            type=float,
+            default=None,
+            metavar='S',
+            help='Taubin strength 0–1 (interactive-app mapping; default from config, typically 0.05)',
+        )
 
         # Boolean flags
         flag_group = process_parser.add_argument_group('flags')
@@ -1003,7 +1026,16 @@ Notes:
         )
         flag_group.add_argument(
             '--plot-html', action='store_true',
-            help='Generate Plotly HTML visualization after processing'
+            help='Generate standalone HTML visualization after processing (see --plot-backend)'
+        )
+        flag_group.add_argument(
+            '--plot-backend',
+            choices=['plotly', 'threejs'],
+            default=None,
+            help=(
+                'Visualization engine for --plot-html and the plot command '
+                '(default: plot_backend from config or plotly)'
+            ),
         )
         process_parser.add_argument(
             '--html-dir',
@@ -1079,7 +1111,7 @@ Notes:
         # Plot command
         plot_parser = subparsers.add_parser(
             'plot',
-            help='Generate Plotly visualization from existing results file'
+            help='Generate standalone HTML visualization from existing results (Plotly or Three.js)'
         )
         plot_parser.add_argument(
             'results_files', nargs='+',
@@ -1096,6 +1128,28 @@ Notes:
         plot_parser.add_argument(
             '--no-stylize', action='store_true',
             help='Disable stylized framework rendering in plots'
+        )
+        plot_parser.add_argument(
+            '--plot-backend',
+            choices=['plotly', 'threejs'],
+            default=None,
+            help='Visualization engine (default: plot_backend from config or plotly)',
+        )
+        plot_parser.add_argument(
+            '--theme', choices=['dark', 'white'], default='dark',
+            help='Color theme for the viewer (default: dark)',
+        )
+        plot_parser.add_argument(
+            '--no-surface-taubin',
+            action='store_true',
+            help='Disable Taubin smoothing on region surfaces',
+        )
+        plot_parser.add_argument(
+            '--surface-taubin-intensity',
+            type=float,
+            default=None,
+            metavar='S',
+            help='Taubin strength 0–1 (interactive-app mapping; default from config, typically 0.05)',
         )
         plot_parser.add_argument(
             '--cif',
@@ -1510,20 +1564,27 @@ Notes:
                 print(f"Results saved to: {output_file}")
 
                 if getattr(args, 'plot_html', False):
-                    from .plotting import prepare_results_for_plot, show_mof, dark_layout, white_layout
+                    from .plotting import prepare_results_for_plot, save_mof_html
                     plot_ready = prepare_results_for_plot(dict(result), atoms)
                     html_dir = Path(getattr(args, 'html_dir', '') or output_dir)
                     html_dir.mkdir(parents=True, exist_ok=True)
                     html_path = html_dir / f"{cif_file.stem}.html"
 
-                    # Apply theme selection
+                    plot_backend = (
+                        (getattr(args, 'plot_backend', None) or config.get('plot_backend') or 'plotly')
+                    )
+                    plot_backend = str(plot_backend).lower().strip()
                     theme = getattr(args, 'theme', 'dark')
-                    layout = white_layout if theme == 'white' else dark_layout
 
-                    fig = show_mof(plot_ready, stylize=not getattr(args, 'no_stylize', False), options=plot_options)
-                    fig.update_layout(**layout)
-                    fig.write_html(html_path)
-                    print(f"Plot saved to: {html_path} (theme: {theme})")
+                    save_mof_html(
+                        html_path,
+                        plot_ready,
+                        backend=plot_backend,
+                        stylize=not getattr(args, 'no_stylize', False),
+                        options=plot_options,
+                        theme=theme,
+                    )
+                    print(f"Plot saved to: {html_path} (backend: {plot_backend}, theme: {theme})")
 
             except Exception as e:
                 print(f"Error processing {cif_file}: {e}")
@@ -1545,13 +1606,14 @@ Notes:
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        from .plotting import prepare_results_for_plot, show_mof
+        from .plotting import prepare_results_for_plot, save_mof_html
 
-        config_data = self.DEFAULTS.copy()
+        config_data = {}
         if getattr(args, 'config', None):
             loaded = self.load_config(args.config)
             if isinstance(loaded, dict):
                 config_data.update(loaded)
+        config_data = self.update_config_from_args(config_data, args)
         plot_options = self._get_plot_options(config_data)
 
         for result_path_str in args.results_files:
@@ -1579,9 +1641,20 @@ Notes:
             plot_ready = prepare_results_for_plot(result_dict, atoms)
 
             html_path = output_dir / f"{result_path.stem}.html"
-            fig = show_mof(plot_ready, stylize=not args.no_stylize, options=plot_options)
-            fig.write_html(html_path)
-            print(f"  Plot saved to: {html_path}")
+            plot_backend = (
+                (getattr(args, 'plot_backend', None) or config_data.get('plot_backend') or 'plotly')
+            )
+            plot_backend = str(plot_backend).lower().strip()
+            theme = getattr(args, 'theme', 'dark')
+            save_mof_html(
+                html_path,
+                plot_ready,
+                backend=plot_backend,
+                stylize=not args.no_stylize,
+                options=plot_options,
+                theme=theme,
+            )
+            print(f"  Plot saved to: {html_path} (backend: {plot_backend}, theme: {theme})")
 
     def interactive_command(self, args):
         """Launch the Streamlit interactive application."""
@@ -1815,6 +1888,14 @@ Notes:
 
         if getattr(args, 'watershed_backend', None) is not None:
             result['watershed_backend'] = args.watershed_backend
+
+        if getattr(args, 'no_surface_taubin', False):
+            result['plot_surface_taubin_smooth'] = False
+        if getattr(args, 'surface_taubin_intensity', None) is not None:
+            result['plot_surface_taubin_intensity'] = float(args.surface_taubin_intensity)
+
+        if getattr(args, 'plot_backend', None) is not None:
+            result['plot_backend'] = args.plot_backend
 
         return result
 
@@ -2059,21 +2140,41 @@ Notes:
         return data
 
     def _get_plot_options(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        return {
+        pd = self.PLOT_DEFAULTS
+        opts = {
             'plot_enable': config.get('plot_enable', True),
             'plot_cell': config.get('plot_cell', True),
             'plot_framework': config.get('plot_framework', True),
             'plot_framework_style': config.get('plot_framework_style', 'mesh'),
+            'plot_framework_show_rings': config.get('plot_framework_show_rings', pd['plot_framework_show_rings']),
+            'plot_framework_mesh_scale': config.get('plot_framework_mesh_scale', pd['plot_framework_mesh_scale']),
+            'plot_framework_bond_radius': config.get('plot_framework_bond_radius', pd['plot_framework_bond_radius']),
             'plot_maxima': config.get('plot_maxima', True),
             'plot_maxima_show_spheres': config.get('plot_maxima_show_spheres', False),
             'plot_connections': config.get('plot_connections', True),
+            'plot_windows': config.get('plot_windows', True),
             'plot_surface': config.get('plot_surface', True),
             'plot_surface_pbc': config.get('plot_surface_pbc', True),
-            'plot_surface_isovalue': config.get('plot_surface_isovalue', self.PLOT_DEFAULTS['plot_surface_isovalue']),
-            'plot_surface_opacity': config.get('plot_surface_opacity', self.PLOT_DEFAULTS['plot_surface_opacity']),
-            'plot_surface_pbc_opacity': config.get('plot_surface_pbc_opacity', self.PLOT_DEFAULTS['plot_surface_pbc_opacity']),
-            'plot_surface_types_opacity': config.get('plot_surface_types_opacity', self.PLOT_DEFAULTS['plot_surface_types_opacity']),
+            'plot_surface_isovalue': config.get('plot_surface_isovalue', pd['plot_surface_isovalue']),
+            'plot_surface_opacity': config.get('plot_surface_opacity', pd['plot_surface_opacity']),
+            'plot_surface_pbc_opacity': config.get('plot_surface_pbc_opacity', pd['plot_surface_pbc_opacity']),
+            'plot_surface_types_opacity': config.get('plot_surface_types_opacity', pd['plot_surface_types_opacity']),
+            'plot_surface_taubin_smooth': config.get('plot_surface_taubin_smooth', pd['plot_surface_taubin_smooth']),
+            'plot_surface_taubin_intensity': float(
+                config.get('plot_surface_taubin_intensity', pd['plot_surface_taubin_intensity'])
+            ),
+            'plot_surface_screen_door': config.get('plot_surface_screen_door', pd['plot_surface_screen_door']),
+            'plot_projection': config.get('plot_projection', pd['plot_projection']),
+            'plot_layout': config.get('plot_layout', pd['plot_layout']),
         }
+        for k in (
+            'plot_surface_taubin_iterations',
+            'plot_surface_taubin_lambda',
+            'plot_surface_taubin_nu',
+        ):
+            if k in config:
+                opts[k] = config[k]
+        return opts
 
     def _read_atoms(self, cif_path: Path):
         """Read an ASE Atoms object from CIF file."""
@@ -2092,16 +2193,30 @@ Notes:
             if str(MGR_SRC_PATH) not in sys.path:
                 sys.path.insert(0, str(MGR_SRC_PATH))
 
-            # Check if covalent bonds have already been computed to avoid duplicate atoms
-            if 'covalent_bonds' not in atoms.info:
+            bonds_existing = atoms.info.get("covalent_bonds")
+            orders_existing = atoms.info.get("covalent_bond_orders")
+            nb = len(bonds_existing) if bonds_existing is not None else 0
+            no = (
+                len(orders_existing)
+                if orders_existing is not None and hasattr(orders_existing, "__len__")
+                else 0
+            )
+            needs_bonds = (
+                bonds_existing is None
+                or orders_existing is None
+                or nb != no
+            )
+            if needs_bonds:
                 try:
-                    import mgr as mgr
+                    import mgr as mgr  # noqa: F401
                     from mgr.analyze import update_with_covalent_bonds
+
                     atoms = update_with_covalent_bonds(atoms)
                 except ImportError:
                     # Fallback to mgr_visualize if mgr_src is not available
-                    import mgr_visualize.mgr as mgr
+                    import mgr_visualize.mgr as mgr  # noqa: F401
                     from mgr_visualize.mgr.analyze import update_with_covalent_bonds
+
                     atoms = update_with_covalent_bonds(atoms)
 
             return atoms

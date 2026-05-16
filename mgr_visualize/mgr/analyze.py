@@ -587,6 +587,7 @@ def sgraph_from_atoms(ase_atoms,node_props_dict=None, edge_props_dict=None):
      
     import networkx as nx 
     import pandas as pd
+    import numpy as np
     # from pymatgen.io.ase import AseAtomsAdaptor 
     # # struct = AseAtomsAdaptor.get_structure(ase_atoms)
     # from pymatgen.analysis.graphs import StructureGraph 
@@ -609,9 +610,22 @@ def sgraph_from_atoms(ase_atoms,node_props_dict=None, edge_props_dict=None):
         if edge_props_dict is None:
             try:
                 print('No edge properties provided. Use the default set: [bond_order, bond_type]')
-                edge_props_dict = dict(bond_order = ase_atoms.info['covalent_bond_orders'], bond_type=get_bond_types(ase_atoms.info['covalent_bond_orders']))
+                orders_raw = ase_atoms.info['covalent_bond_orders']
+                orders_arr = np.asarray(orders_raw, dtype=float).reshape(-1)
+                nb = len(bonds)
+                if orders_arr.size != nb:
+                    if orders_arr.size < nb:
+                        pad = np.ones(nb - orders_arr.size, dtype=float)
+                        orders_arr = np.concatenate([orders_arr, pad])
+                    else:
+                        orders_arr = orders_arr[:nb]
+                edge_props_dict = dict(
+                    bond_order=orders_arr.tolist(),
+                    bond_type=get_bond_types(orders_arr),
+                )
             except:
                 print("'covalent_bond_orders' not in ase_atoms.info. Hence no edge_properties added for now.")
+                edge_props_dict = {}
         sgraph.add_edges_from([tuple((bonds[i][0], bonds[i][1], {key:value[i] for key,value in edge_props_dict.items()})) for i in range(len(bonds))])
     # else :
     #     print('Making a pymatgen StructureGraph.graph using CrystalNN')

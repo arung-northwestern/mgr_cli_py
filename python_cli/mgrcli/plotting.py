@@ -1029,19 +1029,19 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         "plot_windows": True,
         "plot_surface": True,
         "plot_surface_pbc": True,
-        "plot_surface_isovalue": 0.75,
+        "plot_surface_isovalue": 1.0,
         "plot_surface_opacity": 1.0,
         "plot_surface_pbc_opacity": 1.0,
         "plot_surface_types_opacity": 1.0,
-        "plot_surface_taubin_smooth": False,
-        "plot_surface_taubin_iterations": 10,
-        "plot_surface_taubin_lambda": 0.5,
-        "plot_surface_taubin_nu": -0.53,
+        "plot_surface_taubin_smooth": True,
+        "plot_surface_taubin_intensity": 0.05,
         "plot_projection": "perspective",
         "plot_layout": "dark",
     }
     if options:
         defaults.update({k: v for k, v in options.items() if v is not None})
+
+    mgr_visualize.resolve_plot_surface_taubin_params(defaults, options)
 
     if not defaults.get("plot_enable", True):
         for key in ("plot_cell", "plot_framework", "plot_maxima", "plot_connections", "plot_windows", "plot_surface", "plot_surface_pbc"):
@@ -1145,12 +1145,14 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         _emit(_step_labels[_step_idx])
         surface_trace = plot_surface_dgrid(
             dgrid=dgrid,
-            isovalue=float(defaults.get("plot_surface_isovalue", 0.75)),
+            isovalue=float(defaults.get("plot_surface_isovalue", 1.0)),
             ase_atoms=mat_atoms,
             region_labels=regions,
             opacity=float(defaults.get("plot_surface_opacity", 1.0)),
             name="Regions Surface",
-            taubin_smooth=bool(defaults.get("plot_surface_taubin_smooth", False)),
+            cscale=px.colors.qualitative.Pastel,
+            stylize=stylize,
+            taubin_smooth=bool(defaults.get("plot_surface_taubin_smooth", True)),
             taubin_iterations=int(defaults.get("plot_surface_taubin_iterations", 10)),
             taubin_lambda=float(defaults.get("plot_surface_taubin_lambda", 0.5)),
             taubin_nu=float(defaults.get("plot_surface_taubin_nu", -0.53)),
@@ -1161,12 +1163,14 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         _emit(_step_labels[_step_idx])
         surface_trace_pbc = plot_surface_dgrid(
             dgrid=dgrid,
-            isovalue=float(defaults.get("plot_surface_isovalue", 0.75)),
+            isovalue=float(defaults.get("plot_surface_isovalue", 1.0)),
             ase_atoms=mat_atoms,
             region_labels=regions_pbc,
             opacity=float(defaults.get("plot_surface_pbc_opacity", 1.0)),
             name="Regions Surface (PBC)",
-            taubin_smooth=bool(defaults.get("plot_surface_taubin_smooth", False)),
+            cscale=px.colors.qualitative.Pastel,
+            stylize=stylize,
+            taubin_smooth=bool(defaults.get("plot_surface_taubin_smooth", True)),
             taubin_iterations=int(defaults.get("plot_surface_taubin_iterations", 10)),
             taubin_lambda=float(defaults.get("plot_surface_taubin_lambda", 0.5)),
             taubin_nu=float(defaults.get("plot_surface_taubin_nu", -0.53)),
@@ -1180,7 +1184,7 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         cscale = px.colors.qualitative.Pastel
         surface_trace_cluster = plot_surface_dgrid(
             dgrid=dgrid,
-            isovalue=float(defaults.get("plot_surface_isovalue", 0.75)),
+            isovalue=float(defaults.get("plot_surface_isovalue", 1.0)),
             ase_atoms=mat_atoms,
             region_labels=regions_cluster - 1,
             opacity=float(defaults.get("plot_surface_types_opacity", 1.0)),
@@ -1188,7 +1192,7 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
             cscale=cscale,
             stylize=stylize,
             hover_label="Pocket type :",
-            taubin_smooth=bool(defaults.get("plot_surface_taubin_smooth", False)),
+            taubin_smooth=bool(defaults.get("plot_surface_taubin_smooth", True)),
             taubin_iterations=int(defaults.get("plot_surface_taubin_iterations", 10)),
             taubin_lambda=float(defaults.get("plot_surface_taubin_lambda", 0.5)),
             taubin_nu=float(defaults.get("plot_surface_taubin_nu", -0.53)),
@@ -1246,6 +1250,54 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
     return fig
 
 
+def save_mof_html(
+    path: Path | str,
+    results: Dict[str, Any],
+    *,
+    backend: str = "plotly",
+    stylize: bool = True,
+    options: Dict[str, Any] | None = None,
+    theme: str = "dark",
+) -> None:
+    """Write a standalone HTML visualization (Plotly or Three.js / MovieFigure).
+
+    Parameters
+    ----------
+    path
+        Output ``.html`` file path.
+    results
+        Plotting-ready dict from ``prepare_results_for_plot``.
+    backend
+        ``\"plotly\"`` (default) or ``\"threejs\"`` (``mgr.threejs_plotting.show_mof_threejs``).
+    stylize, options
+        Passed through to ``show_mof`` / ``show_mof_threejs`` (same keys as ``plot_*`` config).
+    theme
+        ``\"dark\"`` or ``\"white\"``. For Plotly, selects ``dark_layout`` / ``white_layout``.
+        For Three.js, sets ``plot_layout`` in options unless already provided.
+    """
+    backend_norm = (backend or "plotly").lower().strip()
+    opts = dict(options) if options else {}
+    theme_norm = (theme or "dark").lower().strip()
+    out = Path(path)
+
+    if backend_norm == "threejs":
+        from mgr.threejs_plotting import show_mof_threejs
+
+        opts["plot_layout"] = theme_norm
+        html_str = show_mof_threejs(results, stylize=stylize, options=opts)
+        out.write_text(html_str, encoding="utf-8")
+        return
+
+    if backend_norm != "plotly":
+        raise ValueError(f"Unknown plot backend {backend!r}; use 'plotly' or 'threejs'")
+
+    fig = show_mof(results, stylize=stylize, options=opts)
+    layout = white_layout if theme_norm == "white" else dark_layout
+    fig.update_layout(**layout)
+    fig.update_layout(title="MGR Analysis")
+    fig.write_html(str(out))
+
+
 __all__ = [
     "dark_layout",
     "white_layout",
@@ -1258,5 +1310,6 @@ __all__ = [
     "plot_mesh",
     "prepare_results_for_plot",
     "prewarm_framework_cache",
+    "save_mof_html",
     "show_mof",
 ]

@@ -943,7 +943,7 @@ def _hts_one_material(
                 from python_cli.mgrcli.cli import compute_dgrid_rust
             dgrid = compute_dgrid_rust(atoms, spacing)
 
-        mask_thickness = float(params.get("mask_thickness", 1.5))
+        mask_thickness = float(params.get("mask_thickness", 0.5))
         h_value = float(params.get("h_value", 0.4))
         min_distance = float(params.get("min_distance", 1.5))
         threshold_abs = float(params.get("threshold_abs", 1.5))
@@ -2709,7 +2709,7 @@ def main() -> None:
                             spacing=float(md_p.get("spacing", 0.5)),
                             h_value=float(md_p.get("h_value", 0.4)),
                             threshold_abs=float(md_p.get("threshold_abs", 1.5)),
-                            mask_thickness=float(md_p.get("mask_thickness", 1.5)),
+                            mask_thickness=float(md_p.get("mask_thickness", 0.5)),
                         )
                         _perc_title = f"Percolation probe r={selected_radius:.2f}Å | {material_name} | {_p_slug}"
                         if percolation_layout_choice == "white":
