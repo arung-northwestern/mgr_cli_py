@@ -1704,32 +1704,49 @@ def _batched_cylinders_mesh(centers, directions, heights, radius, colors, sectio
     norms[norms == 0] = 1.0
     directions = directions / norms
 
-    # Build rotation matrices: Z-axis → direction vector
+    # Rotation matrices mapping canonical +Z → bond direction (unit vectors).
+    # Degenerate when bond ∥ ±Z: the old code overwrote ||cross|| with 1.0 and fed that into
+    # Rodrigues as sin(θ), corrupting R (visible as twisted / multi-lobed cylinders in Three.js).
     z_axis = np.array([0, 0, 1], dtype=np.float32)
-    dots = directions[:, 2:3]                    # cos(theta)
-    cross = np.cross(z_axis, directions)         # rotation axis
-    cross_norms = np.linalg.norm(cross, axis=1, keepdims=True)
-    # For directions parallel to Z, any perpendicular axis works
-    cross[cross_norms[:, 0] < 1e-6] = [1, 0, 0]
-    cross_norms[cross_norms < 1e-6] = 1.0
-    cross = cross / cross_norms
+    cross = np.cross(z_axis, directions)
+    sin_theta = np.linalg.norm(cross, axis=1)
+    cos_theta = directions[:, 2]
 
-    sin_t = cross_norms[:, 0]
-    cos_t = dots[:, 0]
-    one_minus_cos = 1 - cos_t
+    eps = np.float32(1e-6)
+    parallel = sin_theta < eps
+    parallel_same = parallel & (cos_theta > np.float32(0))
+    parallel_oppo = parallel & ~parallel_same
 
-    # Rodrigues rotation matrix per cylinder (n, 3, 3)
-    ux, uy, uz = cross[:, 0], cross[:, 1], cross[:, 2]
     R = np.empty((n, 3, 3), dtype=np.float32)
-    R[:, 0, 0] = cos_t + ux * ux * one_minus_cos
-    R[:, 0, 1] = ux * uy * one_minus_cos - uz * sin_t
-    R[:, 0, 2] = ux * uz * one_minus_cos + uy * sin_t
-    R[:, 1, 0] = uy * ux * one_minus_cos + uz * sin_t
-    R[:, 1, 1] = cos_t + uy * uy * one_minus_cos
-    R[:, 1, 2] = uy * uz * one_minus_cos - ux * sin_t
-    R[:, 2, 0] = uz * ux * one_minus_cos - uy * sin_t
-    R[:, 2, 1] = uz * uy * one_minus_cos + ux * sin_t
-    R[:, 2, 2] = cos_t + uz * uz * one_minus_cos
+    eye3 = np.eye(3, dtype=np.float32)
+    # +Z → +Z
+    R[parallel_same] = eye3
+    # +Z → −Z : 180° about X
+    R180_x = np.array(
+        [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]],
+        dtype=np.float32,
+    )
+    R[parallel_oppo] = R180_x
+
+    general = ~parallel
+    if np.any(general):
+        u = cross[general] / sin_theta[general, np.newaxis]
+        ux, uy, uz = u[:, 0], u[:, 1], u[:, 2]
+        sin_t = sin_theta[general]
+        cos_t = cos_theta[general]
+        one_minus_cos = np.float32(1.0) - cos_t
+
+        Rg = np.empty((int(np.count_nonzero(general)), 3, 3), dtype=np.float32)
+        Rg[:, 0, 0] = cos_t + ux * ux * one_minus_cos
+        Rg[:, 0, 1] = ux * uy * one_minus_cos - uz * sin_t
+        Rg[:, 0, 2] = ux * uz * one_minus_cos + uy * sin_t
+        Rg[:, 1, 0] = uy * ux * one_minus_cos + uz * sin_t
+        Rg[:, 1, 1] = cos_t + uy * uy * one_minus_cos
+        Rg[:, 1, 2] = uy * uz * one_minus_cos - ux * sin_t
+        Rg[:, 2, 0] = uz * ux * one_minus_cos - uy * sin_t
+        Rg[:, 2, 1] = uz * uy * one_minus_cos + ux * sin_t
+        Rg[:, 2, 2] = cos_t + uz * uz * one_minus_cos
+        R[general] = Rg
 
     # Scale (radius in XY, height in Z), rotate, then translate
     heights_flat = heights.reshape(n)
