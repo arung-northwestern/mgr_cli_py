@@ -488,6 +488,7 @@ def show_percolation_threejs(
             atoms,
             probe_radius=probe_radius,
             isovalue=analysis.get("isovalue", 1.6),
+            step_size=2,  # 4× fewer vertices for speed on HF Spaces
             cluster_opacity=float(opts.get("plot_surface_opacity", 1.0)),
             # Keep percolation clusters unsmoothed to avoid patchy/miscolored domains.
             taubin_smooth=False,
@@ -497,6 +498,20 @@ def show_percolation_threejs(
         for trace in cluster_traces:
             tid = trace["id"]
             fig.groups[tid] = {"traces": [tid], "label": trace["name"]}
+
+    # Percolation windows — yellow circles + PLD-critical diamonds
+    if connections and percolation_history:
+        from .movies import make_percolation_windows_trace
+        window_traces = make_percolation_windows_trace(
+            analysis,
+            atoms,
+            probe_radius=probe_radius,
+            pld_tolerance=0.25,
+        )
+        if window_traces.get("windows", {}).get("data", {}).get("n_points", 0):
+            fig.add_trace(window_traces["windows"])
+        if window_traces.get("pld_critical", {}).get("data", {}).get("n_points", 0):
+            fig.add_trace(window_traces["pld_critical"])
 
     # Camera
     fig.set_camera(

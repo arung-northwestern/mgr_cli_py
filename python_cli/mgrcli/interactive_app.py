@@ -2670,6 +2670,7 @@ def main() -> None:
                                     atoms,
                                     probe_radius=selected_radius,
                                     isovalue=mesh_isovalue,
+                                    stepsize=2,  # 4× fewer vertices for speed
                                     stylize=True,
                                     opacity=1.0,
                                     taubin_smooth=False,
@@ -2723,6 +2724,18 @@ def main() -> None:
                                 plot_traces.append(pld_traces)
 
                         plot_traces.extend(cluster_traces)
+
+                        # Add percolation windows (yellow circles + PLD-critical red diamonds)
+                        if analysis.get("percolation_history"):
+                            window_traces = mgr.plot_percolation_windows(
+                                analysis,
+                                probe_radius=selected_radius,
+                                pld_tolerance=0.25,
+                            )
+                            if isinstance(window_traces, (list, tuple)):
+                                plot_traces.extend(window_traces)
+                            elif window_traces:
+                                plot_traces.append(window_traces)
 
                         plot_status.markdown(
                             _step_status(3, 3, "Rendering percolation figure"),

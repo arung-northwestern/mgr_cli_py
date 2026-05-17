@@ -5762,6 +5762,7 @@ def make_percolation_clusters_trace(
     style="surface",
     trace_id="percolation_clusters",
     cluster_opacity: float = 1.0,
+    step_size: int = 1,
     taubin_smooth: bool = False,
     taubin_iterations: int = 10,
     taubin_lambda: float = 0.5,
@@ -5828,7 +5829,7 @@ def make_percolation_clusters_trace(
             component_regions=list(comp),
             base_color=base_color,
             isovalue=isovalue,
-            step_size=1,
+            step_size=step_size,
             taubin_smooth=taubin_smooth,
             taubin_iterations=taubin_iterations,
             taubin_lambda=taubin_lambda,
@@ -5850,3 +5851,149 @@ def make_percolation_clusters_trace(
         traces.append(trace)
 
     return traces
+
+
+def make_percolation_windows_trace(
+    analysis: dict[str, Any],
+    atoms,
+    probe_radius: float | None = None,
+    pld_tolerance: float = 0.25,
+) -> dict[str, dict[str, Any]]:
+    """Build Three.js traces for windows along percolating clusters.
+
+    Returns two traces:
+    - ``"windows"`` — yellow circles for all windows in percolating components
+    - ``"pld_critical"`` — red diamonds for windows within ±*pld_tolerance* of PLD
+
+    Parameters
+    ----------
+    analysis:
+        Percolation analysis dict with keys: percolation_history, connections,
+        dgrid, regions, pld.
+    atoms:
+        ASE Atoms for cell information.
+    probe_radius:
+        Selected probe radius. If None, uses the last entry in percolation_history.
+    pld_tolerance:
+        Radius tolerance for PLD-critical windows (default ±0.25 Å).
+    """
+    import numpy as np
+
+    percolation_history = analysis.get("percolation_history", [])
+    connections = analysis.get("connections", [])
+    dgrid = np.asarray(analysis.get("dgrid", []))
+    regions = np.asarray(analysis.get("regions", []))
+    pld = float(analysis.get("pld", 0.0))
+
+    if not percolation_history:
+        return {"windows": {}, "pld_critical": {}}
+
+    # Find the entry for the selected probe radius
+    if probe_radius is None:
+        entry = percolation_history[-1]
+    else:
+        entry = next((e for e in percolation_history if e[0] >= probe_radius), None)
+        if entry is None:
+            return {"windows": {}, "pld_critical": {}}
+
+    _threshold, components = entry
+
+    # Collect all unique percolating region sets
+    unique_components: dict[tuple, list] = {}
+    for axis, comp_list in components.items():
+        for comp in comp_list:
+            key = tuple(sorted(comp))
+            if key not in unique_components:
+                unique_components[key] = []
+            unique_components[key].append(axis)
+
+    # Collect all region labels in percolating components
+    all_comp_regions: set[int] = set()
+    for comp in unique_components:
+        all_comp_regions.update(comp)
+
+    if not all_comp_regions:
+        return {"windows": {}, "pld_critical": {}}
+
+    # Map maxima label → region label using the regions array
+    maxima_info = np.asarray(analysis.get("maxima_info", []), dtype=int)
+    maxima_to_region: dict[int, int] = {}
+    if maxima_info.ndim == 2 and maxima_info.shape[1] >= 4:
+        for row in maxima_info:
+            label = int(row[0])
+            gx, gy, gz = int(row[1]), int(row[2]), int(row[3])
+            if 0 <= gx < regions.shape[0] and 0 <= gy < regions.shape[1] and 0 <= gz < regions.shape[2]:
+                rl = int(regions[gx, gy, gz])
+                if rl > 0:
+                    maxima_to_region[label] = rl
+
+    # Collect windows from connections whose maxima are both in percolating regions
+    all_window_positions: list[list[float]] = []
+    all_window_radii: list[float] = []
+    all_window_hover: list[str] = []
+    pld_positions: list[list[float]] = []
+    pld_radii: list[float] = []
+    pld_hover: list[str] = []
+
+    for c in connections:
+        if not c[1] or len(c) < 5:
+            continue
+        n1, n2 = c[0]
+        r1 = maxima_to_region.get(int(n1), -1)
+        r2 = maxima_to_region.get(int(n2), -1)
+        if r1 not in all_comp_regions or r2 not in all_comp_regions:
+            continue
+        pts = c[3] if c[3] is not None else []
+        wr = c[4] if c[4] is not None else []
+        ctype = str(c[2]) if len(c) > 2 else "internal"
+        for p, r in zip(pts, wr if len(wr) == len(pts) else [0.0] * len(pts)):
+            wp = np.asarray(p, dtype=float).tolist()
+            radius = float(r)
+            hover = (
+                f"trace: {ctype} windows<br>"
+                f"connection maxima: {n1}-{n2}<br>"
+                f"type: {ctype}<br>"
+                f"window radius: {radius:.3f} Å"
+            )
+            if pld > 0 and abs(radius - pld) <= pld_tolerance:
+                pld_positions.append(wp)
+                pld_radii.append(radius)
+                pld_hover.append(hover + f"<br>⚠ PLD-critical (±{pld_tolerance} Å)")
+            else:
+                all_window_positions.append(wp)
+                all_window_radii.append(radius)
+                all_window_hover.append(hover)
+
+    # Regular windows trace (yellow circles)
+    window_trace = _make_trace(
+        trace_id="percolation_windows",
+        trace_type="points",
+        name="Percolation windows",
+        data={
+            "positions": np.array(all_window_positions).reshape(-1).tolist() if all_window_positions else [],
+            "colors": [[1.0, 1.0, 0.0]] * len(all_window_positions),  # yellow
+            "sizes": [4.0] * len(all_window_positions),
+            "n_points": len(all_window_positions),
+        },
+        style={"color": [1.0, 1.0, 0.0], "size": 4.0, "symbol": "circle"},
+        hover=all_window_hover,
+        visible=True,
+    )
+
+    # PLD-critical windows trace (red diamonds)
+    pld_trace = _make_trace(
+        trace_id="percolation_windows_pld",
+        trace_type="points",
+        name="PLD-critical windows",
+        data={
+            "positions": np.array(pld_positions).reshape(-1).tolist() if pld_positions else [],
+            "colors": [[1.0, 0.2, 0.2]] * len(pld_positions),  # red
+            "sizes": [6.0] * len(pld_positions),
+            "n_points": len(pld_positions),
+        },
+        style={"color": [1.0, 0.2, 0.2], "size": 6.0, "symbol": "diamond"},
+        hover=pld_hover,
+        visible=True,
+    )
+
+    return {"windows": window_trace, "pld_critical": pld_trace}

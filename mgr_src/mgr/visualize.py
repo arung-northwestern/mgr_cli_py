@@ -2433,11 +2433,17 @@ def make_bg_image( type='radial', cmap='plasma_r'):
 #     return path_traces
 
 
-def plot_windows(connections, **kwargs):
+def plot_windows(connections, atoms=None, spacing=None, **kwargs):
     """
     It takes a list of connections and returns a plotly scatter trace of the windows.
     
+    When *atoms* and *spacing* are provided, windows in internal connections
+    that fall far outside the unit cell (beyond the wall tolerance) are
+    excluded — matching the Three.js backend behaviour.
+    
     :param connections: a list of lists, output from the connections from regions function
+    :param atoms: optional ASE Atoms for far_outside filtering
+    :param spacing: optional grid spacing for tolerance computation
     :return: A plotly scatter 3D trace of the windows
     """
 
@@ -2446,7 +2452,57 @@ def plot_windows(connections, **kwargs):
     import numpy as np 
     import plotly.graph_objects as go
 
-
+    # Optional far_outside filtering (same criteria as Three.js backend)
+    if atoms is not None and spacing is not None:
+        from .helper import compute_wall_cells, is_inside_or_close_to_boundary
+        dgrid_shape = None
+        inv_cell = None
+        wall_tol = None
+        # Try to infer dgrid shape from maxima or connections
+        for c in connections:
+            if c[1] and c[3] is not None and len(c[3]):
+                # We need dgrid shape — compute from cell and spacing
+                cell = atoms.get_cell().array.T
+                lengths = np.linalg.norm(cell, axis=0)
+                dgrid_shape = np.ceil(lengths / spacing).astype(int)
+                wall_tol = compute_wall_cells(atoms, float(spacing), wall_thickness=0.05)
+                try:
+                    inv_cell = np.linalg.inv(cell)
+                except np.linalg.LinAlgError:
+                    inv_cell = None
+                break
+        
+        if dgrid_shape is not None and wall_tol is not None and inv_cell is not None:
+            filtered_connections = []
+            for c in connections:
+                if not c[1]:
+                    continue
+                ctype = str(c[2]) if len(c) > 2 else "internal"
+                pts = c[3] if c[3] is not None else []
+                wr = c[4] if len(c) > 4 and c[4] is not None else []
+                # For internal connections, filter far_outside windows
+                if ctype == "internal":
+                    keep_pts = []
+                    keep_wr = []
+                    for p, r in zip(pts, wr if len(wr) == len(pts) else [0]*len(pts)):
+                        wp = np.asarray(p, dtype=float)
+                        frac = np.dot(wp, inv_cell)
+                        gc = frac * dgrid_shape
+                        loc = is_inside_or_close_to_boundary(
+                            [tuple(gc)], tuple(dgrid_shape), wall_tol
+                        )[0]
+                        if loc != "far_outside":
+                            keep_pts.append(p)
+                            keep_wr.append(r)
+                    if keep_pts:
+                        new_c = list(c)
+                        new_c[3] = keep_pts
+                        if len(c) > 4:
+                            new_c[4] = keep_wr
+                        filtered_connections.append(new_c)
+                else:
+                    filtered_connections.append(c)
+            connections = filtered_connections
 
     #* Let's make some window labels for showing on hover as information
     windows = np.vstack([c[3] for c in connections if c[1]])
@@ -3601,6 +3657,131 @@ def plot_percolated_cluster_meshes(percolation_history, distance_grid, regions, 
             pass
 
     return mesh_traces
+
+
+def plot_percolation_windows(
+    analysis: dict,
+    pld_tolerance: float = 0.25,
+    **kwargs,
+):
+    """Build Plotly traces for windows along percolating clusters.
+
+    Returns two Scatter3d traces:
+    - Regular windows: yellow circles
+    - PLD-critical windows (within ±pld_tolerance of PLD): red diamonds
+
+    Parameters
+    ----------
+    analysis:
+        Percolation analysis dict with keys: percolation_history, connections,
+        dgrid, regions, pld, maxima_info.
+    pld_tolerance:
+        Radius tolerance for PLD-critical windows (default ±0.25 Å).
+    """
+    import numpy as np
+    import plotly.graph_objects as go
+
+    percolation_history = analysis.get("percolation_history", [])
+    connections = analysis.get("connections", [])
+    regions = np.asarray(analysis.get("regions", []))
+    pld = float(analysis.get("pld", 0.0))
+    probe_radius = kwargs.pop("probe_radius", None)
+
+    if not percolation_history or not len(connections):
+        return [], []
+
+    # Find the entry for the selected probe radius
+    if probe_radius is None:
+        entry = percolation_history[-1]
+    else:
+        entry = next((e for e in percolation_history if e[0] >= probe_radius), None)
+        if entry is None:
+            return [], []
+
+    _threshold, components = entry
+
+    # Collect all unique percolating region sets
+    unique_components: dict[tuple, list] = {}
+    for axis, comp_list in components.items():
+        for comp in comp_list:
+            key = tuple(sorted(comp))
+            if key not in unique_components:
+                unique_components[key] = []
+            unique_components[key].append(axis)
+
+    all_comp_regions: set[int] = set()
+    for comp in unique_components:
+        all_comp_regions.update(comp)
+
+    if not all_comp_regions:
+        return [], []
+
+    # Map maxima label → region label
+    maxima_info = np.asarray(analysis.get("maxima_info", []), dtype=int)
+    maxima_to_region: dict[int, int] = {}
+    if maxima_info.ndim == 2 and maxima_info.shape[1] >= 4:
+        for row in maxima_info:
+            label = int(row[0])
+            gx, gy, gz = int(row[1]), int(row[2]), int(row[3])
+            if 0 <= gx < regions.shape[0] and 0 <= gy < regions.shape[1] and 0 <= gz < regions.shape[2]:
+                rl = int(regions[gx, gy, gz])
+                if rl > 0:
+                    maxima_to_region[label] = rl
+
+    # Collect windows
+    all_wx, all_wy, all_wz = [], [], []
+    all_hover = []
+    pld_wx, pld_wy, pld_wz = [], [], []
+    pld_hover = []
+
+    for c in connections:
+        if not c[1] or len(c) < 5:
+            continue
+        n1, n2 = c[0]
+        r1 = maxima_to_region.get(int(n1), -1)
+        r2 = maxima_to_region.get(int(n2), -1)
+        if r1 not in all_comp_regions or r2 not in all_comp_regions:
+            continue
+        pts = c[3] if c[3] is not None else []
+        wr = c[4] if c[4] is not None else []
+        ctype = str(c[2]) if len(c) > 2 else "internal"
+        for p, r in zip(pts, wr if len(wr) == len(pts) else [0.0] * len(pts)):
+            radius = float(r)
+            hover = (
+                f"{ctype} window<br>"
+                f"maxima: {n1}-{n2}<br>"
+                f"radius: {radius:.3f} Å"
+            )
+            if pld > 0 and abs(radius - pld) <= pld_tolerance:
+                pld_wx.append(p[0]); pld_wy.append(p[1]); pld_wz.append(p[2])
+                pld_hover.append(hover + f"<br>⚠ PLD-critical (±{pld_tolerance} Å)")
+            else:
+                all_wx.append(p[0]); all_wy.append(p[1]); all_wz.append(p[2])
+                all_hover.append(hover)
+
+    traces = []
+    if all_wx:
+        traces.append(go.Scatter3d(
+            x=all_wx, y=all_wy, z=all_wz,
+            mode="markers",
+            marker=dict(size=6, color="yellow", symbol="circle", opacity=0.8),
+            hovertext=all_hover,
+            hoverinfo="text",
+            name="Percolation windows",
+            showlegend=True,
+        ))
+    if pld_wx:
+        traces.append(go.Scatter3d(
+            x=pld_wx, y=pld_wy, z=pld_wz,
+            mode="markers",
+            marker=dict(size=8, color="red", symbol="diamond", opacity=0.9,
+                       line=dict(color="darkred", width=1)),
+            hovertext=pld_hover,
+            hoverinfo="text",
+            name=f"PLD-critical windows (±{pld_tolerance} Å)",
+            showlegend=True,
+        ))
+    return traces
 def plot_electrostatic_volume(potential_V, cell, atoms):
     """
     Create a Volume trace for the electrostatic potential with meaningful isosurfaces.

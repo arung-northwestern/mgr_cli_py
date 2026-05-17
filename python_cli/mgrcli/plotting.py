@@ -1212,8 +1212,15 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
             if c[1] and c[2] == "internal" and len(c) > 3 and c[3] is not None and np.asarray(c[3]).size >= 3
         ]
         if internal_for_windows:
+            # Estimate spacing from cell and dgrid shape for window filtering
+            _cell = mat_atoms.get_cell().array.T
+            _lengths = np.linalg.norm(_cell, axis=0)
+            _shape = np.asarray(dgrid.shape, dtype=float)
+            _est_spacing = float(np.mean(_lengths / np.maximum(_shape, 1.0)))
             window_trace = mgr_visualize.plot_windows(
                 internal_for_windows,
+                atoms=mat_atoms,
+                spacing=_est_spacing,
                 name="windows (internal)",
                 marker_color="red",
                 marker_size=10,
