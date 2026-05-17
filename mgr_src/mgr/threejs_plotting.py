@@ -19,6 +19,15 @@ from .movies import (
 from .visualize import resolve_plot_surface_taubin_params
 
 
+def _dgrid_spacing(atoms, dgrid: np.ndarray) -> float:
+    """Estimate grid spacing from cell vectors and dgrid shape."""
+    cell = atoms.get_cell().array.T
+    lengths = np.linalg.norm(cell, axis=0)
+    shape = np.asarray(dgrid.shape, dtype=float)
+    per_axis = lengths / np.maximum(shape, 1.0)
+    return float(np.mean(per_axis))
+
+
 def show_mof_threejs(
     results: Dict[str, Any],
     stylize: bool = True,
@@ -300,7 +309,7 @@ def show_mof_threejs(
             "maxima_pbc_dict": maxima_pbc_dict if maxima_pbc_dict is not None else {},
             "connections": connections,
         }
-        fig.add_windows(seg, hide_periodic=True)
+        fig.add_windows(seg, hide_periodic=True, atoms=mat_atoms, spacing=_dgrid_spacing(mat_atoms, dgrid))
 
     # Maxima
     if defaults.get("plot_maxima", True) and len(all_maxima_plot):

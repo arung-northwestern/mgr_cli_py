@@ -776,12 +776,40 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
     }
 
 
-def _serialize_windows_trace(seg: dict[str, Any]) -> dict[str, Any]:
+def _serialize_windows_trace(
+    seg: dict[str, Any],
+    atoms = None,
+    spacing: float | None = None,
+) -> dict[str, Any]:
     conns = list(seg.get("connections", []))
     internal_windows = []
     internal_hover = []
     periodic_windows = []
     periodic_hover = []
+
+    # Compute wall tolerance for "close or inside" criteria (same as maxima).
+    wall_tol = None
+    dgrid_shape = None
+    inv_cell = None
+    if atoms is not None and spacing is not None:
+        from .helper import compute_wall_cells
+        dgrid = np.asarray(seg.get("dgrid", []))
+        if dgrid.size:
+            dgrid_shape = np.asarray(dgrid.shape, dtype=float)
+            wall_tol = compute_wall_cells(atoms, spacing, wall_thickness=0.05)
+            cell = atoms.get_cell().array.T
+            try:
+                inv_cell = np.linalg.inv(cell)
+            except np.linalg.LinAlgError:
+                inv_cell = None
+
+    def _window_grid_coord(cart: np.ndarray) -> np.ndarray | None:
+        """Convert Cartesian window position to grid coordinates."""
+        if inv_cell is None or dgrid_shape is None:
+            return None
+        frac = np.dot(cart, inv_cell)
+        return frac * dgrid_shape
+
     for c in conns:
         if len(c) < 5 or not c[1]:
             continue
@@ -797,6 +825,18 @@ def _serialize_windows_trace(seg: dict[str, Any]) -> dict[str, Any]:
                 f"type: {ctype}\n"
                 f"size: {float(r):.3f} A"
             )
+            if ctype == "internal" and wall_tol is not None and dgrid_shape is not None:
+                # Reclassify far_outside windows as periodic
+                grid_c = _window_grid_coord(wp)
+                if grid_c is not None:
+                    from .helper import is_inside_or_close_to_boundary
+                    loc = is_inside_or_close_to_boundary(
+                        [tuple(grid_c)], tuple(dgrid_shape.astype(int)), wall_tol
+                    )[0]
+                    if loc == "far_outside":
+                        periodic_windows.append(wp)
+                        periodic_hover.append(txt.replace("internal", "periodic (wrapped)"))
+                        continue
             if ctype == "internal":
                 internal_windows.append(wp)
                 internal_hover.append(txt)
@@ -1712,8 +1752,10 @@ def make_windows_trace(
     style: str | dict | None = "internal_windows",
     name: str = "Windows",
     trace_id: str = "windows",
+    atoms = None,
+    spacing: float | None = None,
 ) -> dict[str, Any]:
-    payload = _serialize_windows_trace(seg)
+    payload = _serialize_windows_trace(seg, atoms=atoms, spacing=spacing)
     internal = _make_trace(
         trace_id=f"{trace_id}_internal",
         trace_type="points",
@@ -2702,10 +2744,18 @@ class MovieFigure:
         self,
         seg: dict[str, Any],
         hide_periodic: bool = True,
+        atoms = None,
+        spacing: float | None = None,
         **style: Any,
     ) -> "MovieFigure":
-        """Add window points between connected pores (internal + optional periodic)."""
-        windows = make_windows_trace(seg, style=style if style else "internal_windows")
+        """Add window points between connected pores (internal + optional periodic).
+
+        When *atoms* and *spacing* are provided, windows inside internal
+        connections that fall far outside the unit cell (beyond the wall
+        tolerance) are reclassified as periodic, so they're hidden by default
+        and don't appear as floating disconnected markers.
+        """
+        windows = make_windows_trace(seg, style=style if style else "internal_windows", atoms=atoms, spacing=spacing)
         self.add_trace(windows["internal"])
         if hide_periodic:
             windows["periodic"]["visible"] = False
@@ -5517,7 +5567,7 @@ def build_static_scene(
     if seg is not None:
         fig.add_maxima(seg, atoms, hide_periodic=hide_periodic)
         fig.add_connections(seg, atoms, hide_periodic=hide_periodic)
-        fig.add_windows(seg, hide_periodic=hide_periodic)
+        fig.add_windows(seg, hide_periodic=hide_periodic, atoms=atoms, spacing=spacing)
 
     return fig
 
