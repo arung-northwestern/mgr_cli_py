@@ -1459,9 +1459,9 @@ def main() -> None:
             cif_path = _safe_uploaded_cif_path(uploaded_file)
             st.session_state["uploaded_cif_temp_path"] = str(cif_path)
             atoms = _read_atoms_from_cif(cif_path)
-            # Defer bond detection — plotting functions compute bonds via bonds="auto".
-            # update_with_covalent_bonds (freud Voronoi + pymatgen) takes seconds on HF Spaces.
-            # We skip it here so the compute button appears instantly after upload.
+            from mgr.analyze import update_with_covalent_bonds
+
+            atoms = update_with_covalent_bonds(atoms)
             st.session_state[atoms_cache_key] = atoms
             st.session_state[atoms_source_key_state] = selected_source_key
             st.session_state[atoms_cif_path_state] = str(cif_path)
@@ -1480,7 +1480,9 @@ def main() -> None:
         cache_hit = st.session_state.get(atoms_source_key_state) == selected_source_key
         if not cache_hit:
             atoms = _read_atoms_from_cif(cif_path)
-            # Defer bond detection — plotting functions compute bonds via bonds="auto".
+            from mgr.analyze import update_with_covalent_bonds
+
+            atoms = update_with_covalent_bonds(atoms)
             st.session_state[atoms_cache_key] = atoms
             st.session_state[atoms_source_key_state] = selected_source_key
             st.session_state[atoms_cif_path_state] = str(cif_path)
