@@ -1665,8 +1665,32 @@ def main() -> None:
             )
             if mesh_framework and simple_framework:
                 st.warning("Select either mesh or simple framework.")
+            framework_quality = "medium"  # not applicable for Plotly
+            framework_bond_linewidth = 8.0
         else:
-            simple_framework = False
+            # Three.js: offer scatter as a separate option
+            simple_framework = st.checkbox(
+                "Show framework as scatter (points + lines)",
+                value=False,
+                help="Three.js: extremely fast scatter rendering (points + lines). "
+                     "Uses normal depth occlusion (hidden behind surfaces).",
+            )
+            if mesh_framework and simple_framework:
+                st.warning("Select either mesh or scatter framework.")
+            # Mesh quality selector (only when mesh is selected)
+            if mesh_framework:
+                quality_label = st.selectbox(
+                    "Mesh quality",
+                    ["low", "medium", "high"],
+                    index=0,  # default to low for HF Spaces
+                    help="low: fastest (hexagonal cylinders, 1× mesh). "
+                         "medium: balanced (octagonal cylinders, 3× meshes). "
+                         "high: smoothest (16-section cylinders, 3× meshes).",
+                )
+                framework_quality = quality_label
+            else:
+                framework_quality = "medium"
+            framework_bond_linewidth = 8.0
         projection_choice = st.selectbox(
             "Projection",
             ["perspective", "orthographic"],
@@ -2059,6 +2083,8 @@ def main() -> None:
                 plot_framework_show_rings=True,
                 plot_framework_mesh_scale=float(atom_scale),
                 plot_framework_bond_radius=float(bond_radius),
+                plot_framework_bond_linewidth=float(framework_bond_linewidth),
+                plot_framework_mesh_quality=framework_quality,
                 plot_surface=show_surface,
                 plot_surface_pbc=show_surface_pbc,
                 plot_surface_isovalue=surface_value,
@@ -3526,6 +3552,8 @@ def _render_hts_mode() -> None:
                         "plot_framework": hts_plot_framework,
                         "plot_framework_style": framework_style,
                         "plot_framework_show_rings": hts_show_rings,
+                        "plot_framework_mesh_quality": "low",  # HTS: fast default
+                        "plot_framework_bond_linewidth": 8.0,
                         "plot_cell": hts_plot_cell,
                         "plot_maxima": hts_plot_maxima,
                         "plot_surface": hts_show_surface,

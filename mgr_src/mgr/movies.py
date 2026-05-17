@@ -142,6 +142,7 @@ _TRACE_STYLE_TOPLEVEL_KEYS = frozenset(
         "size",
         "shininess",
         "specular",
+        "depthTest",
     }
 )
 
@@ -410,6 +411,8 @@ def _serialize_framework_mesh(
     representation: str = "ball_and_stick",
     kwargs_spheres: dict[str, Any] | None = None,
     kwargs_cylinders: dict[str, Any] | None = None,
+    sphere_sections: int = 2,
+    cylinder_sections: int = 15,
 ) -> dict[str, Any]:
     from .visualize import mesh_for_atoms
 
@@ -419,6 +422,8 @@ def _serialize_framework_mesh(
         kwargs_spheres=kwargs_spheres or {"scale": 0.65},
         kwargs_cylinders=kwargs_cylinders or {"radius": 0.15},
         representation=representation,
+        sphere_sections=sphere_sections,
+        cylinder_sections=cylinder_sections,
     )
     payload = _serialize_trimesh(mesh)
     payload["vertex_hover"] = _framework_vertex_hovertext(mesh, atoms)
@@ -1267,6 +1272,8 @@ def make_framework_trace(
     representation: str = "ball_and_stick",
     kwargs_spheres: dict[str, Any] | None = None,
     kwargs_cylinders: dict[str, Any] | None = None,
+    sphere_sections: int = 2,
+    cylinder_sections: int = 15,
 ) -> dict[str, Any]:
     def _ase_covalent_bonds(a: Atoms, mult: float = 1.05) -> list[list[int]]:
         cutoffs = np.asarray(natural_cutoffs(a, mult=mult), dtype=float)
@@ -1299,6 +1306,8 @@ def make_framework_trace(
         representation=representation,
         kwargs_spheres=kwargs_spheres,
         kwargs_cylinders=kwargs_cylinders,
+        sphere_sections=sphere_sections,
+        cylinder_sections=cylinder_sections,
     )
     return _make_trace(
         trace_id=trace_id,
@@ -1309,6 +1318,160 @@ def make_framework_trace(
         hover=payload.get("vertex_hover"),
         visible=True,
     )
+
+
+def make_framework_scatter_trace(
+    atoms: Atoms,
+    bonds: str | list | None = "auto",
+    style: str | dict | None = "framework",
+    name: str = "Framework",
+    trace_id: str = "framework",
+    atom_scale: float = 0.65,
+    bond_color: list[float] | None = None,
+    bond_linewidth: float = 8.0,
+    depth_test: bool = True,
+) -> dict[str, dict[str, Any]]:
+    """Create framework as scatter points + line segments (fast, no mesh).
+
+    Returns dict with ``"atoms"`` and ``"bonds"`` trace dicts suitable for
+    ``MovieFigure.add_trace()``.  Renders atoms as ``THREE.Points`` and bonds
+    as ``THREE.LineSegments`` — orders of magnitude fewer vertices than mesh.
+
+    When *depth_test* is ``True`` (default), framework respects normal depth
+    occlusion (hidden behind opaque surfaces).  Set ``False`` to render
+    framework on top of everything.
+
+    Parameters
+    ----------
+    atoms:
+        ASE Atoms object (framework).
+    bonds:
+        ``"auto"`` (detect from covalent radii), a ``list[list[int]]`` of
+        bond pairs, or ``None`` to skip bonds.
+    style:
+        Style name or dict (passed through to both traces).
+    name:
+        Base display name for the legend.
+    trace_id:
+        Base trace id (will produce ``trace_id + "_atoms"`` and ``"_bonds"``).
+    atom_scale:
+        Scale factor applied to covalent radii for point sizes.
+    bond_color:
+        RGB triple (0-1) for bond line colour.  Defaults to [0.5, 0.5, 0.5].
+    bond_linewidth:
+        Line width for bonds (8.0 = thick; WebGL may clamp on some
+        platforms).
+    depth_test:
+        If ``True``, framework is hidden behind opaque surfaces.  Set
+        ``False`` to always show framework on top.
+    """
+    from ase.data.colors import cpk_colors
+
+    # ---- Resolve bonds ----
+    if bonds == "auto":
+        if "covalent_bonds" in atoms.info and atoms.info["covalent_bonds"]:
+            bond_list = atoms.info["covalent_bonds"]
+        else:
+            cutoffs = np.asarray(natural_cutoffs(atoms, mult=1.05), dtype=float)
+            i_idx, j_idx = neighbor_list("ij", atoms, cutoffs, self_interaction=False)
+            seen: set[tuple[int, int]] = set()
+            bond_list = []
+            for i, j in zip(i_idx, j_idx, strict=False):
+                x, y = int(min(i, j)), int(max(i, j))
+                if x == y or (x, y) in seen:
+                    continue
+                seen.add((x, y))
+                bond_list.append([x, y])
+            atoms.info["covalent_bonds"] = bond_list
+    elif bonds is None:
+        bond_list = []
+    elif isinstance(bonds, list):
+        bond_list = bonds
+    else:
+        bond_list = []
+
+    n_atoms = int(len(atoms))
+    atomic_numbers = atoms.get_atomic_numbers()
+    symbols = atoms.get_chemical_symbols()
+    positions = atoms.get_positions()
+    masses = atomic_masses_table[atomic_numbers]
+
+    # ---- Atom colours from CPK ----
+    atom_colors_rgb = np.array([cpk_colors[an] for an in atomic_numbers], dtype=float)
+    atom_colors_flat = atom_colors_rgb.reshape(-1).tolist()
+
+    # ---- Atom point sizes from covalent radii ----
+    # Same scale as mesh spheres (covalent_radii * atom_scale), mapped to pixels.
+    # At typical camera distance where the unit cell fills ~half viewport height,
+    # a sphere of radius r Å occupies ~r/cell_size * viewport_height px.
+    # Multiplier 14.0 approximates this for common MOF cell sizes (20-40 Å).
+    radii = covalent_radii[atomic_numbers] * atom_scale
+    sizes = (radii * 14.0).tolist()
+
+    # ---- Positions flat ----
+    positions_flat = positions.reshape(-1).tolist()
+
+    # ---- Hover text ----
+    hover = [
+        f"Id: {i}\nElement: {s}\nMass: {m:.3f}\nPosition: {p[0]:.4f} {p[1]:.4f} {p[2]:.4f}"
+        for i, (s, m, p) in enumerate(zip(symbols, masses, positions))
+    ]
+
+    # Atom trace (points)
+    atom_trace = _make_trace(
+        trace_id=f"{trace_id}_atoms",
+        trace_type="points",
+        name=f"{name} (atoms)",
+        data={
+            "positions": positions_flat,
+            "colors": atom_colors_flat,
+            "sizes": sizes,
+            "n_points": n_atoms,
+        },
+        style={
+            "color": [0.7, 0.7, 0.7],
+            "size": float(max(sizes)) if sizes else 2.5,
+            "depthTest": depth_test,
+            "opacity": 0.95,
+        },
+        hover=hover,
+        visible=True,
+    )
+
+    # ---- Bond trace (line segments) ----
+    _bond_color = bond_color if bond_color is not None else [0.5, 0.5, 0.5]
+    if bond_list and len(bond_list) > 0:
+        bond_positions_flat: list[float] = []
+        for a_idx, b_idx in bond_list:
+            if a_idx < n_atoms and b_idx < n_atoms:
+                pa = positions[a_idx]
+                pb = positions[b_idx]
+                bond_positions_flat.extend([float(pa[0]), float(pa[1]), float(pa[2])])
+                bond_positions_flat.extend([float(pb[0]), float(pb[1]), float(pb[2])])
+        n_bond_segments = len(bond_list)
+    else:
+        bond_positions_flat = []
+        n_bond_segments = 0
+
+    bond_hex = int(round(_bond_color[0] * 255)) * 0x10000 + int(round(_bond_color[1] * 255)) * 0x100 + int(round(_bond_color[2] * 255))
+    bond_trace = _make_trace(
+        trace_id=f"{trace_id}_bonds",
+        trace_type="line_segments",
+        name=f"{name} (bonds)",
+        data={
+            "positions": bond_positions_flat,
+            "n_segments": n_bond_segments,
+        },
+        style={
+            "color": bond_hex,
+            "linewidth": bond_linewidth,
+            "depthTest": depth_test,
+        },
+        hover=None,
+        visible=True,
+    )
+
+    return {"atoms": atom_trace, "bonds": bond_trace}
 
 
 def make_surface_trace(
@@ -2401,13 +2564,26 @@ class MovieFigure:
         representation: str = "ball_and_stick",
         kwargs_spheres: dict[str, Any] | None = None,
         kwargs_cylinders: dict[str, Any] | None = None,
+        sphere_sections: int = 2,
+        cylinder_sections: int = 15,
+        generate_all_reps: bool = True,
         **style: Any,
     ) -> "MovieFigure":
         """Add framework atoms + bonds as a mesh trace (static).
-        representation: "ball_and_stick" (default), "stick", or "space_filling".
-        When called with default representation, both ball-and-stick and stick
-        meshes are added; the stick mesh starts hidden and can be toggled in the viewer.
+
+        representation: "ball_and_stick" (default), "stick", or
+        "space_filling".
+
+        When *generate_all_reps* is ``True`` and representation is
+        ``"ball_and_stick"``, stick and space-filling meshes are also
+        generated (hidden, toggleable in viewer).  Set ``False`` for large
+        structures to avoid 3× generation cost — precomputes ~2.6s for
+        P1-Cu-BTC vs ~0.9s without alternates.
         """
+        shared = {
+            "sphere_sections": sphere_sections,
+            "cylinder_sections": cylinder_sections,
+        }
         if representation == "ball_and_stick":
             trace = make_framework_trace(
                 atoms,
@@ -2415,31 +2591,36 @@ class MovieFigure:
                 style=style if style else "framework",
                 kwargs_spheres=kwargs_spheres,
                 kwargs_cylinders=kwargs_cylinders,
+                **shared,
             )
             self.add_trace(trace)
-            # Also add stick and space-filling representations (start hidden)
-            stick_trace = make_framework_trace(
-                atoms, bonds=bonds, trace_id="framework_stick",
-                name="Framework (stick)", representation="stick",
-                style={"visible": False, "side": "FrontSide"},
-                kwargs_spheres=kwargs_spheres,
-                kwargs_cylinders=kwargs_cylinders,
-            )
-            self.add_trace(stick_trace)
-            sf_trace = make_framework_trace(
-                atoms, bonds=bonds, trace_id="framework_spacefill",
-                name="Framework (spacefill)", representation="space_filling",
-                style={"visible": False, "side": "FrontSide"},
-                kwargs_spheres=kwargs_spheres,
-                kwargs_cylinders=kwargs_cylinders,
-            )
-            self.add_trace(sf_trace)
+            if generate_all_reps:
+                # Also add stick and space-filling representations (start hidden)
+                stick_trace = make_framework_trace(
+                    atoms, bonds=bonds, trace_id="framework_stick",
+                    name="Framework (stick)", representation="stick",
+                    style={"visible": False, "side": "FrontSide"},
+                    kwargs_spheres=kwargs_spheres,
+                    kwargs_cylinders=kwargs_cylinders,
+                    **shared,
+                )
+                self.add_trace(stick_trace)
+                sf_trace = make_framework_trace(
+                    atoms, bonds=bonds, trace_id="framework_spacefill",
+                    name="Framework (spacefill)", representation="space_filling",
+                    style={"visible": False, "side": "FrontSide"},
+                    kwargs_spheres=kwargs_spheres,
+                    kwargs_cylinders=kwargs_cylinders,
+                    **shared,
+                )
+                self.add_trace(sf_trace)
         else:
             trace = make_framework_trace(
                 atoms, bonds=bonds, representation=representation,
                 style=style if style else "framework",
                 kwargs_spheres=kwargs_spheres,
                 kwargs_cylinders=kwargs_cylinders,
+                **shared,
             )
             self.add_trace(trace)
         return self
@@ -3206,7 +3387,12 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
 
       Object.values(objectsById).forEach(function(obj) {
         if (obj && obj.material && obj.material.isPointsMaterial) {
-          obj.material.depthTest = true;
+          // Respect forceDepthTest (set by framework scatter) if present
+          if (obj.material.userData && obj.material.userData.forceDepthTest !== undefined) {
+            obj.material.depthTest = obj.material.userData.forceDepthTest;
+          } else {
+            obj.material.depthTest = true;
+          }
           obj.material.depthWrite = false;
           var base = obj.material.userData && obj.material.userData.baseSize ? obj.material.userData.baseSize : obj.material.size;
           applyPointSize(obj, base);
@@ -3461,6 +3647,12 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       } else {
         mat = new THREE.LineBasicMaterial({ color: color, linewidth: style.linewidth || 1 });
       }
+      // Support style.depthTest (default true; set false for framework scatter).
+      // Store original so ortho toggle does not stomp it.
+      if (style.depthTest !== undefined) {
+        mat.depthTest = !!style.depthTest;
+        mat.userData.forceDepthTest = !!style.depthTest;
+      }
       const lines = new THREE.LineSegments(geo, mat);
       if (style.dashSize !== undefined) lines.computeLineDistances();
       lines.name = trace.id;
@@ -3491,6 +3683,12 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         opacity: 0.95,
       });
       mat.userData.baseSize = baseSize;
+      // Support style.depthTest (default true; set false for framework scatter).
+      // Store original so ortho toggle does not stomp it.
+      if (style.depthTest !== undefined) {
+        mat.depthTest = !!style.depthTest;
+        mat.userData.forceDepthTest = !!style.depthTest;
+      }
       if (colorOverride !== undefined && (!trace.data.colors || !trace.data.colors.length)) {
         mat.color.copy(threeColorFromStyle(colorOverride, 0xffffff));
       } else if (!trace.data.colors || !trace.data.colors.length) {
@@ -3682,7 +3880,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       return first && first.traces ? first.traces.some(pred) : false;
     }
     setVisibleIfPresent("labelShowCell", hasStaticOrFrameTrace(t => t.id === "cell"));
-    setVisibleIfPresent("labelShowFramework", hasStaticOrFrameTrace(t => t.id === "framework"));
+    setVisibleIfPresent("labelShowFramework", hasStaticOrFrameTrace(t => t.id === "framework" || t.id === "framework_atoms" || t.id === "framework_bonds"));
     setVisibleIfPresent("labelShowSurface", hasStaticOrFrameTrace(t => t.id === "surface"));
     setVisibleIfPresent("labelShowGuests", hasStaticOrFrameTrace(t => t.id === "guests" || (t.id && t.id.startsWith("guests_"))));
     setVisibleIfPresent("labelShowGuestBonds", hasStaticOrFrameTrace(t => t.id && t.id.startsWith("guestbonds_")));
@@ -3983,13 +4181,18 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
               obj.material.needsUpdate = true;
             }
           });
-          if (trace.id === "framework") {
+          if (trace.id === "framework" || trace.id === "framework_atoms" || trace.id === "framework_bonds") {
             updateFrameworkVisibility();
             const activeId = reprSelect.value === "stick"
               ? "framework_stick"
               : (reprSelect.value === "space_filling" ? "framework_spacefill" : "framework");
             const active = objectsById[activeId];
             if (active) active.visible = showFramework.checked && val > 0.001;
+            // Also handle scatter traces
+            ["framework_atoms", "framework_bonds"].forEach(function(sid) {
+              const sobj = objectsById[sid];
+              if (sobj) sobj.visible = showFramework.checked && val > 0.001;
+            });
           }
         });
         wrapper.appendChild(label);
@@ -4089,15 +4292,25 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const sf = objectsById["framework_spacefill"];
       const arRings = objectsById["aromatic_rings"];
       const arHigh = objectsById["aromatic_highlights"];
+      // Scatter traces (points + lines, no representation toggle)
+      const scatterAtoms = objectsById["framework_atoms"];
+      const scatterBonds = objectsById["framework_bonds"];
       if (fw) fw.visible = showFramework.checked && val === "ball_and_stick";
       if (stick) stick.visible = showFramework.checked && val === "stick";
       if (sf) sf.visible = showFramework.checked && val === "space_filling";
+      if (scatterAtoms) scatterAtoms.visible = showFramework.checked;
+      if (scatterBonds) scatterBonds.visible = showFramework.checked;
       if (arRings) arRings.visible = showFramework.checked;
       if (arHigh) arHigh.visible = showFramework.checked;
       updateFrameworkCellVisibility();
     }
     showFramework.addEventListener("change", updateFrameworkVisibility);
     reprSelect.addEventListener("change", updateFrameworkVisibility);
+    // Hide representation selector when only scatter traces exist (no mesh variants)
+    if (!objectsById["framework"] && !objectsById["framework_stick"] && !objectsById["framework_spacefill"]) {
+      const reprLabel = reprSelect.parentNode;
+      if (reprLabel) reprLabel.style.display = "none";
+    }
     // Initialize visibility so only the selected representation is shown
     updateFrameworkVisibility();
     showSurface.addEventListener("change", () => {
@@ -4152,7 +4365,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     function updateFrameworkCellVisibility() {
       const exploded = parseFloat(explodeSlider.value) > 0;
       if (cellFramework) {
-        const ids = ["framework", "framework_stick", "framework_spacefill"];
+        const ids = ["framework", "framework_stick", "framework_spacefill", "framework_atoms", "framework_bonds"];
         const anyVisible = ids.some(id => { const obj = objectsById[id]; return obj && obj.visible; });
         cellFramework.visible = exploded && anyVisible;
       }

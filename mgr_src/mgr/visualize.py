@@ -1571,7 +1571,8 @@ def cylinders_for_bonds(bonds, ase_atoms, radius=0.25, bond_rgba_array=[127, 128
 
 def mesh_for_atoms(ase_atoms, bonds=None, colormap=None, bond_rgba_array=[127, 128, 129, 255],
                    kwargs_spheres=dict(scale=0.5, radii=None), kwargs_cylinders=dict(radius=0.25), return_scene=False,
-                   use_batched=True, representation="ball_and_stick"):
+                   use_batched=True, representation="ball_and_stick",
+                   sphere_sections=2, cylinder_sections=15):
     """
     > It takes an ASE atoms object and returns a trimesh object that can be rendered in a Jupyter
     notebook
@@ -1585,6 +1586,8 @@ def mesh_for_atoms(ase_atoms, bonds=None, colormap=None, bond_rgba_array=[127, 1
     :param return_scene: if True, returns a trimesh.Scene object, which can be rendered with the
     trimesh.Scene.show() method, defaults to False (optional)
     :param use_batched: if True, uses the fast numpy-batched path (~300× faster), defaults to True
+    :param sphere_sections: icosphere subdivisions (1–3, lower=faster)
+    :param cylinder_sections: angular slices for cylinders (6–24, lower=faster)
     :return: A trimesh.Scene object.
     """
 
@@ -1603,6 +1606,8 @@ def mesh_for_atoms(ase_atoms, bonds=None, colormap=None, bond_rgba_array=[127, 1
             scale=scale,
             radius=radius,
             representation=representation,
+            sphere_sections=sphere_sections,
+            cylinder_sections=cylinder_sections,
         )
 
     # Fallback: original PyVista loop path (for return_scene or debugging)
@@ -1820,6 +1825,29 @@ def _batched_cylinders_mesh(centers, directions, heights, radius, colors, sectio
 
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces, vertex_colors=colors, process=False)
     return mesh
+
+
+# ---------------------------------------------------------------------------
+# Framework mesh quality presets
+# ---------------------------------------------------------------------------
+# Controls icosphere subdivisions and cylinder sections for batched mesh.
+# Lower values = faster rendering, fewer vertices.
+#
+# sphere_sections → icosphere subdivisions:
+#   1-2 → subdiv=2 (42 verts/atom, 80 faces/atom) — fast, looks good
+#   3+  → subdiv=3 (162 verts/atom, 320 faces/atom) — very smooth
+#
+# cylinder_sections → angular slices:
+#   4  → coarse prisms — fastest
+#   8  → octagonal — balanced
+#   16 → smooth cylinders — highest quality
+#
+# For HF Spaces deployment, use "low" as default.
+MESH_QUALITY_PRESETS: dict[str, dict[str, int]] = {
+    "low":    {"sphere_sections": 1, "cylinder_sections": 4},   # fastest, ~3× fewer cyl verts than medium
+    "medium": {"sphere_sections": 1, "cylinder_sections": 8},   # balanced default
+    "high":   {"sphere_sections": 2, "cylinder_sections": 16},  # 42-vert spheres + smooth cylinders
+}
 
 
 def batched_mesh_for_atoms(ase_atoms, bonds=None, colormap=None, bond_rgba_array=[127, 128, 129, 255],

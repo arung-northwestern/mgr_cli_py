@@ -77,6 +77,8 @@ def show_mof_threejs(
         "plot_framework_show_rings": True,
         "plot_framework_mesh_scale": 0.65,
         "plot_framework_bond_radius": 0.15,
+        "plot_framework_bond_linewidth": 8.0,
+        "plot_framework_mesh_quality": "medium",
         "plot_maxima": True,
         "plot_maxima_show_spheres": False,
         "plot_connections": True,
@@ -152,24 +154,41 @@ def show_mof_threejs(
     # Framework
     if defaults.get("plot_framework", True):
         _emit(_step_labels[_step_idx])
-        bonds = "auto"
-        representation = "ball_and_stick"
         if framework_style == "scatter":
-            representation = "stick"
-        kwargs = {}
-        if framework_style == "mesh":
-            kwargs["kwargs_spheres"] = {
-                "scale": float(defaults.get("plot_framework_mesh_scale", 0.65)),
+            # True scatter: points + line segments (fast, no mesh geometry)
+            from .movies import make_framework_scatter_trace
+            scatter_traces = make_framework_scatter_trace(
+                mat_atoms,
+                bonds="auto",
+                style="framework",
+                atom_scale=float(defaults.get("plot_framework_mesh_scale", 0.65)),
+                bond_linewidth=float(defaults.get("plot_framework_bond_linewidth", 8.0)),
+            )
+            fig.add_trace(scatter_traces["atoms"])
+            fig.add_trace(scatter_traces["bonds"])
+        else:
+            # Mesh path — apply quality preset for faster rendering
+            from .visualize import MESH_QUALITY_PRESETS
+            mesh_quality = str(defaults.get("plot_framework_mesh_quality", "medium")).lower()
+            quality = MESH_QUALITY_PRESETS.get(mesh_quality, MESH_QUALITY_PRESETS["medium"])
+            kwargs: dict[str, Any] = {
+                "sphere_sections": quality["sphere_sections"],
+                "cylinder_sections": quality["cylinder_sections"],
+                "generate_all_reps": True,  # always precompute stick + spacefill for toggle
             }
-            kwargs["kwargs_cylinders"] = {
-                "radius": float(defaults.get("plot_framework_bond_radius", 0.15)),
-            }
-        fig.add_framework(
-            mat_atoms,
-            bonds=bonds,
-            representation=representation,
-            **kwargs,
-        )
+            if framework_style == "mesh":
+                kwargs["kwargs_spheres"] = {
+                    "scale": float(defaults.get("plot_framework_mesh_scale", 0.65)),
+                }
+                kwargs["kwargs_cylinders"] = {
+                    "radius": float(defaults.get("plot_framework_bond_radius", 0.15)),
+                }
+            fig.add_framework(
+                mat_atoms,
+                bonds="auto",
+                representation="ball_and_stick" if framework_style == "mesh" else "stick",
+                **kwargs,
+            )
         if defaults.get("plot_framework_show_rings", True):
             _emit(_step_labels[_step_idx])
             fig.add_aromatic_rings(mat_atoms)
