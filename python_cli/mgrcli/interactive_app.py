@@ -1462,6 +1462,8 @@ def main() -> None:
             from mgr.analyze import update_with_covalent_bonds
 
             atoms = update_with_covalent_bonds(atoms)
+            st.toast(f"Structure loaded: {atoms.get_chemical_formula()} — {len(atoms)} atoms, "
+                     f"{len(atoms.info.get('covalent_bonds',[]))} bonds", icon="✅")
             st.session_state[atoms_cache_key] = atoms
             st.session_state[atoms_source_key_state] = selected_source_key
             st.session_state[atoms_cif_path_state] = str(cif_path)
@@ -1483,6 +1485,8 @@ def main() -> None:
             from mgr.analyze import update_with_covalent_bonds
 
             atoms = update_with_covalent_bonds(atoms)
+            st.toast(f"Sample loaded: {atoms.get_chemical_formula()} — {len(atoms)} atoms, "
+                     f"{len(atoms.info.get('covalent_bonds',[]))} bonds", icon="✅")
             st.session_state[atoms_cache_key] = atoms
             st.session_state[atoms_source_key_state] = selected_source_key
             st.session_state[atoms_cif_path_state] = str(cif_path)
