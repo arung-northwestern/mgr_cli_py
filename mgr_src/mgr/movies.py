@@ -3928,6 +3928,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const sh = segLon || 14;
       const geo = new THREE.SphereBufferGeometry(1.0, sw, sh);
       const style = styleFor(trace);
+      const positions = trace.data.positions || [];
       const hasInstanceColors = !!(trace.data && trace.data.colors && trace.data.colors.length >= 3);
       const c = style.color;
       const col = hasInstanceColors
@@ -3943,6 +3944,27 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const mesh = new THREE.InstancedMesh(geo, mat, n);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       if (mesh.instanceColor) mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
+
+      // Populate instance transforms (position + scale per atom)
+      const radii = trace.data.radii || [];
+      const colors = trace.data.colors || [];
+      const dummy = new THREE.Object3D();
+      for (let a = 0; a < n; a++) {
+        const x = positions[a * 3] || 0;
+        const y = positions[a * 3 + 1] || 0;
+        const z = positions[a * 3 + 2] || 0;
+        const r = (radii[a]) || 0.6;
+        dummy.position.set(x, y, z);
+        dummy.scale.set(r, r, r);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(a, dummy.matrix);
+        if (mesh.setColorAt && colors.length >= (a * 3 + 3)) {
+          mesh.setColorAt(a, new THREE.Color(colors[a * 3], colors[a * 3 + 1], colors[a * 3 + 2]));
+        }
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+
       mesh.name = trace.id;
       scene.add(mesh);
       objectsById[trace.id] = mesh;
