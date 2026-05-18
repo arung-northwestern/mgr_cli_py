@@ -301,7 +301,7 @@ def _serialize_trimesh(mesh: trimesh.Trimesh) -> dict[str, Any]:
 
 
 # Keys in trace.data that are large numerical arrays eligible for binary packing.
-_BINARY_PACK_KEYS = frozenset({"positions", "indices", "colors", "radii", "sizes"})
+_BINARY_PACK_KEYS = frozenset({"positions", "indices", "colors", "radii", "sizes", "start_positions", "end_positions"})
 
 
 def _pack_frame_data(frame: dict[str, Any]) -> dict[str, Any]:
@@ -1945,41 +1945,57 @@ def make_framework_instanced_trace(
         visible=True,
     )
 
-    # Bond trace (triangulated cylinders for proper 3D appearance)
+    # Bond trace (compact instanced cylinders — browser builds geometry)
+    # Trim cylinders to start/end near sphere surfaces (not center-to-center).
+    cyl_radius = 0.08 if representation == "stick" else 0.15
+    atom_radii_vals = covalent_radii[atomic_numbers] * (0.15 if representation == "stick" else atom_scale)
     if bond_list and len(bond_list) > 0:
-        from .visualize import mesh_for_atoms
-        cyl_radius = 0.08 if representation == "stick" else 0.15
-        bond_mesh = mesh_for_atoms(
-            atoms,
-            bonds=bond_list,
-            kwargs_spheres={"scale": 0.001},  # nearly invisible spheres
-            kwargs_cylinders={"radius": cyl_radius},
-            representation=representation,  # "stick" → two-tone CPK colors
-            sphere_sections=1,
-            cylinder_sections=8,
-        )
-        bond_payload = _serialize_trimesh(bond_mesh)
-        # Filter to only cylinder vertices (bond-colored, not sphere-colored)
-        # Keep all vertices — the tiny spheres are negligible
-        bond_trace = _make_trace(
-            trace_id=f"{trace_id}_bonds",
-            trace_type="mesh",
-            name=f"{name} (bonds)",
-            data=bond_payload,
-            style={"opacity": 1.0, "roughness": 0.38, "side": "DoubleSide"},
-            hover=None,
-            visible=True,
-        )
+        bond_starts: list[float] = []
+        bond_ends: list[float] = []
+        bond_colors: list[float] = []
+        for a_idx, b_idx in bond_list:
+            if a_idx >= n_atoms or b_idx >= n_atoms:
+                continue
+            pa = positions[a_idx]
+            pb = positions[b_idx]
+            d = pb - pa
+            length = np.linalg.norm(d)
+            if length < 1e-8:
+                continue
+            unit_d = d / length
+            # Trim so cylinders don't poke through spheres
+            start = pa + unit_d * atom_radii_vals[a_idx] * 0.98
+            end = pb - unit_d * atom_radii_vals[b_idx] * 0.98
+            bond_starts.extend(start.tolist())
+            bond_ends.extend(end.tolist())
+            if representation == "stick":
+                # Two-tone: send both half-bonds (start→mid, mid→end)
+                mid = (start + end) / 2.0
+                bond_starts.extend(start.tolist())
+                bond_ends.extend(mid.tolist())
+                bond_colors.extend(atom_colors[a_idx].tolist())
+                bond_colors.extend(atom_colors[b_idx].tolist())
+            else:
+                bond_colors.extend([0.5, 0.5, 0.5])
+        n_bonds = len(bond_colors) // 3
     else:
-        bond_trace = _make_trace(
-            trace_id=f"{trace_id}_bonds",
-            trace_type="mesh",
-            name=f"{name} (bonds)",
-            data={"positions": [], "indices": [], "n_vertices": 0, "n_triangles": 0},
-            style={"opacity": 1.0},
-            hover=None,
-            visible=True,
-        )
+        bond_starts, bond_ends, bond_colors = [], [], []
+        n_bonds = 0
+    bond_trace = _make_trace(
+        trace_id=f"{trace_id}_bonds",
+        trace_type="instanced_cylinders",
+        name=f"{name} (bonds)",
+        data={
+            "start_positions": bond_starts,
+            "end_positions": bond_ends,
+            "colors": bond_colors,
+            "radius": cyl_radius,
+            "n_bonds": n_bonds,
+        },
+        style=style if style else "framework",
+        hover=None,
+        visible=True,
+    )
 
     return {"atoms": atom_trace, "bonds": bond_trace}
 
@@ -3976,6 +3992,57 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       objectsById[trace.id] = mesh;
       return mesh;
     }
+    function addInstancedCylinders(trace) {
+      const n = trace.data.n_bonds || 0;
+      if (!n) { console.warn("Skipping empty instanced cylinders:", trace.id); return null; }
+      const starts = trace.data.start_positions || [];
+      const ends = trace.data.end_positions || [];
+      const colors = trace.data.colors || [];
+      const radius = trace.data.radius || 0.08;
+      const style = styleFor(trace);
+      // Unit cylinder: height 1 along Y, centered at origin
+      const geo = new THREE.CylinderGeometry(1.0, 1.0, 1.0, 10);
+      const hasColors = colors.length >= 3;
+      const col = hasColors ? new THREE.Color(1, 1, 1) : new THREE.Color(0x808080);
+      const mat = new THREE.MeshPhongMaterial({
+        color: col,
+        shininess: style.shininess !== undefined ? style.shininess : 10,
+        specular: style.specular !== undefined ? style.specular : 0x151515,
+      });
+      const mesh = new THREE.InstancedMesh(geo, mat, n);
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      if (mesh.instanceColor) mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
+
+      const _up = new THREE.Vector3(0, 1, 0);
+      const _dir = new THREE.Vector3();
+      const _mid = new THREE.Vector3();
+      const _quat = new THREE.Quaternion();
+      const dummy = new THREE.Object3D();
+
+      for (let b = 0; b < n; b++) {
+        const sx = starts[b * 3], sy = starts[b * 3 + 1], sz = starts[b * 3 + 2];
+        const ex = ends[b * 3], ey = ends[b * 3 + 1], ez = ends[b * 3 + 2];
+        _mid.set((sx + ex) * 0.5, (sy + ey) * 0.5, (sz + ez) * 0.5);
+        _dir.set(ex - sx, ey - sy, ez - sz);
+        const len = _dir.length();
+        if (len < 1e-8) { _dir.set(0, 1, 0); } else { _dir.divideScalar(len); }
+        _quat.setFromUnitVectors(_up, _dir);
+        dummy.position.copy(_mid);
+        dummy.quaternion.copy(_quat);
+        dummy.scale.set(radius, len, radius);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(b, dummy.matrix);
+        if (mesh.setColorAt && colors.length >= (b * 3 + 3)) {
+          mesh.setColorAt(b, new THREE.Color(colors[b * 3], colors[b * 3 + 1], colors[b * 3 + 2]));
+        }
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      mesh.name = trace.id;
+      scene.add(mesh);
+      objectsById[trace.id] = mesh;
+      return mesh;
+    }
 
     function addUnitCellLines(trace) {
       const st = styleFor(trace);
@@ -4066,6 +4133,9 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         }
         addInstancedSpheres(trace, 14, 14);
       }
+      else if (trace.type === "instanced_cylinders") {
+        addInstancedCylinders(trace);
+      }
     });
 
     // ---- Lazy surface loading ----
@@ -4108,6 +4178,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       else if (trace.type === "line_segments") addLineSegments(trace);
       else if (trace.type === "points") addPoints(trace);
       else if (trace.type === "unit_cell_lines") addUnitCellLines(trace);
+      else if (trace.type === "instanced_cylinders") addInstancedCylinders(trace);
     });
 
     // Guest instanced meshes for animation (supports multi-component ids like guests_CO2)
@@ -4386,19 +4457,20 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     const meshOpacityContainer = document.getElementById("meshOpacityContainer");
     if (meshOpacityContainer) {
       const meshTraces = [];
-      staticTraces.forEach(t => { if (t.type === "mesh") meshTraces.push(t); });
+      const _opacityTypes = ["mesh", "instanced_spheres", "instanced_cylinders"];
+      staticTraces.forEach(t => { if (_opacityTypes.indexOf(t.type) >= 0) meshTraces.push(t); });
       if (getFrameCount() > 0 && getFrame(0) && getFrame(0).traces) {
         getFrame(0).traces.forEach(t => {
-          if (t.type === "mesh" && !meshTraces.some(mt => mt.id === t.id)) meshTraces.push(t);
+          if (_opacityTypes.indexOf(t.type) >= 0 && !meshTraces.some(mt => mt.id === t.id)) meshTraces.push(t);
         });
       }
+      // IDs of all framework sub-traces that should NOT get individual sliders
+      const fwSubIds = ["framework_atoms", "framework_bonds", "framework_stick_atoms", "framework_stick_bonds", "framework_spacefill", "aromatic_rings", "aromatic_highlights"];
       meshTraces.forEach(trace => {
-        // Skip alternate-representation meshes — their opacity is controlled by the main slider
-        if (trace.id === "framework_stick" || trace.id === "framework_spacefill") return;
+        // Skip framework sub-traces — they get a single merged slider below
+        if (fwSubIds.indexOf(trace.id) >= 0) return;
         // Skip percolation cluster meshes — grouped by direction in legend
         if (trace.id && trace.id.startsWith("percolation_clusters_")) return;
-        // Skip aromatic traces — opacity is hard-coded in style
-        if (trace.id === "aromatic_rings" || trace.id === "aromatic_highlights") return;
         const wrapper = document.createElement("div");
         wrapper.style.cssText = "display:flex;align-items:center;gap:4px;";
         const label = document.createElement("label");
@@ -4417,27 +4489,27 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         opacitySlider.addEventListener("input", () => {
           const val = parseFloat(opacitySlider.value);
           const targetIds = [trace.id];
-          // If this is the main framework slider, also update alternate representations
-          if (trace.id === "framework") {
-            targetIds.push("framework_stick", "framework_spacefill", "aromatic_rings", "aromatic_highlights");
+          // If this is any framework slider, also update linked traces
+          if (trace.id === "framework" || trace.id === "framework_atoms" || trace.id === "framework_bonds") {
+            targetIds.push("framework_atoms", "framework_bonds", "aromatic_rings", "aromatic_highlights");
           }
           targetIds.forEach(tid => {
             const obj = objectsById[tid];
             if (obj && obj.material) {
-              var isFw = tid === "framework" || tid === "framework_stick" || tid === "framework_spacefill";
+              var isFw = tid === "framework" || tid === "framework_stick" || tid === "framework_spacefill" || tid === "framework_atoms" || tid === "framework_bonds" || tid === "aromatic_rings" || tid === "aromatic_highlights";
               var hiddenByOpacity = val <= 0.001;
               if (obj.userData && obj.userData.originalCastShadow === undefined) {
                 obj.userData.originalCastShadow = obj.castShadow;
                 obj.userData.originalReceiveShadow = obj.receiveShadow;
               }
+              if (obj.userData && obj.userData.originalOpacity === undefined) {
+                obj.userData.originalOpacity = obj.material.opacity;
+              }
+              const baseOp = obj.userData.originalOpacity || 1.0;
               const opaqueEnough = val >= 0.999;
               if (isFw) {
-                // Opacity only — visibility follows Representation + Framework checkbox.
-                // At exactly zero, hide to avoid ghost/shadow outlines from postprocessing.
-                obj.material.opacity = val;
-                obj.material.transparent = val < 1.0;
-                // Keep framework depth writes on while fading so bonds remain occluded
-                // by atom surfaces and do not appear to poke through.
+                obj.material.opacity = val * baseOp;
+                obj.material.transparent = (val * baseOp) < 1.0;
                 obj.material.depthWrite = true;
                 obj.material.depthTest = true;
                 obj.material.side = THREE.FrontSide;
@@ -4479,6 +4551,40 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         wrapper.appendChild(opacitySlider);
         meshOpacityContainer.appendChild(wrapper);
       });
+      // Single merged framework slider — controls all framework sub-traces together
+      var hasFwSub = false;
+      fwSubIds.forEach(function(sid) { if (objectsById[sid]) hasFwSub = true; });
+      if (hasFwSub) {
+        const fwWrapper = document.createElement("div");
+        fwWrapper.style.cssText = "display:flex;align-items:center;gap:4px;";
+        const fwLabel = document.createElement("label");
+        fwLabel.style.cssText = "font-size:10px;white-space:nowrap;width:70px;overflow:hidden;text-overflow:ellipsis;";
+        fwLabel.textContent = "Framework";
+        const fwSlider = document.createElement("input");
+        fwSlider.type = "range"; fwSlider.min = "0"; fwSlider.max = "1"; fwSlider.step = "0.05";
+        fwSlider.value = "1";
+        fwSlider.style.cssText = "flex:1;";
+        fwSlider.addEventListener("input", () => {
+          const v = parseFloat(fwSlider.value);
+          fwSubIds.forEach(tid => {
+            const o = objectsById[tid];
+            if (!o || !o.material) return;
+            if (o.userData.originalOpacity === undefined) o.userData.originalOpacity = o.material.opacity;
+            const b = o.userData.originalOpacity || 1.0;
+            o.material.opacity = v * b;
+            o.material.transparent = (v * b) < 1.0;
+            o.material.depthWrite = true;
+            o.material.depthTest = true;
+            if (o.userData.originalSide !== undefined) o.material.side = o.userData.originalSide;
+            o.visible = v > 0.001;
+            o.material.needsUpdate = true;
+          });
+          updateFrameworkVisibility();
+        });
+        fwWrapper.appendChild(fwLabel);
+        fwWrapper.appendChild(fwSlider);
+        meshOpacityContainer.appendChild(fwWrapper);
+      }
       // Stacking-order note for overlapping mesh traces (e.g. multiple surfaces)
       if (meshTraces.length > 0) {
         const note = document.createElement("div");
