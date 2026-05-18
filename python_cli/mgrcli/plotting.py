@@ -1057,8 +1057,6 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
     # Quality presets (matching Three.js backend)
     _plot_quality = str(defaults.get("plot_quality", "medium")).lower()
     _surf_stepsize = 2 if _plot_quality in ("ultra-low", "low") else 1
-    if _plot_quality == "ultra-low":
-        framework_style = "scatter"  # force scatter for speed
 
     # Pre-compute which steps will run so we can show accurate progress.
     _step_labels = []

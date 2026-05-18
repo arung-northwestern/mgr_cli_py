@@ -160,11 +160,9 @@ def show_mof_threejs(
         }
     )
 
-    # Ultra-low quality: force scatter framework + coarse surfaces
+    # Ultra-low quality: coarse surfaces (framework style from UI checkboxes)
     mesh_quality = str(defaults.get("plot_framework_mesh_quality", "medium")).lower()
     _surf_step = 2 if mesh_quality == "ultra-low" else 1  # surface step_size
-    if mesh_quality == "ultra-low":
-        framework_style = "scatter"  # override for speed
 
     # Framework
     if defaults.get("plot_framework", True):
