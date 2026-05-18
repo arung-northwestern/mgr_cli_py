@@ -1927,8 +1927,13 @@ def make_framework_instanced_trace(
 
     # Atom radii (covalent radii × scale)
     radii = covalent_radii[atomic_numbers] * atom_scale
+    masses = atomic_masses_table[atomic_numbers]
 
     # Atom trace (InstancedMesh — one draw call for all atoms)
+    atom_hover = [
+        f"Id: {i}\nElement: {s}\nMass: {m:.3f}\nPosition: {p[0]:.4f} {p[1]:.4f} {p[2]:.4f}"
+        for i, (s, m, p) in enumerate(zip(symbols, masses, positions))
+    ]
     atom_trace = _make_trace(
         trace_id=f"{trace_id}_atoms",
         trace_type="instanced_spheres",
@@ -1941,7 +1946,7 @@ def make_framework_instanced_trace(
             "n_atoms": n_atoms,
         },
         style=style if style else "framework",
-        hover=None,
+        hover=atom_hover,
         visible=True,
     )
 
@@ -1953,6 +1958,7 @@ def make_framework_instanced_trace(
         bond_starts: list[float] = []
         bond_ends: list[float] = []
         bond_colors: list[float] = []
+        bond_hover: list[str] = []
         for a_idx, b_idx in bond_list:
             if a_idx >= n_atoms or b_idx >= n_atoms:
                 continue
@@ -1968,18 +1974,21 @@ def make_framework_instanced_trace(
             end = pb - unit_d * atom_radii_vals[b_idx] * 0.98
             bond_starts.extend(start.tolist())
             bond_ends.extend(end.tolist())
+            ht = f"Bond: {symbols[a_idx]}({a_idx}) \u2194 {symbols[b_idx]}({b_idx})\nLength: {length:.3f} \u00c5"
             if representation == "stick":
-                # Two-tone: send both half-bonds (start→mid, mid→end)
                 mid = (start + end) / 2.0
                 bond_starts.extend(start.tolist())
                 bond_ends.extend(mid.tolist())
                 bond_colors.extend(atom_colors[a_idx].tolist())
                 bond_colors.extend(atom_colors[b_idx].tolist())
+                bond_hover.extend([ht, ht])
             else:
                 bond_colors.extend([0.5, 0.5, 0.5])
+                bond_hover.append(ht)
         n_bonds = len(bond_colors) // 3
     else:
         bond_starts, bond_ends, bond_colors = [], [], []
+        bond_hover = []
         n_bonds = 0
     bond_trace = _make_trace(
         trace_id=f"{trace_id}_bonds",
@@ -1993,7 +2002,7 @@ def make_framework_instanced_trace(
             "n_bonds": n_bonds,
         },
         style=style if style else "framework",
-        hover=None,
+        hover=bond_hover if bond_hover else None,
         visible=True,
     )
 
@@ -5068,6 +5077,22 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           const p = gt.data.positions.slice(idx * 3, idx * 3 + 3);
           const s = gt.data.symbols[idx] || "?";
           txt = `trace: ${hit.object.name}\nframe: ${frame}\natom: ${idx}\nelement: ${s}\nxyz: (${p[0].toFixed(3)}, ${p[1].toFixed(3)}, ${p[2].toFixed(3)})`;
+        }
+      } else if (hit.object.name === "framework_atoms" || hit.object.name === "framework_stick_atoms" || hit.object.name === "framework_spacefill") {
+        const idx = hit.instanceId ?? -1;
+        if (idx >= 0) {
+          const trace = staticTraces.find(t => t.id === hit.object.name);
+          if (trace && trace.hover && idx < trace.hover.length) {
+            txt = trace.hover[idx];
+          }
+        }
+      } else if (hit.object.name === "framework_bonds" || hit.object.name === "framework_stick_bonds") {
+        const idx = hit.instanceId ?? -1;
+        if (idx >= 0) {
+          const trace = staticTraces.find(t => t.id === hit.object.name);
+          if (trace && trace.hover && idx < trace.hover.length) {
+            txt = trace.hover[idx];
+          }
         }
       } else if (hit.object.name && objectsById[hit.object.name]) {
         const frNow = getFrame(frame);
