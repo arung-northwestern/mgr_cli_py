@@ -179,6 +179,17 @@ def show_mof_threejs(
             )
             fig.add_trace(scatter_traces["atoms"])
             fig.add_trace(scatter_traces["bonds"])
+        elif framework_style == "instanced":
+            # InstancedMesh: compact atom/bond data (~30 KB), browser builds geometry
+            from .movies import make_framework_instanced_trace
+            instanced_traces = make_framework_instanced_trace(
+                mat_atoms,
+                bonds="auto",
+                style="framework",
+                atom_scale=float(defaults.get("plot_framework_mesh_scale", 0.65)),
+            )
+            fig.add_trace(instanced_traces["atoms"])
+            fig.add_trace(instanced_traces["bonds"])
         else:
             # Mesh path — apply quality preset for faster rendering
             from .visualize import MESH_QUALITY_PRESETS

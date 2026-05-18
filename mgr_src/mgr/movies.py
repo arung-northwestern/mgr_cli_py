@@ -1878,6 +1878,113 @@ def make_guest_trace(
     )
 
 
+def make_framework_instanced_trace(
+    atoms: Atoms,
+    bonds: str | list | None = "auto",
+    style: str | dict | None = "framework",
+    name: str = "Framework",
+    trace_id: str = "framework",
+    atom_scale: float = 0.65,
+    bond_color: list[float] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Create framework as InstancedMesh spheres + line segments.
+
+    Sends compact atom/bond data (~30 KB) instead of triangulated meshes
+    (~100 MB).  The browser builds geometry locally with Three.js
+    InstancedMesh — visually identical to the mesh path, ~3000× smaller
+    payload.
+
+    Returns dict with ``"atoms"`` (instanced_spheres) and ``"bonds"``
+    (line_segments) trace dicts.
+    """
+    from ase.data.colors import cpk_colors
+
+    # Resolve bonds
+    if bonds == "auto":
+        if "covalent_bonds" in atoms.info and atoms.info["covalent_bonds"]:
+            bond_list = atoms.info["covalent_bonds"]
+        else:
+            cutoffs = np.asarray(natural_cutoffs(atoms, mult=1.05), dtype=float)
+            i_idx, j_idx = neighbor_list("ij", atoms, cutoffs, self_interaction=False)
+            seen: set[tuple[int, int]] = set()
+            bond_list = []
+            for i, j in zip(i_idx, j_idx, strict=False):
+                x, y = int(min(i, j)), int(max(i, j))
+                if x == y or (x, y) in seen:
+                    continue
+                seen.add((x, y))
+                bond_list.append([x, y])
+            atoms.info["covalent_bonds"] = bond_list
+    elif bonds is None:
+        bond_list = []
+    elif isinstance(bonds, list):
+        bond_list = bonds
+    else:
+        bond_list = []
+
+    n_atoms = int(len(atoms))
+    atomic_numbers = atoms.get_atomic_numbers()
+    symbols = atoms.get_chemical_symbols()
+    positions = atoms.get_positions()
+
+    # Atom colors (CPK)
+    atom_colors = np.array([cpk_colors[an] for an in atomic_numbers], dtype=float)
+
+    # Atom radii (covalent radii × scale)
+    radii = covalent_radii[atomic_numbers] * atom_scale
+
+    # Atom trace (InstancedMesh — one draw call for all atoms)
+    atom_trace = _make_trace(
+        trace_id=f"{trace_id}_atoms",
+        trace_type="instanced_spheres",
+        name=f"{name} (atoms)",
+        data={
+            "positions": positions.reshape(-1).tolist(),
+            "symbols": list(symbols),
+            "colors": atom_colors.reshape(-1).tolist(),
+            "radii": radii.astype(float).tolist(),
+            "n_atoms": n_atoms,
+        },
+        style=style if style else "framework",
+        hover=None,
+        visible=True,
+    )
+
+    # Bond trace (line segments)
+    _bond_color = bond_color if bond_color is not None else [0.5, 0.5, 0.5]
+    if bond_list and len(bond_list) > 0:
+        bond_positions_flat: list[float] = []
+        for a_idx, b_idx in bond_list:
+            if a_idx < n_atoms and b_idx < n_atoms:
+                pa = positions[a_idx]
+                pb = positions[b_idx]
+                bond_positions_flat.extend([float(pa[0]), float(pa[1]), float(pa[2])])
+                bond_positions_flat.extend([float(pb[0]), float(pb[1]), float(pb[2])])
+        n_bond_segments = len(bond_list)
+    else:
+        bond_positions_flat = []
+        n_bond_segments = 0
+
+    bond_hex = int(round(_bond_color[0] * 255)) * 0x10000 + int(round(_bond_color[1] * 255)) * 0x100 + int(round(_bond_color[2] * 255))
+    bond_trace = _make_trace(
+        trace_id=f"{trace_id}_bonds",
+        trace_type="line_segments",
+        name=f"{name} (bonds)",
+        data={
+            "positions": bond_positions_flat,
+            "n_segments": n_bond_segments,
+        },
+        style={
+            "color": bond_hex,
+            "linewidth": 3.0,
+        },
+        hover=None,
+        visible=True,
+    )
+
+    return {"atoms": atom_trace, "bonds": bond_trace}
+
+
 def _minimum_image_displacement(
     p: np.ndarray, q: np.ndarray, cell: np.ndarray | None
 ) -> np.ndarray:

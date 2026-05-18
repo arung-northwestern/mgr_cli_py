@@ -1704,11 +1704,22 @@ def main() -> None:
                 st.session_state[_last_preset_key] = quality_label
 
             # Framework checkboxes
+            _instanced_key = "viz_instanced_framework"
+            if _instanced_key not in st.session_state:
+                st.session_state[_instanced_key] = True  # default: instanced on
+
+            instanced_framework = st.checkbox(
+                "Show framework as instanced (fast 3D spheres)",
+                value=st.session_state[_instanced_key],
+                key=_instanced_key,
+                help="Browser builds 3D sphere geometry locally — visually identical "
+                     "to mesh but 500× smaller payload. Recommended for web.",
+            )
             mesh_framework = st.checkbox(
-                "Show framework as mesh",
-                value=st.session_state[_mesh_key],
+                "Show framework as mesh (pre-triangulated)",
+                value=st.session_state[_mesh_key] and not st.session_state[_instanced_key],
                 key=_mesh_key,
-                help="Renders framework as atom spheres + bond cylinders.",
+                help="Pre-triangulated spheres + cylinders. Heavy payload (~100 MB).",
             )
             simple_framework = st.checkbox(
                 "Show framework as scatter (points + lines)",
@@ -1717,11 +1728,17 @@ def main() -> None:
                 help="Extremely fast scatter rendering. Normal depth occlusion.",
             )
 
-            if mesh_framework and simple_framework:
-                st.warning("Select either mesh or scatter framework.")
+            # Mutual exclusion: only one framework style
+            checked = sum([instanced_framework, mesh_framework, simple_framework])
+            if checked > 1:
+                st.warning("Select exactly one framework style.")
+            # Default to instanced if nothing checked
+            if checked == 0:
+                st.session_state[_instanced_key] = True
+                st.rerun()
 
-            # Atom/bond sliders (only when mesh is selected)
-            if mesh_framework:
+            # Atom/bond sliders (only when mesh or instanced is selected)
+            if instanced_framework or mesh_framework:
                 atom_scale = st.slider("Atom scale", 0.1, 2.0, 0.65, 0.05,
                     help="Scale factor for atom sphere radii.")
                 bond_radius = st.slider("Bond radius", 0.05, 1.0, 0.15, 0.05,
@@ -2102,7 +2119,11 @@ def main() -> None:
         else:
             material_name = getattr(cif_path, 'stem', 'Material')
             st.markdown(f"## Material: **{material_name}**")
-            framework_style = "scatter" if simple_framework and not mesh_framework else "mesh"
+            framework_style = (
+                "scatter" if simple_framework else
+                "instanced" if instanced_framework else
+                "mesh"
+            )
             main_plot_status = st.empty()
 
             plot_log: List[str] = []
@@ -2117,7 +2138,7 @@ def main() -> None:
                 )
 
             viz_opts = dict(
-                plot_framework=(simple_framework or mesh_framework),
+                plot_framework=(simple_framework or instanced_framework or mesh_framework),
                 plot_framework_style=framework_style,
                 plot_framework_show_rings=True,
                 plot_framework_mesh_scale=float(atom_scale),
