@@ -216,7 +216,7 @@ DEFAULT_STYLES: dict[str, dict[str, Any]] = {
         "linewidth": 4,
     },
     "aromatic_highlights": {
-        "color": [0.12, 0.44, 0.85],
+        "color": [0.20, 0.55, 0.95],
         "opacity": 0.3,
         "roughness": 0.5,
         "side": "DoubleSide",
