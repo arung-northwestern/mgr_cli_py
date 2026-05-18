@@ -1886,16 +1886,14 @@ def make_framework_instanced_trace(
     trace_id: str = "framework",
     atom_scale: float = 0.65,
     bond_color: list[float] | None = None,
+    representation: str = "ball_and_stick",
 ) -> dict[str, dict[str, Any]]:
-    """Create framework as InstancedMesh spheres + line segments.
+    """Create framework as InstancedMesh spheres + cylinder mesh bonds.
 
-    Sends compact atom/bond data (~30 KB) instead of triangulated meshes
-    (~100 MB).  The browser builds geometry locally with Three.js
-    InstancedMesh — visually identical to the mesh path, ~3000× smaller
-    payload.
+    Sends compact atom data (~30 KB) for instanced spheres + triangulated
+    cylinders for bonds (~20 MB).  The browser builds sphere geometry locally.
 
-    Returns dict with ``"atoms"`` (instanced_spheres) and ``"bonds"``
-    (line_segments) trace dicts.
+    representation: "ball_and_stick" (default) or "stick" (two-tone bonds).
     """
     from ase.data.colors import cpk_colors
 
@@ -1953,13 +1951,13 @@ def make_framework_instanced_trace(
     # Bond trace (triangulated cylinders for proper 3D appearance)
     if bond_list and len(bond_list) > 0:
         from .visualize import mesh_for_atoms
-        # Create mesh with zero-radius spheres + full cylinders
+        cyl_radius = 0.08 if representation == "stick" else 0.15
         bond_mesh = mesh_for_atoms(
             atoms,
             bonds=bond_list,
             kwargs_spheres={"scale": 0.001},  # nearly invisible spheres
-            kwargs_cylinders={"radius": 0.15},
-            representation="ball_and_stick",
+            kwargs_cylinders={"radius": cyl_radius},
+            representation=representation,  # "stick" → two-tone CPK colors
             sphere_sections=1,
             cylinder_sections=8,
         )

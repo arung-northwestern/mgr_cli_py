@@ -190,10 +190,11 @@ def show_mof_threejs(
             )
             fig.add_trace(instanced_traces["atoms"])
             fig.add_trace(instanced_traces["bonds"])
-            # Stick variant: smaller spheres, hidden by default
+            # Stick variant: smaller spheres, two-tone CPK bonds, hidden by default
             stick_traces = make_framework_instanced_trace(
                 mat_atoms, bonds="auto", trace_id="framework_stick",
-                name="Framework (stick)", atom_scale=float(defaults.get("plot_framework_mesh_scale", 0.65)) * 0.3,
+                name="Framework (stick)", atom_scale=float(defaults.get("plot_framework_mesh_scale", 0.65)) * 0.05,
+                representation="stick",
             )
             fig.add_trace(stick_traces["atoms"])
             fig.add_trace(stick_traces["bonds"])
