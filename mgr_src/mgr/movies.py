@@ -1632,21 +1632,12 @@ def make_aromatic_rings_trace(
             line_positions.extend(circle_3d[i].tolist())
             line_positions.extend(circle_3d[j].tolist())
 
-        # Fill polygon — regular n-gon in the ring plane, matching Plotly's
-        # pv.Polygon(center=c, radius=np.linalg.norm(r[0]-c)*0.95,
-        #            normal=..., n_sides=len(r)).delaunay_2d()
+        # Fill polygon — use actual ring atom positions as vertices (not
+        # regular n-gon approximation).  Vertices align perfectly with
+        # stick bond intersection points in every representation.
+        # Center point + fan triangulation from actual atom positions.
         n_sides = len(ring)
-        radius = np.mean(np.linalg.norm(ring_pos - center, axis=1)) * 0.95
-        angles = np.linspace(0, 2 * np.pi, n_sides, endpoint=False)
-        poly_local = np.column_stack([
-            radius * np.cos(angles),
-            radius * np.sin(angles),
-            np.zeros(n_sides),
-        ])
-        poly_3d = rot.apply(poly_local) + center
-
-        # Center point + fan triangulation (convex regular polygon)
-        verts = np.vstack([poly_3d, center.reshape(1, -1)])
+        verts = np.vstack([ring_pos, center.reshape(1, -1)])
         faces = np.array(
             [[n_sides, i, (i + 1) % n_sides] for i in range(n_sides)],
             dtype=int,
