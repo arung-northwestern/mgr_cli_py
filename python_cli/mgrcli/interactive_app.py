@@ -1055,7 +1055,7 @@ def _hts_one_material(
                 props = regionprops(results["regions"])
                 bins = np.linspace(0, 30, 50)
                 rag = mgr.add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, atoms, dgrid_r.shape)
-                js_threshold = float(options.get("js_threshold", 0.2))
+                js_threshold = float(options.get("js_threshold", 0.15))
                 rag = mgr.add_clustering_to_rag_geometry_js(rag, props, pbc_groups, atoms, dgrid_r.shape, use_pbc=True, js_threshold=js_threshold)
                 results["regions_cluster"] = mgr.clustering_grid_from_regions(results["regions"], rag, cluster_key="cluster_geom_pbc")
                 results["pocket_types_detected"] = True
@@ -1857,7 +1857,7 @@ def main() -> None:
             help="Uses dithered transparency for surfaces to reduce sorting artifacts in overlapping semi-transparent meshes.",
         )
 
-        js_threshold = 0.2
+        js_threshold = 0.15
         if detect_pocket_types:
             js_threshold = st.number_input(
                 "Jensen-Shannon Threshold",
@@ -3473,9 +3473,9 @@ def _render_hts_mode() -> None:
             hts_save_pore_dia_csv = st.checkbox("Save pore diameter CSV", value=False, key="hts_save_pore_dia")
             hts_detect_pocket_types = st.checkbox("Detect pocket types", value=False, key="hts_detect_pocket_types")
             if hts_detect_pocket_types or hts_plot_pocket_types:
-                hts_js_threshold = st.slider("Jensen–Shannon threshold for pocket clustering", 0.05, 0.5, 0.2, 0.01, key="hts_js_threshold")
+                hts_js_threshold = st.slider("Jensen–Shannon threshold for pocket clustering", 0.05, 0.5, 0.15, 0.01, key="hts_js_threshold")
             else:
-                hts_js_threshold = 0.2
+                hts_js_threshold = 0.15
             hts_do_psd = st.checkbox("Compute PSD", value=False, key="hts_psd")
             hts_psd_domain = st.radio("PSD domain", ["Occupiable only", "Accessible only", "Both"], index=0, key="hts_psd_domain")
             if hts_psd_domain in ("Accessible only", "Both"):

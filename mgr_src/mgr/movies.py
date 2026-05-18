@@ -5982,7 +5982,7 @@ def make_percolation_windows_trace(
             "sizes": [6.0] * len(all_window_positions),
             "n_points": len(all_window_positions),
         },
-        style={"color": [1.0, 1.0, 0.0], "size": 6.0, "symbol": "circle", "depthTest": False},
+        style={"color": [1.0, 1.0, 0.0], "size": 6.0, "symbol": "circle"},
         hover=all_window_hover,
         visible=True,
     )
@@ -5998,7 +5998,7 @@ def make_percolation_windows_trace(
             "sizes": [8.0] * len(pld_positions),
             "n_points": len(pld_positions),
         },
-        style={"color": [1.0, 0.2, 0.2], "size": 8.0, "symbol": "diamond", "depthTest": False},
+        style={"color": [1.0, 0.2, 0.2], "size": 8.0, "symbol": "diamond"},
         hover=pld_hover,
         visible=True,
     )
