@@ -180,7 +180,7 @@ def show_mof_threejs(
             fig.add_trace(scatter_traces["atoms"])
             fig.add_trace(scatter_traces["bonds"])
         elif framework_style == "instanced":
-            # InstancedMesh: compact atom/bond data (~30 KB), browser builds geometry
+            # InstancedMesh: compact atom data + cylinder mesh for bonds
             from .movies import make_framework_instanced_trace
             instanced_traces = make_framework_instanced_trace(
                 mat_atoms,
@@ -190,6 +190,35 @@ def show_mof_threejs(
             )
             fig.add_trace(instanced_traces["atoms"])
             fig.add_trace(instanced_traces["bonds"])
+            # Stick variant: smaller spheres, hidden by default
+            stick_traces = make_framework_instanced_trace(
+                mat_atoms, bonds="auto", trace_id="framework_stick",
+                name="Framework (stick)", atom_scale=float(defaults.get("plot_framework_mesh_scale", 0.65)) * 0.3,
+            )
+            fig.add_trace(stick_traces["atoms"])
+            fig.add_trace(stick_traces["bonds"])
+            fig.update_traces({"visible": False}, selector={"id": "framework_stick_atoms"})
+            fig.update_traces({"visible": False}, selector={"id": "framework_stick_bonds"})
+            # Spacefill variant: vdw radii, no bonds, hidden by default
+            from ase.data import vdw_radii, colors as ase_colors
+            sf_an = mat_atoms.get_atomic_numbers()
+            sf_radii = vdw_radii[sf_an]
+            sf_colors = np.array([ase_colors.cpk_colors[an] for an in sf_an], dtype=float)
+            sf_trace = _make_trace(
+                trace_id="framework_spacefill",
+                trace_type="instanced_spheres",
+                name="Framework (spacefill)",
+                data={
+                    "positions": mat_atoms.get_positions().reshape(-1).tolist(),
+                    "colors": sf_colors.reshape(-1).tolist(),
+                    "radii": sf_radii.astype(float).tolist(),
+                    "n_atoms": int(len(mat_atoms)),
+                },
+                style={"visible": False},
+                hover=None,
+                visible=False,
+            )
+            fig.add_trace(sf_trace)
         else:
             # Mesh path — apply quality preset for faster rendering
             from .visualize import MESH_QUALITY_PRESETS

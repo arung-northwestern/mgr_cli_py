@@ -1950,37 +1950,41 @@ def make_framework_instanced_trace(
         visible=True,
     )
 
-    # Bond trace (line segments)
-    _bond_color = bond_color if bond_color is not None else [0.5, 0.5, 0.5]
+    # Bond trace (triangulated cylinders for proper 3D appearance)
     if bond_list and len(bond_list) > 0:
-        bond_positions_flat: list[float] = []
-        for a_idx, b_idx in bond_list:
-            if a_idx < n_atoms and b_idx < n_atoms:
-                pa = positions[a_idx]
-                pb = positions[b_idx]
-                bond_positions_flat.extend([float(pa[0]), float(pa[1]), float(pa[2])])
-                bond_positions_flat.extend([float(pb[0]), float(pb[1]), float(pb[2])])
-        n_bond_segments = len(bond_list)
+        from .visualize import mesh_for_atoms
+        # Create mesh with zero-radius spheres + full cylinders
+        bond_mesh = mesh_for_atoms(
+            atoms,
+            bonds=bond_list,
+            kwargs_spheres={"scale": 0.001},  # nearly invisible spheres
+            kwargs_cylinders={"radius": 0.15},
+            representation="ball_and_stick",
+            sphere_sections=1,
+            cylinder_sections=8,
+        )
+        bond_payload = _serialize_trimesh(bond_mesh)
+        # Filter to only cylinder vertices (bond-colored, not sphere-colored)
+        # Keep all vertices — the tiny spheres are negligible
+        bond_trace = _make_trace(
+            trace_id=f"{trace_id}_bonds",
+            trace_type="mesh",
+            name=f"{name} (bonds)",
+            data=bond_payload,
+            style={"opacity": 1.0, "roughness": 0.38, "side": "DoubleSide"},
+            hover=None,
+            visible=True,
+        )
     else:
-        bond_positions_flat = []
-        n_bond_segments = 0
-
-    bond_hex = int(round(_bond_color[0] * 255)) * 0x10000 + int(round(_bond_color[1] * 255)) * 0x100 + int(round(_bond_color[2] * 255))
-    bond_trace = _make_trace(
-        trace_id=f"{trace_id}_bonds",
-        trace_type="line_segments",
-        name=f"{name} (bonds)",
-        data={
-            "positions": bond_positions_flat,
-            "n_segments": n_bond_segments,
-        },
-        style={
-            "color": bond_hex,
-            "linewidth": 3.0,
-        },
-        hover=None,
-        visible=True,
-    )
+        bond_trace = _make_trace(
+            trace_id=f"{trace_id}_bonds",
+            trace_type="mesh",
+            name=f"{name} (bonds)",
+            data={"positions": [], "indices": [], "n_vertices": 0, "n_triangles": 0},
+            style={"opacity": 1.0},
+            hover=None,
+            visible=True,
+        )
 
     return {"atoms": atom_trace, "bonds": bond_trace}
 
