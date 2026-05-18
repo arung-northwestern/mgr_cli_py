@@ -3,8 +3,8 @@
 # when deploying to HF Spaces (see scripts/deploy_to_hf_space.sh).
 
 # Cache-busting: change this timestamp to force a full Docker rebuild on HF Spaces.
-# Last updated: 2026-05-13
-ARG BUILD_DATE=2026-05-13
+# Last updated: 2026-05-18
+ARG BUILD_DATE=2026-05-18
 
 FROM python:3.11-slim AS builder
 
