@@ -3908,6 +3908,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const lines = new THREE.LineSegments(geo, mat);
       if (style.dashSize !== undefined) lines.computeLineDistances();
       lines.name = trace.id;
+      lines.userData.originalOpacity = mat.opacity !== undefined ? mat.opacity : 1.0;
       scene.add(lines);
       objectsById[trace.id] = lines;
       return lines;
