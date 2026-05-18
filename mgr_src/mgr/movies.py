@@ -1613,14 +1613,17 @@ def make_aromatic_rings_trace(
     for ring in cycles:
         ring_pos = positions[ring]
         center = ring_pos.mean(axis=0)
-        edge1 = ring_pos[1] - ring_pos[0]
-        edge2 = ring_pos[2] - ring_pos[1]
-        normal = np.cross(edge1, edge2)
+        ring_centered = ring_pos - center
+        # Best-fit plane normal via SVD — robust to non-planar rings
+        _, _, Vt = np.linalg.svd(ring_centered, full_matrices=False)
+        normal = Vt[-1]
         norm_len = np.linalg.norm(normal)
         if norm_len < 1e-10:
             continue
         normal /= norm_len
-        radius = np.mean(np.linalg.norm(ring_pos - center, axis=1))
+        # Project onto best-fit plane, measure radius from projected coords
+        ring_proj = ring_centered - np.outer(np.dot(ring_centered, normal), normal)
+        radius = np.mean(np.linalg.norm(ring_proj, axis=1))
 
         rot, _ = _Rot.align_vectors(normal.reshape(-1, 3), np.array([[0.0, 0.0, 1.0]]))
 
@@ -1632,15 +1635,15 @@ def make_aromatic_rings_trace(
             line_positions.extend(circle_3d[i].tolist())
             line_positions.extend(circle_3d[j].tolist())
 
-        # Fill polygon — project ring atoms onto best-fit plane, fan-triangulate
-        # from center.  Vertices are the actual ring atom positions (not a regular
-        # n-gon), so they align perfectly with stick bond intersection points.
-        ring_centered = ring_pos - center
-        # Project onto ring plane (remove normal component)
-        ring_proj = ring_centered - np.outer(np.dot(ring_centered, normal), normal)
-        # Fan triangulation: center point + consecutive vertex pairs
-        n_sides = len(ring)
-        verts = np.vstack([ring_proj + center, center.reshape(1, -1)])
+        # Fill polygon — fan-triangulate from center using projected ring atom
+        # positions.  Ring atom indices may be sorted (not walk-ordered), so
+        # sort projected vertices by angle in the ring plane to recover order.
+        ring_rot = rot.apply(ring_proj)
+        angles = np.arctan2(ring_rot[:, 1], ring_rot[:, 0])
+        order = np.argsort(angles)
+        ring_sorted = ring_proj[order]
+        n_sides = len(ring_sorted)
+        verts = np.vstack([ring_sorted + center, center.reshape(1, -1)])
         faces = np.array(
             [[n_sides, i, (i + 1) % n_sides] for i in range(n_sides)],
             dtype=int,
