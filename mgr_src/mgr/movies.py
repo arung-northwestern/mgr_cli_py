@@ -5844,7 +5844,7 @@ def make_percolation_clusters_trace(
             trace_type="mesh",
             name=f"Component {i}_{dir_str}",
             data=payload,
-            style={"opacity": float(cluster_opacity), "side": "FrontSide"} if style == "surface" else style,
+            style={"opacity": float(cluster_opacity), "side": "DoubleSide"} if style == "surface" else style,
             hover=None,
             visible=True,
         )
@@ -5978,7 +5978,7 @@ def make_percolation_windows_trace(
         name="Percolation windows",
         data={
             "positions": np.array(all_window_positions).reshape(-1).tolist() if all_window_positions else [],
-            "colors": [[1.0, 1.0, 0.0]] * len(all_window_positions),  # yellow
+            "colors": ([1.0, 1.0, 0.0] * len(all_window_positions)) if all_window_positions else [],  # yellow, flat
             "sizes": [6.0] * len(all_window_positions),
             "n_points": len(all_window_positions),
         },
@@ -5994,7 +5994,7 @@ def make_percolation_windows_trace(
         name="PLD-critical windows",
         data={
             "positions": np.array(pld_positions).reshape(-1).tolist() if pld_positions else [],
-            "colors": [[1.0, 0.2, 0.2]] * len(pld_positions),  # red
+            "colors": ([1.0, 0.2, 0.2] * len(pld_positions)) if pld_positions else [],  # red, flat
             "sizes": [8.0] * len(pld_positions),
             "n_points": len(pld_positions),
         },
