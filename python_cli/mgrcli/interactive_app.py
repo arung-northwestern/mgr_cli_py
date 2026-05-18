@@ -1671,7 +1671,7 @@ def main() -> None:
             if _preset_key not in st.session_state:
                 st.session_state[_preset_key] = "low"
             if _mesh_key not in st.session_state:
-                st.session_state[_mesh_key] = True
+                st.session_state[_mesh_key] = False
             if _scatter_key not in st.session_state:
                 st.session_state[_scatter_key] = False
 
@@ -1697,10 +1697,11 @@ def main() -> None:
             if _preset_changed:
                 if quality_label == "ultra-low":
                     st.session_state[_mesh_key] = False
+                    st.session_state[_instanced_key] = False
                     st.session_state[_scatter_key] = True
                 else:
-                    if not st.session_state[_mesh_key] and not st.session_state[_scatter_key]:
-                        st.session_state[_mesh_key] = True
+                    if not st.session_state.get(_instanced_key) and not st.session_state[_scatter_key]:
+                        st.session_state[_instanced_key] = True
                 st.session_state[_last_preset_key] = quality_label
 
             # Framework checkboxes
@@ -1732,10 +1733,7 @@ def main() -> None:
             checked = sum([instanced_framework, mesh_framework, simple_framework])
             if checked > 1:
                 st.warning("Select exactly one framework style.")
-            # Default to instanced if nothing checked
-            if checked == 0:
-                st.session_state[_instanced_key] = True
-                st.rerun()
+          # Default to instanced if nothing checked
 
             # Atom/bond sliders (only when mesh or instanced is selected)
             if instanced_framework or mesh_framework:
