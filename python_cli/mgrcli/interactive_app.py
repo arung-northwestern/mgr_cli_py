@@ -1638,32 +1638,21 @@ def main() -> None:
             horizontal=True,
             help="Three.js: faster WebGL percolation cluster rendering.",
         )
-        mesh_framework = st.checkbox(
-            "Show framework as mesh",
-            value=(viz_backend == "Three.js"),
-            help="Renders the framework as atom spheres + bonds (mesh/ball-and-stick style).",
-        )
-        if mesh_framework:
-            atom_scale = st.slider(
-                "Atom scale",
-                min_value=0.1,
-                max_value=2.0,
-                value=0.65,
-                step=0.05,
-                help="Scale factor for atom sphere radii.",
-            )
-            bond_radius = st.slider(
-                "Bond radius",
-                min_value=0.05,
-                max_value=1.0,
-                value=0.15,
-                step=0.05,
-                help="Radius of bond cylinders.",
-            )
-        else:
-            atom_scale = 0.65
-            bond_radius = 0.15
         if viz_backend == "Plotly":
+            # Plotly: simple mesh/scatter toggles
+            mesh_framework = st.checkbox(
+                "Show framework as mesh",
+                value=True,
+                help="Renders the framework as atom spheres + bonds (mesh/ball-and-stick style).",
+            )
+            if mesh_framework:
+                atom_scale = st.slider("Atom scale", 0.1, 2.0, 0.65, 0.05,
+                    help="Scale factor for atom sphere radii.")
+                bond_radius = st.slider("Bond radius", 0.05, 1.0, 0.15, 0.05,
+                    help="Radius of bond cylinders.")
+            else:
+                atom_scale = 0.65
+                bond_radius = 0.15
             simple_framework = st.checkbox(
                 "Show simple framework scatter",
                 value=True,
@@ -1671,16 +1660,28 @@ def main() -> None:
             )
             if mesh_framework and simple_framework:
                 st.warning("Select either mesh or simple framework.")
-            framework_quality = "medium"  # not applicable for Plotly
+            framework_quality = "medium"
             framework_bond_linewidth = 8.0
         else:
-            # Three.js: offer scatter as a separate option
-            # ---- Preset selector (always visible) ----
-            preset_options = ["ultra-low", "low", "medium", "high"]
+            # Three.js: preset + framework style checkboxes
+            # ---- Apply pending preset changes BEFORE widget instantiation ----
             _preset_key = "viz_preset"
-            if _preset_key not in st.session_state:
-                st.session_state[_preset_key] = "low"  # default
+            _mesh_key = "viz_mesh_framework"
+            _scatter_key = "viz_scatter_framework"
+            _pending = "viz_preset_pending"
 
+            if st.session_state.get(_pending):
+                st.session_state[_preset_key] = st.session_state.pop(_pending)
+
+            if _preset_key not in st.session_state:
+                st.session_state[_preset_key] = "low"
+            if _mesh_key not in st.session_state:
+                st.session_state[_mesh_key] = True
+            if _scatter_key not in st.session_state:
+                st.session_state[_scatter_key] = False
+
+            # Preset dropdown
+            preset_options = ["ultra-low", "low", "medium", "high"]
             _preset_idx = preset_options.index(st.session_state[_preset_key])
             quality_label = st.selectbox(
                 "Preset",
@@ -1694,19 +1695,12 @@ def main() -> None:
             )
             framework_quality = quality_label
 
-            # ---- Framework style checkboxes ----
-            _mesh_key = "viz_mesh_framework"
-            _scatter_key = "viz_scatter_framework"
-            if _mesh_key not in st.session_state:
-                st.session_state[_mesh_key] = True  # default: mesh on
-            if _scatter_key not in st.session_state:
-                st.session_state[_scatter_key] = False
-
             # Ultra-low forces scatter
             if framework_quality == "ultra-low" and not st.session_state[_scatter_key]:
                 st.session_state[_mesh_key] = False
                 st.session_state[_scatter_key] = True
 
+            # Framework checkboxes
             mesh_framework = st.checkbox(
                 "Show framework as mesh",
                 value=st.session_state[_mesh_key],
@@ -1717,22 +1711,32 @@ def main() -> None:
                 "Show framework as scatter (points + lines)",
                 value=st.session_state[_scatter_key],
                 key=_scatter_key,
-                help="Three.js: extremely fast scatter rendering (points + lines). "
-                     "Uses normal depth occlusion (hidden behind surfaces).",
+                help="Extremely fast scatter rendering. Normal depth occlusion.",
             )
-
-            # Sync: scatter-only → push preset to ultra-low; mesh from ultra-low → push to low
-            if st.session_state[_scatter_key] and not st.session_state[_mesh_key]:
-                if quality_label != "ultra-low":
-                    st.session_state[_preset_key] = "ultra-low"
-                    st.rerun()
-            if st.session_state[_mesh_key] and quality_label == "ultra-low":
-                st.session_state[_preset_key] = "low"
-                st.rerun()
 
             if mesh_framework and simple_framework:
                 st.warning("Select either mesh or scatter framework.")
+
+            # Atom/bond sliders (only when mesh is selected)
+            if mesh_framework:
+                atom_scale = st.slider("Atom scale", 0.1, 2.0, 0.65, 0.05,
+                    help="Scale factor for atom sphere radii.")
+                bond_radius = st.slider("Bond radius", 0.05, 1.0, 0.15, 0.05,
+                    help="Radius of bond cylinders.")
+            else:
+                atom_scale = 0.65
+                bond_radius = 0.15
             framework_bond_linewidth = 8.0
+
+            # Sync: scatter-only → push preset to ultra-low; mesh from ultra-low → push to low
+            # Use pending pattern to avoid 'cannot modify after widget instantiated' error
+            if st.session_state[_scatter_key] and not st.session_state[_mesh_key]:
+                if quality_label != "ultra-low":
+                    st.session_state[_pending] = "ultra-low"
+                    st.rerun()
+            if st.session_state[_mesh_key] and quality_label == "ultra-low":
+                st.session_state[_pending] = "low"
+                st.rerun()
         projection_choice = st.selectbox(
             "Projection",
             ["perspective", "orthographic"],
