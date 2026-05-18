@@ -5918,12 +5918,18 @@ def make_percolation_windows_trace(
     # Map maxima label → region label using the regions array
     maxima_info = np.asarray(analysis.get("maxima_info", []), dtype=int)
     maxima_to_region: dict[int, int] = {}
-    if maxima_info.ndim == 2 and maxima_info.shape[1] >= 4:
+    if maxima_info.ndim == 2 and maxima_info.shape[1] >= 7:
         for row in maxima_info:
             label = int(row[0])
-            gx, gy, gz = int(row[1]), int(row[2]), int(row[3])
-            if 0 <= gx < regions.shape[0] and 0 <= gy < regions.shape[1] and 0 <= gz < regions.shape[2]:
-                rl = int(regions[gx, gy, gz])
+            # maxima_info columns: (label, z, y, x, offset_z, offset_y, offset_x)
+            gz, gy, gx = int(row[1]), int(row[2]), int(row[3])
+            oz, oy, ox = int(row[4]), int(row[5]), int(row[6])
+            # Global grid position in the padded grid, then wrapped to primary cell
+            gz_w = (gz + oz * regions.shape[0]) % regions.shape[0]
+            gy_w = (gy + oy * regions.shape[1]) % regions.shape[1]
+            gx_w = (gx + ox * regions.shape[2]) % regions.shape[2]
+            if 0 <= gz_w < regions.shape[0] and 0 <= gy_w < regions.shape[1] and 0 <= gx_w < regions.shape[2]:
+                rl = int(regions[gz_w, gy_w, gx_w])
                 if rl > 0:
                     maxima_to_region[label] = rl
 

@@ -850,6 +850,8 @@ def _compute_pld_analysis(
         "rag": rag,
         "maxima": maxima,
         "maxima_radii": maxima_radii,
+        "maxima_info": analysis_results.get("maxima_info", np.zeros((0, 7), dtype=int)),
+        "maxima_pbc_dict": analysis_results.get("maxima_pbc_dict", {}),
         "dgrid": dgrid,
         "regions": regions,
         "connections": connections_filtered,
@@ -2607,11 +2609,17 @@ def main() -> None:
                     st.markdown(
                         f"Selected probe radius: **{selected_radius:.2f} Å** (diameter {2*selected_radius:.2f} Å)"
                     )
-                    st.caption(
-                        "Cluster pore surfaces use the same **Surface value (Å)** as the Visualization section "
-                        "(main pane pore isosurface). The controls here only pick the percolation probe radius / "
-                        "which cluster set to draw."
+                    # Cluster surface isovalue — defaults to the main visualization pane's value
+                    cluster_isovalue = st.number_input(
+                        "Cluster surface isovalue (Å)",
+                        value=float(surface_value),
+                        min_value=0.1,
+                        step=0.1,
+                        key="percolation_cluster_isovalue",
+                        help="Isosurface level for percolation cluster meshes. "
+                             "Defaults to the main Visualization pane's Surface value.",
                     )
+                    mesh_isovalue = max(float(cluster_isovalue), 0.05)
 
                     plot_status = st.empty()
 
@@ -2621,7 +2629,6 @@ def main() -> None:
                             unsafe_allow_html=True,
                         )
                         from mgr.threejs_plotting import show_percolation_threejs
-                        mesh_isovalue = max(float(surface_value), 0.05)
                         analysis_copy = dict(analysis)
                         analysis_copy["isovalue"] = mesh_isovalue
                         html_str = show_percolation_threejs(
@@ -2702,6 +2709,8 @@ def main() -> None:
                                 atoms,
                                 show_spheres=False,
                                 sphere_opacity=0.85,
+                                maxima_info=analysis.get("maxima_info"),
+                                maxima_pbc_dict=analysis.get("maxima_pbc_dict"),
                             )
                             if isinstance(maxima_trace, tuple):
                                 plot_traces.extend(maxima_trace)

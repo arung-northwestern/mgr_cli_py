@@ -2647,36 +2647,15 @@ def plot_windows(connections, atoms=None, spacing=None, **kwargs):
 #         return scatter
 
 def plot_maxima(
-    dgrid, maxima, ase_atoms, show_spheres=False, sphere_opacity=0.5, **kwargs
+    dgrid, maxima, ase_atoms, show_spheres=False, sphere_opacity=0.5,
+    maxima_info=None, maxima_pbc_dict=None, **kwargs
 ):
     """
-    The function `plot_maxima` generates a 3D scatter plot with markers representing local maxima, and
-    optionally displays spheres around the maxima with interpolated colors. The maxima indices can be outside the box as well. 
-    this function should still work fine. it will find the corresponding coordinates inside the box to get the cage radii.
+    Plot local maxima as 3D scatter markers, optionally with spheres.
 
-    :param dgrid: The `dgrid` parameter is likely a grid of values representing some property, such as
-    electron density or energy, at different points in space. This grid is used to identify local
-    maxima, which are points where the value is higher than at neighboring points. The function
-    `plot_maxima` takes
-    :param maxima: The `plot_maxima` function you provided seems to be for plotting local maxima in a 3D
-    plot using Plotly. The `maxima` parameter you mentioned is likely a NumPy array containing the
-    coordinates of the local maxima points in the grid
-    :param ase_atoms: The `ase_atoms` parameter in the `plot_maxima` function is used to provide atomic
-    positions and information about the structure. It is used to find the coordinates of the maxima in
-    the grid relative to the atomic positions provided by `ase_atoms`. This information is essential for
-    visualizing the local
-    :param show_spheres: The `show_spheres` parameter in the `plot_maxima` function is a boolean flag
-    that determines whether to display spheres at the maximum coordinates. If set to `True`, spheres
-    will be shown at the maximum coordinates based on the provided data. If set to `False`, only markers
-    will be, defaults to False (optional)
-    :param sphere_opacity: The `sphere_opacity` parameter in the `plot_maxima` function controls the
-    opacity of the spheres that are displayed in the plot. It determines how transparent or opaque the
-    spheres will appear in the visualization. The value of `sphere_opacity` ranges from 0 (completely
-    transparent) to 1
-    :return: The function `plot_maxima` returns either a Scatter3d plot or a combination of Scatter3d
-    plot and mesh plot, depending on the value of the `show_spheres` parameter. If `show_spheres` is
-    `True`, it returns both the Scatter3d plot and the mesh plot of spheres representing the maxima. If
-    `show_spheres` is `False`, it returns
+    When *maxima_info* and *maxima_pbc_dict* are provided, hover text includes
+    detailed metadata matching the Three.js backend (label, PBC label, offset,
+    grid position, cage radius, region).
     """
     import numpy as np
     import plotly.graph_objects as go
@@ -2690,10 +2669,41 @@ def plot_maxima(
     cage_labels = [("{} A").format(c)
                    for c in np.round(cage_radii, decimals=2)]
 
-    hovertext = [
-        str(i + 1) + "  [" + " ".join(map(str, maxima[i])) + "]  " + j
-        for i, j in enumerate(cage_labels)
-    ]
+    # Enhanced hover matching Three.js backend when maxima_info is provided
+    if maxima_info is not None and maxima_info.ndim == 2 and maxima_info.shape[1] >= 7:
+        from .helper import get_fractional_coordinates
+        mi = np.asarray(maxima_info, dtype=int)
+        pbc_dict = maxima_pbc_dict or {}
+        hovertext = []
+        for i in range(len(maxima)):
+            if i >= len(mi):
+                hovertext.append(f"index: {i+1}\ncage radius: {cage_labels[i]}")
+                continue
+            row = mi[i]
+            label = int(row[0])
+            gz, gy, gx = int(row[1]), int(row[2]), int(row[3])
+            oz, oy, ox = int(row[4]), int(row[5]), int(row[6])
+            coord = (gz, gy, gx)
+            pbc_label = pbc_dict.get(coord, pbc_dict.get(str(coord)))
+            extra = ""
+            if pbc_label is not None:
+                extra += f"<br>maxima pbc label: {pbc_label}"
+            extra += f"<br>offset: [{oz}, {oy}, {ox}]"
+            cart = maxima_coords[i]
+            hovertext.append(
+                f"trace: local maxima<br>"
+                f"index: {i + 1}<br>"
+                f"maxima label: {label}"
+                f"{extra}<br>"
+                f"grid: [{gz}, {gy}, {gx}]<br>"
+                f"xyz: ({cart[0]:.3f}, {cart[1]:.3f}, {cart[2]:.3f})<br>"
+                f"pore radius (dgrid): {cage_radii[i]:.3f} A"
+            )
+    else:
+        hovertext = [
+            str(i + 1) + "  [" + " ".join(map(str, maxima[i])) + "]  " + j
+            for i, j in enumerate(cage_labels)
+        ]
 
     name = kwargs.get("name", "local maxima")
     marker_size = kwargs.get("marker_size", 15)
@@ -3717,14 +3727,19 @@ def plot_percolation_windows(
         return [], []
 
     # Map maxima label → region label
+    # maxima_info columns: (label, z, y, x, offset_z, offset_y, offset_x)
     maxima_info = np.asarray(analysis.get("maxima_info", []), dtype=int)
     maxima_to_region: dict[int, int] = {}
-    if maxima_info.ndim == 2 and maxima_info.shape[1] >= 4:
+    if maxima_info.ndim == 2 and maxima_info.shape[1] >= 7:
         for row in maxima_info:
             label = int(row[0])
-            gx, gy, gz = int(row[1]), int(row[2]), int(row[3])
-            if 0 <= gx < regions.shape[0] and 0 <= gy < regions.shape[1] and 0 <= gz < regions.shape[2]:
-                rl = int(regions[gx, gy, gz])
+            gz, gy, gx = int(row[1]), int(row[2]), int(row[3])
+            oz, oy, ox = int(row[4]), int(row[5]), int(row[6])
+            gz_w = (gz + oz * regions.shape[0]) % regions.shape[0]
+            gy_w = (gy + oy * regions.shape[1]) % regions.shape[1]
+            gx_w = (gx + ox * regions.shape[2]) % regions.shape[2]
+            if 0 <= gz_w < regions.shape[0] and 0 <= gy_w < regions.shape[1] and 0 <= gx_w < regions.shape[2]:
+                rl = int(regions[gz_w, gy_w, gx_w])
                 if rl > 0:
                     maxima_to_region[label] = rl
 
