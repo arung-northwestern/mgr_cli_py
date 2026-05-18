@@ -1640,6 +1640,7 @@ def main() -> None:
         )
         if viz_backend == "Plotly":
             # Plotly: simple mesh/scatter toggles
+            instanced_framework = False
             mesh_framework = st.checkbox(
                 "Show framework as mesh",
                 value=False,
@@ -1667,6 +1668,7 @@ def main() -> None:
             _preset_key = "viz_preset"
             _mesh_key = "viz_mesh_framework"
             _scatter_key = "viz_scatter_framework"
+            _instanced_key = "viz_instanced_framework"
 
             if _preset_key not in st.session_state:
                 st.session_state[_preset_key] = "low"
@@ -1674,6 +1676,8 @@ def main() -> None:
                 st.session_state[_mesh_key] = False
             if _scatter_key not in st.session_state:
                 st.session_state[_scatter_key] = False
+            if _instanced_key not in st.session_state:
+                st.session_state[_instanced_key] = True  # default: instanced on
 
             # Preset dropdown
             _last_preset_key = "viz_last_preset"
@@ -1705,9 +1709,6 @@ def main() -> None:
                 st.session_state[_last_preset_key] = quality_label
 
             # Framework checkboxes
-            _instanced_key = "viz_instanced_framework"
-            if _instanced_key not in st.session_state:
-                st.session_state[_instanced_key] = True  # default: instanced on
 
             instanced_framework = st.checkbox(
                 "Show framework as instanced (fast 3D spheres)",
