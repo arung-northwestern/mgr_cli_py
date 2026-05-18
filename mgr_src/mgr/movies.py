@@ -3126,7 +3126,9 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     #hud { position: fixed; right: 0; top: 0; width: 200px; height: 100vh;
       background: {{panel_bg}}; border-left: 1px solid rgba(128,128,128,0.2);
       padding: 10px; display: flex; flex-direction: column; gap: 4px;
-      overflow-y: auto; overflow-x: hidden; resize: horizontal; z-index: 10; font-size: 11px; }
+      overflow-y: auto; overflow-x: hidden; overflow-anchor: none;
+      scroll-behavior: auto; resize: horizontal; z-index: 10; font-size: 11px;
+    }
     #figTitle { font-size: 14px; font-weight: 600; margin-bottom: 4px; text-align: center; }
     #row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
     #frameSlider { width: 100%; }
@@ -3147,7 +3149,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       #app { right: 0; bottom: 140px; }
       #hud { position: fixed; bottom: 0; left: 0; right: 0; top: auto;
         width: 100%; height: 140px; border-left: none; border-top: 1px solid rgba(128,128,128,0.2);
-        flex-direction: row; flex-wrap: wrap; overflow-x: auto; overflow-y: hidden; }
+        flex-direction: row; flex-wrap: wrap; overflow-x: auto; overflow-y: hidden; overflow-anchor: none; }
       .checkrow { flex-direction: row; flex-wrap: wrap; gap: 2px 8px; }
     }
   </style>
@@ -4478,7 +4480,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         });
       }
       // IDs of all framework sub-traces that should NOT get individual sliders
-      const fwSubIds = ["framework_atoms", "framework_bonds", "framework_stick_atoms", "framework_stick_bonds", "framework_spacefill", "aromatic_rings", "aromatic_highlights"];
+      const fwSubIds = ["framework", "framework_stick", "framework_spacefill", "framework_atoms", "framework_bonds", "framework_stick_atoms", "framework_stick_bonds", "aromatic_rings", "aromatic_highlights"];
       meshTraces.forEach(trace => {
         // Skip framework sub-traces — they get a single merged slider below
         if (fwSubIds.indexOf(trace.id) >= 0) return;
@@ -4595,6 +4597,8 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
             o.material.depthTest = true;
             if (o.userData.originalSide !== undefined) o.material.side = o.userData.originalSide;
             o.visible = v > 0.001;
+            o.castShadow = v > 0.999;
+            o.receiveShadow = v > 0.999;
             o.material.needsUpdate = true;
           });
           updateFrameworkVisibility();
