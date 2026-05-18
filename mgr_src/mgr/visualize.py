@@ -1843,7 +1843,10 @@ def _batched_cylinders_mesh(centers, directions, heights, radius, colors, sectio
 #   16 → smooth cylinders — highest quality
 #
 # For HF Spaces deployment, use "low" as default.
+# "ultra-low" is handled in show_mof_threejs — forces scatter framework +
+# surface step_size=2 for maximum speed.
 MESH_QUALITY_PRESETS: dict[str, dict[str, int]] = {
+    "ultra-low": {"sphere_sections": 1, "cylinder_sections": 4},  # scatter + s.s.=2
     "low":    {"sphere_sections": 1, "cylinder_sections": 4},   # fastest, ~3× fewer cyl verts than medium
     "medium": {"sphere_sections": 1, "cylinder_sections": 8},   # balanced default
     "high":   {"sphere_sections": 2, "cylinder_sections": 16},  # 42-vert spheres + smooth cylinders

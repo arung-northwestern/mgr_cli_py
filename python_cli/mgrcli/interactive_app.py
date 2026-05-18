@@ -1687,10 +1687,11 @@ def main() -> None:
             if mesh_framework:
                 quality_label = st.selectbox(
                     "Mesh quality",
-                    ["low", "medium", "high"],
-                    index=0,  # default to low for HF Spaces
-                    help="low: fastest (hexagonal cylinders, 1× mesh). "
-                         "medium: balanced (octagonal cylinders, 3× meshes). "
+                    ["ultra-low", "low", "medium", "high"],
+                    index=1,  # default to low for HF Spaces
+                    help="ultra-low: scatter framework + coarse surfaces (fastest). "
+                         "low: hexagonal cylinders, 1× mesh. "
+                         "medium: octagonal cylinders, 3× meshes. "
                          "high: smoothest (16-section cylinders, 3× meshes).",
                 )
                 framework_quality = quality_label
@@ -2091,6 +2092,7 @@ def main() -> None:
                 plot_framework_bond_radius=float(bond_radius),
                 plot_framework_bond_linewidth=float(framework_bond_linewidth),
                 plot_framework_mesh_quality=framework_quality,
+                plot_quality=framework_quality,  # shared by Plotly backend
                 plot_surface=show_surface,
                 plot_surface_pbc=show_surface_pbc,
                 plot_surface_isovalue=surface_value,
@@ -3579,6 +3581,7 @@ def _render_hts_mode() -> None:
                         "plot_framework_style": framework_style,
                         "plot_framework_show_rings": hts_show_rings,
                         "plot_framework_mesh_quality": "low",  # HTS: fast default
+                        "plot_quality": "low",  # shared by Plotly backend
                         "plot_framework_bond_linewidth": 8.0,
                         "plot_cell": hts_plot_cell,
                         "plot_maxima": hts_plot_maxima,

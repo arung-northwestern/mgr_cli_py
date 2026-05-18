@@ -1054,6 +1054,12 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
 
     framework_style = defaults.get("plot_framework_style", "mesh")
 
+    # Quality presets (matching Three.js backend)
+    _plot_quality = str(defaults.get("plot_quality", "medium")).lower()
+    _surf_stepsize = 2 if _plot_quality in ("ultra-low", "low") else 1
+    if _plot_quality == "ultra-low":
+        framework_style = "scatter"  # force scatter for speed
+
     # Pre-compute which steps will run so we can show accurate progress.
     _step_labels = []
     if defaults.get("plot_framework", True):
@@ -1156,6 +1162,7 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
             taubin_iterations=int(defaults.get("plot_surface_taubin_iterations", 10)),
             taubin_lambda=float(defaults.get("plot_surface_taubin_lambda", 0.5)),
             taubin_nu=float(defaults.get("plot_surface_taubin_nu", -0.53)),
+            stepsize=_surf_stepsize,
         )
         traces.append(surface_trace)
 
@@ -1174,6 +1181,7 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
             taubin_iterations=int(defaults.get("plot_surface_taubin_iterations", 10)),
             taubin_lambda=float(defaults.get("plot_surface_taubin_lambda", 0.5)),
             taubin_nu=float(defaults.get("plot_surface_taubin_nu", -0.53)),
+            stepsize=_surf_stepsize,
         )
         traces.append(surface_trace_pbc)
 
@@ -1196,6 +1204,7 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
             taubin_iterations=int(defaults.get("plot_surface_taubin_iterations", 10)),
             taubin_lambda=float(defaults.get("plot_surface_taubin_lambda", 0.5)),
             taubin_nu=float(defaults.get("plot_surface_taubin_nu", -0.53)),
+            stepsize=_surf_stepsize,
         )
         traces.append(surface_trace_cluster)
 

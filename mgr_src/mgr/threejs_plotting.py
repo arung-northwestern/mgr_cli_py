@@ -160,6 +160,12 @@ def show_mof_threejs(
         }
     )
 
+    # Ultra-low quality: force scatter framework + coarse surfaces
+    mesh_quality = str(defaults.get("plot_framework_mesh_quality", "medium")).lower()
+    _surf_step = 2 if mesh_quality == "ultra-low" else 1  # surface step_size
+    if mesh_quality == "ultra-low":
+        framework_style = "scatter"  # override for speed
+
     # Framework
     if defaults.get("plot_framework", True):
         _emit(_step_labels[_step_idx])
@@ -215,7 +221,7 @@ def show_mof_threejs(
             regions=regions,
             atoms=mat_atoms,
             isovalue=float(defaults.get("plot_surface_isovalue", 1.0)),
-            step_size=1,
+            step_size=_surf_step,
             name="Regions (raw)",
             trace_id="surface",
             style="surface",
@@ -239,7 +245,7 @@ def show_mof_threejs(
             regions=regions_pbc,
             atoms=mat_atoms,
             isovalue=float(defaults.get("plot_surface_isovalue", 1.0)),
-            step_size=1,
+            step_size=_surf_step,
             name="Regions (PBC merged)",
             trace_id="surface_regions_pbc",
             style="surface",
@@ -266,7 +272,7 @@ def show_mof_threejs(
             regions=regions_cluster,
             atoms=mat_atoms,
             isovalue=float(defaults.get("plot_surface_isovalue", 1.0)),
-            step_size=1,
+            step_size=_surf_step,
             name="Pocket types (cluster)",
             trace_id="surface_regions_cluster",
             style="surface",
