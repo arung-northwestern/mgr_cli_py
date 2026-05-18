@@ -3844,6 +3844,10 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           depthWrite: isOpaque,
         });
       }
+      // Apply style color when no per-vertex colors (e.g. aromatic highlights)
+      if (!hasColors && style.color !== undefined) {
+        mat.color.copy(threeColorFromStyle(style.color, 0xffffff));
+      }
       const mesh = new THREE.Mesh(geo, mat);
       mesh.name = trace.id;
       mesh.userData.originalSide = mat.side;
