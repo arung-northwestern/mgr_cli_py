@@ -1642,7 +1642,7 @@ def main() -> None:
             # Plotly: simple mesh/scatter toggles
             mesh_framework = st.checkbox(
                 "Show framework as mesh",
-                value=True,
+                value=False,
                 help="Renders the framework as atom spheres + bonds (mesh/ball-and-stick style).",
             )
             if mesh_framework:

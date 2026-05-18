@@ -187,11 +187,11 @@ DEFAULT_STYLES: dict[str, dict[str, Any]] = {
     },
     "internal_windows": {
         "color": 0xFFE600,
-        "size": 2.5,
+        "size": 5.0,
     },
     "periodic_windows": {
         "color": 0xFFE600,
-        "size": 2.5,
+        "size": 5.0,
     },
     "internal_connections": {
         "color": 0xFF0000,
@@ -205,11 +205,11 @@ DEFAULT_STYLES: dict[str, dict[str, Any]] = {
     },
     "internal_nodes": {
         "color": 0x66CCFF,
-        "size": 2.5,
+        "size": 5.0,
     },
     "periodic_nodes": {
         "color": 0xFF9966,
-        "size": 1.10,
+        "size": 2.20,
     },
     "aromatic_rings": {
         "color": 0xFFFFFF,
