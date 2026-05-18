@@ -2479,12 +2479,29 @@ class MovieFigure:
         path: str | Path,
         template: str = "threejs_default",
         sidecar: bool = False,
+        lazy_surfaces: bool = False,
         fps: float = 20.0,
         point_size: float = 0.16,
     ) -> Path:
         out = Path(path).expanduser().resolve()
         out.parent.mkdir(parents=True, exist_ok=True)
         scene = self.to_dict()
+
+        # Lazy surfaces: extract surface trace data to separate file
+        if lazy_surfaces and "static" in scene:
+            surface_ids = {"surface", "surface_pbc", "surface_pocket"}
+            lazy_data: dict[str, dict] = {}
+            for trace in scene["static"].get("traces", []):
+                tid = trace.get("id", "")
+                if tid in surface_ids or (tid and tid.startswith("surface_")):
+                    if "data" in trace:
+                        lazy_data[tid] = trace["data"]
+                        trace["data"] = {"__sidecar__": True, "id": tid}
+            if lazy_data:
+                sidecar_path = out.with_suffix(".surfaces.json")
+                with open(sidecar_path, "w", encoding="utf-8") as fh:
+                    json.dump(lazy_data, fh)
+                scene["sidecar_surfaces"] = str(sidecar_path.name)
 
         if sidecar:
             frames_data = scene.pop("frames")
@@ -3915,6 +3932,38 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         addInstancedSpheres(trace, 14, 14);
       }
     });
+
+    // ---- Lazy surface loading ----
+    // When surfaces are stored in a separate sidecar file, fetch and load them
+    // after the initial scene is rendered (framework, cell, maxima appear instantly).
+    if (DATA.sidecar_surfaces) {
+      const surfCount = staticTraces.filter(t => t.data && t.data.__sidecar__).length;
+      if (surfCount > 0) {
+        const statusEl = document.getElementById("status");
+        if (statusEl) statusEl.textContent = "Loading surfaces…";
+        fetch(DATA.sidecar_surfaces)
+          .then(r => r.json())
+          .then(surfaceData => {
+            staticTraces.forEach(trace => {
+              if (trace.data && trace.data.__sidecar__ && surfaceData[trace.data.id]) {
+                trace.data = surfaceData[trace.data.id];
+                _unpackBinaryArrays({traces: [trace]});
+                const obj = objectsById[trace.id];
+                if (obj && trace.type === "mesh") {
+                  replaceMeshGeometry(obj, trace);
+                }
+              }
+            });
+            if (statusEl) statusEl.textContent = "";
+            // Refresh legend/surface controls after lazy load
+            applySurfaceScreenDoorAll();
+          })
+          .catch(e => {
+            console.warn("Lazy surface load failed:", e);
+            if (statusEl) statusEl.textContent = "";
+          });
+      }
+    }
 
     // Traces that exist only on animation frames (e.g. flexible framework) — create once from frame 0
     const firstFrameTraces = (getFrameCount() > 0 && getFrame(0) && getFrame(0).traces) ? getFrame(0).traces : [];
