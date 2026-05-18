@@ -1632,12 +1632,15 @@ def make_aromatic_rings_trace(
             line_positions.extend(circle_3d[i].tolist())
             line_positions.extend(circle_3d[j].tolist())
 
-        # Fill polygon — use actual ring atom positions as vertices (not
-        # regular n-gon approximation).  Vertices align perfectly with
-        # stick bond intersection points in every representation.
-        # Center point + fan triangulation from actual atom positions.
+        # Fill polygon — project ring atoms onto best-fit plane, fan-triangulate
+        # from center.  Vertices are the actual ring atom positions (not a regular
+        # n-gon), so they align perfectly with stick bond intersection points.
+        ring_centered = ring_pos - center
+        # Project onto ring plane (remove normal component)
+        ring_proj = ring_centered - np.outer(np.dot(ring_centered, normal), normal)
+        # Fan triangulation: center point + consecutive vertex pairs
         n_sides = len(ring)
-        verts = np.vstack([ring_pos, center.reshape(1, -1)])
+        verts = np.vstack([ring_proj + center, center.reshape(1, -1)])
         faces = np.array(
             [[n_sides, i, (i + 1) % n_sides] for i in range(n_sides)],
             dtype=int,
