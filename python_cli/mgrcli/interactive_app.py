@@ -1677,14 +1677,15 @@ def main() -> None:
             # Three.js: offer scatter as a separate option
             # ---- Preset selector (always visible) ----
             preset_options = ["ultra-low", "low", "medium", "high"]
-            _preset_key = "viz_preset_index"
+            _preset_key = "viz_preset"
             if _preset_key not in st.session_state:
-                st.session_state[_preset_key] = 1  # default: low
+                st.session_state[_preset_key] = "low"  # default
 
+            _preset_idx = preset_options.index(st.session_state[_preset_key])
             quality_label = st.selectbox(
                 "Preset",
                 preset_options,
-                index=st.session_state[_preset_key],
+                index=_preset_idx,
                 key=_preset_key,
                 help="ultra-low: scatter framework + coarse surfaces (fastest). "
                      "low: hexagonal cylinders, surface step=1. "
@@ -1723,10 +1724,10 @@ def main() -> None:
             # Sync: scatter-only → push preset to ultra-low; mesh from ultra-low → push to low
             if st.session_state[_scatter_key] and not st.session_state[_mesh_key]:
                 if quality_label != "ultra-low":
-                    st.session_state[_preset_key] = 0  # ultra-low
+                    st.session_state[_preset_key] = "ultra-low"
                     st.rerun()
             if st.session_state[_mesh_key] and quality_label == "ultra-low":
-                st.session_state[_preset_key] = 1  # low
+                st.session_state[_preset_key] = "low"
                 st.rerun()
 
             if mesh_framework and simple_framework:
