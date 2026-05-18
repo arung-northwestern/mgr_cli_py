@@ -1664,14 +1664,9 @@ def main() -> None:
             framework_bond_linewidth = 8.0
         else:
             # Three.js: preset + framework style checkboxes
-            # ---- Apply pending preset changes BEFORE widget instantiation ----
             _preset_key = "viz_preset"
             _mesh_key = "viz_mesh_framework"
             _scatter_key = "viz_scatter_framework"
-            _pending = "viz_preset_pending"
-
-            if st.session_state.get(_pending):
-                st.session_state[_preset_key] = st.session_state.pop(_pending)
 
             if _preset_key not in st.session_state:
                 st.session_state[_preset_key] = "low"
@@ -1681,6 +1676,8 @@ def main() -> None:
                 st.session_state[_scatter_key] = False
 
             # Preset dropdown
+            _last_preset_key = "viz_last_preset"
+            _prev_preset = st.session_state.get(_last_preset_key, "")
             preset_options = ["ultra-low", "low", "medium", "high"]
             _preset_idx = preset_options.index(st.session_state[_preset_key])
             quality_label = st.selectbox(
@@ -1695,10 +1692,16 @@ def main() -> None:
             )
             framework_quality = quality_label
 
-            # Ultra-low forces scatter
-            if framework_quality == "ultra-low" and not st.session_state[_scatter_key]:
-                st.session_state[_mesh_key] = False
-                st.session_state[_scatter_key] = True
+            # One-time defaults when preset changes (user can override afterward)
+            _preset_changed = (_prev_preset != quality_label)
+            if _preset_changed:
+                if quality_label == "ultra-low":
+                    st.session_state[_mesh_key] = False
+                    st.session_state[_scatter_key] = True
+                else:
+                    if not st.session_state[_mesh_key] and not st.session_state[_scatter_key]:
+                        st.session_state[_mesh_key] = True
+                st.session_state[_last_preset_key] = quality_label
 
             # Framework checkboxes
             mesh_framework = st.checkbox(
@@ -1727,16 +1730,6 @@ def main() -> None:
                 atom_scale = 0.65
                 bond_radius = 0.15
             framework_bond_linewidth = 8.0
-
-            # Sync: scatter-only → push preset to ultra-low; mesh from ultra-low → push to low
-            # Use pending pattern to avoid 'cannot modify after widget instantiated' error
-            if st.session_state[_scatter_key] and not st.session_state[_mesh_key]:
-                if quality_label != "ultra-low":
-                    st.session_state[_pending] = "ultra-low"
-                    st.rerun()
-            if st.session_state[_mesh_key] and quality_label == "ultra-low":
-                st.session_state[_pending] = "low"
-                st.rerun()
         projection_choice = st.selectbox(
             "Projection",
             ["perspective", "orthographic"],
