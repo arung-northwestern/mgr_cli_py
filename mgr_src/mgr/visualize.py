@@ -3695,6 +3695,7 @@ def plot_percolation_windows(
     connections = analysis.get("connections", [])
     regions = np.asarray(analysis.get("regions", []))
     pld = float(analysis.get("pld", 0.0))
+    pld_probe_radius = pld / 2.0  # PLD is a diameter; compare against radius
     probe_radius = kwargs.pop("probe_radius", None)
 
     if not percolation_history or not len(connections):
@@ -3767,7 +3768,7 @@ def plot_percolation_windows(
                 f"maxima: {n1}-{n2}<br>"
                 f"radius: {radius:.3f} Å"
             )
-            if pld > 0 and abs(radius - pld) <= pld_tolerance:
+            if pld > 0 and abs(radius - pld_probe_radius) <= pld_tolerance:
                 pld_wx.append(p[0]); pld_wy.append(p[1]); pld_wz.append(p[2])
                 pld_hover.append(hover + f"<br>⚠ PLD-critical (±{pld_tolerance} Å)")
             else:

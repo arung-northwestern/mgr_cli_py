@@ -5884,6 +5884,7 @@ def make_percolation_windows_trace(
     dgrid = np.asarray(analysis.get("dgrid", []))
     regions = np.asarray(analysis.get("regions", []))
     pld = float(analysis.get("pld", 0.0))
+    pld_probe_radius = pld / 2.0  # PLD is a diameter; compare against radius
 
     if not percolation_history:
         return {"windows": {}, "pld_critical": {}}
@@ -5961,7 +5962,7 @@ def make_percolation_windows_trace(
                 f"type: {ctype}<br>"
                 f"window radius: {radius:.3f} Å"
             )
-            if pld > 0 and abs(radius - pld) <= pld_tolerance:
+            if pld > 0 and abs(radius - pld_probe_radius) <= pld_tolerance:
                 pld_positions.append(wp)
                 pld_radii.append(radius)
                 pld_hover.append(hover + f"<br>⚠ PLD-critical (±{pld_tolerance} Å)")
@@ -5978,10 +5979,10 @@ def make_percolation_windows_trace(
         data={
             "positions": np.array(all_window_positions).reshape(-1).tolist() if all_window_positions else [],
             "colors": [[1.0, 1.0, 0.0]] * len(all_window_positions),  # yellow
-            "sizes": [4.0] * len(all_window_positions),
+            "sizes": [6.0] * len(all_window_positions),
             "n_points": len(all_window_positions),
         },
-        style={"color": [1.0, 1.0, 0.0], "size": 4.0, "symbol": "circle"},
+        style={"color": [1.0, 1.0, 0.0], "size": 6.0, "symbol": "circle", "depthTest": False},
         hover=all_window_hover,
         visible=True,
     )
@@ -5994,10 +5995,10 @@ def make_percolation_windows_trace(
         data={
             "positions": np.array(pld_positions).reshape(-1).tolist() if pld_positions else [],
             "colors": [[1.0, 0.2, 0.2]] * len(pld_positions),  # red
-            "sizes": [6.0] * len(pld_positions),
+            "sizes": [8.0] * len(pld_positions),
             "n_points": len(pld_positions),
         },
-        style={"color": [1.0, 0.2, 0.2], "size": 6.0, "symbol": "diamond"},
+        style={"color": [1.0, 0.2, 0.2], "size": 8.0, "symbol": "diamond", "depthTest": False},
         hover=pld_hover,
         visible=True,
     )
