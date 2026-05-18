@@ -213,7 +213,7 @@ DEFAULT_STYLES: dict[str, dict[str, Any]] = {
     },
     "aromatic_rings": {
         "color": 0xFFFFFF,
-        "linewidth": 2,
+        "linewidth": 4,
     },
     "aromatic_highlights": {
         "color": [0.12, 0.44, 0.85],
@@ -2631,6 +2631,9 @@ class MovieFigure:
                 json.dump(offsets, fh)
             scene["sidecar_idx"] = str(idx_path.name)
 
+        # Pack large numerical arrays as base64 binary blobs (~29% smaller JSON)
+        if "static" in scene and "traces" in scene["static"]:
+            scene["static"]["traces"] = _pack_static_traces(scene["static"]["traces"])
         payload_json = json.dumps(scene)
 
         # Default camera
