@@ -3873,6 +3873,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const mesh = new THREE.Mesh(geo, mat);
       mesh.name = trace.id;
       mesh.userData.originalSide = mat.side;
+      mesh.userData.originalOpacity = mat.opacity;
       if (isSurfaceMeshId(trace.id)) applySurfaceScreenDoorForObject(mesh);
       scene.add(mesh);
       objectsById[trace.id] = mesh;
@@ -3997,6 +3998,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
 
       mesh.name = trace.id;
+      mesh.userData.originalOpacity = mat.opacity;
       scene.add(mesh);
       objectsById[trace.id] = mesh;
       return mesh;
@@ -4048,6 +4050,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       mesh.name = trace.id;
+      mesh.userData.originalOpacity = mat.opacity;
       scene.add(mesh);
       objectsById[trace.id] = mesh;
       return mesh;
@@ -4517,12 +4520,16 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
               const baseOp = obj.userData.originalOpacity || 1.0;
               const opaqueEnough = val >= 0.999;
               if (isFw) {
-                obj.material.opacity = val * baseOp;
-                obj.material.transparent = (val * baseOp) < 1.0;
-                obj.material.depthWrite = true;
+                const scaledOpacity = val * baseOp;
+                obj.material.opacity = scaledOpacity;
+                obj.material.transparent = scaledOpacity < 1.0;
+                obj.material.depthWrite = scaledOpacity >= 1.0;
                 obj.material.depthTest = true;
-                obj.material.side = THREE.FrontSide;
+                if (obj.userData && obj.userData.originalSide !== undefined) {
+                  obj.material.side = obj.userData.originalSide;
+                }
                 obj.visible = val > 0.001;
+
                 obj.castShadow = val > 0.999;
                 obj.receiveShadow = val > 0.999;
               } else {
@@ -4580,9 +4587,10 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
             if (!o || !o.material) return;
             if (o.userData.originalOpacity === undefined) o.userData.originalOpacity = o.material.opacity;
             const b = o.userData.originalOpacity || 1.0;
-            o.material.opacity = v * b;
-            o.material.transparent = (v * b) < 1.0;
-            o.material.depthWrite = true;
+            const sv = v * b;
+            o.material.opacity = sv;
+            o.material.transparent = sv < 1.0;
+            o.material.depthWrite = sv >= 1.0;
             o.material.depthTest = true;
             if (o.userData.originalSide !== undefined) o.material.side = o.userData.originalSide;
             o.visible = v > 0.001;
