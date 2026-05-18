@@ -2241,6 +2241,45 @@ class _TraceCollection:
         return f"TraceCollection({ids})"
 
 
+def _pack_static_traces(traces: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Pack large numerical arrays in static traces as base64 binary blobs.
+
+    Same logic as _pack_frame_data, applied to the static trace list.
+    Reduces JSON size by ~40% for mesh-heavy payloads.
+    """
+    packed: list[dict[str, Any]] = []
+    for trace in traces:
+        pt = dict(trace)
+        data = trace.get("data")
+        if isinstance(data, dict):
+            pd: dict[str, Any] = {}
+            for key, value in data.items():
+                if key in _BINARY_PACK_KEYS and isinstance(value, list) and len(value) > 0:
+                    if key == "indices":
+                        max_val = max(value) if value else 0
+                        dtype = np.uint16 if max_val < 65536 else np.uint32
+                        arr = np.asarray(value, dtype=dtype)
+                        pd[key] = {
+                            "__binary__": True,
+                            "dtype": "uint16" if dtype == np.uint16 else "uint32",
+                            "count": len(value),
+                            "data": base64.b64encode(arr.tobytes()).decode("ascii"),
+                        }
+                    else:
+                        arr = np.asarray(value, dtype=np.float32)
+                        pd[key] = {
+                            "__binary__": True,
+                            "dtype": "float32",
+                            "count": len(value),
+                            "data": base64.b64encode(arr.tobytes()).decode("ascii"),
+                        }
+                else:
+                    pd[key] = value
+            pt["data"] = pd
+        packed.append(pt)
+    return packed
+
+
 class MovieFigure:
     """Plotly-like API for building Three.js movie scenes."""
 
@@ -2515,6 +2554,9 @@ class MovieFigure:
         """Render scene to HTML string (no file write)."""
         import json as _json
         scene = self.to_dict()
+        # Pack large numerical arrays as base64 binary blobs (~40% smaller JSON)
+        if "static" in scene and "traces" in scene["static"]:
+            scene["static"]["traces"] = _pack_static_traces(scene["static"]["traces"])
         payload_json = _json.dumps(scene)
         cam = scene.get("layout", {}).get("scene", {}).get("camera", {})
         eye = tuple(cam.get("eye", [2.0, 0.0, 1.35]))
@@ -3073,6 +3115,10 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
   <script src="https://unpkg.com/gif.js@0.2.0/dist/gif.js"></script>
   <script>
     const DATA = {{payload_json}};
+    // Unpack binary arrays in static traces (positions, indices, colors)
+    if (DATA.static && DATA.static.traces) {
+      _unpackBinaryArrays(DATA.static);
+    }
     const MOV = DATA.static && DATA.static.traces ? DATA.static.traces : [];
     const FRAMES = DATA.frames || [];
 
