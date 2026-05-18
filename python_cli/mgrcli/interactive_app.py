@@ -1675,28 +1675,62 @@ def main() -> None:
             framework_bond_linewidth = 8.0
         else:
             # Three.js: offer scatter as a separate option
+            # ---- Preset selector (always visible) ----
+            preset_options = ["ultra-low", "low", "medium", "high"]
+            _preset_key = "viz_preset_index"
+            if _preset_key not in st.session_state:
+                st.session_state[_preset_key] = 1  # default: low
+
+            quality_label = st.selectbox(
+                "Preset",
+                preset_options,
+                index=st.session_state[_preset_key],
+                key=_preset_key,
+                help="ultra-low: scatter framework + coarse surfaces (fastest). "
+                     "low: hexagonal cylinders, surface step=1. "
+                     "medium: octagonal cylinders, surface step=1. "
+                     "high: smooth cylinders, surface step=1.",
+            )
+            framework_quality = quality_label
+
+            # ---- Framework style checkboxes ----
+            _mesh_key = "viz_mesh_framework"
+            _scatter_key = "viz_scatter_framework"
+            if _mesh_key not in st.session_state:
+                st.session_state[_mesh_key] = True  # default: mesh on
+            if _scatter_key not in st.session_state:
+                st.session_state[_scatter_key] = False
+
+            # Ultra-low forces scatter
+            if framework_quality == "ultra-low" and not st.session_state[_scatter_key]:
+                st.session_state[_mesh_key] = False
+                st.session_state[_scatter_key] = True
+
+            mesh_framework = st.checkbox(
+                "Show framework as mesh",
+                value=st.session_state[_mesh_key],
+                key=_mesh_key,
+                help="Renders framework as atom spheres + bond cylinders.",
+            )
             simple_framework = st.checkbox(
                 "Show framework as scatter (points + lines)",
-                value=False,
+                value=st.session_state[_scatter_key],
+                key=_scatter_key,
                 help="Three.js: extremely fast scatter rendering (points + lines). "
                      "Uses normal depth occlusion (hidden behind surfaces).",
             )
+
+            # Sync: scatter-only → push preset to ultra-low; mesh from ultra-low → push to low
+            if st.session_state[_scatter_key] and not st.session_state[_mesh_key]:
+                if quality_label != "ultra-low":
+                    st.session_state[_preset_key] = 0  # ultra-low
+                    st.rerun()
+            if st.session_state[_mesh_key] and quality_label == "ultra-low":
+                st.session_state[_preset_key] = 1  # low
+                st.rerun()
+
             if mesh_framework and simple_framework:
                 st.warning("Select either mesh or scatter framework.")
-            # Mesh quality selector (only when mesh is selected)
-            if mesh_framework:
-                quality_label = st.selectbox(
-                    "Mesh quality",
-                    ["ultra-low", "low", "medium", "high"],
-                    index=1,  # default to low for HF Spaces
-                    help="ultra-low: scatter framework + coarse surfaces (fastest). "
-                         "low: hexagonal cylinders, 1× mesh. "
-                         "medium: octagonal cylinders, 3× meshes. "
-                         "high: smoothest (16-section cylinders, 3× meshes).",
-                )
-                framework_quality = quality_label
-            else:
-                framework_quality = "medium"
             framework_bond_linewidth = 8.0
         projection_choice = st.selectbox(
             "Projection",
