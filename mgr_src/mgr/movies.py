@@ -4570,14 +4570,19 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const sf = objectsById["framework_spacefill"];
       const arRings = objectsById["aromatic_rings"];
       const arHigh = objectsById["aromatic_highlights"];
-      // Scatter traces (points + lines, no representation toggle)
+      // Scatter / instanced traces (atoms + bonds split across two trace IDs)
       const scatterAtoms = objectsById["framework_atoms"];
       const scatterBonds = objectsById["framework_bonds"];
+      const stickAtoms = objectsById["framework_stick_atoms"];
+      const stickBonds = objectsById["framework_stick_bonds"];
       if (fw) fw.visible = showFramework.checked && val === "ball_and_stick";
       if (stick) stick.visible = showFramework.checked && val === "stick";
       if (sf) sf.visible = showFramework.checked && val === "space_filling";
-      if (scatterAtoms) scatterAtoms.visible = showFramework.checked;
-      if (scatterBonds) scatterBonds.visible = showFramework.checked;
+      if (stickAtoms) stickAtoms.visible = showFramework.checked && val === "stick";
+      if (stickBonds) stickBonds.visible = showFramework.checked && val === "stick";
+      // Instanced/scatter ball-and-stick: show atoms+bonds for ball_and_stick selection
+      if (scatterAtoms && !fw) scatterAtoms.visible = showFramework.checked && val === "ball_and_stick";
+      if (scatterBonds && !fw) scatterBonds.visible = showFramework.checked && val === "ball_and_stick";
       if (arRings) arRings.visible = showFramework.checked;
       if (arHigh) arHigh.visible = showFramework.checked;
       updateFrameworkCellVisibility();
@@ -4585,7 +4590,8 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     showFramework.addEventListener("change", updateFrameworkVisibility);
     reprSelect.addEventListener("change", updateFrameworkVisibility);
     // Hide representation selector when only scatter traces exist (no mesh variants)
-    if (!objectsById["framework"] && !objectsById["framework_stick"] && !objectsById["framework_spacefill"]) {
+    if (!objectsById["framework"] && !objectsById["framework_stick"] && !objectsById["framework_spacefill"]
+        && !objectsById["framework_stick_atoms"]) {
       const reprLabel = reprSelect.parentNode;
       if (reprLabel) reprLabel.style.display = "none";
     }
