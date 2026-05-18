@@ -179,11 +179,11 @@ DEFAULT_STYLES: dict[str, dict[str, Any]] = {
     },
     "internal_maxima": {
         "color": [0.85, 0.85, 0.85],
-        "size": 2.5,
+        "size": 5.0,
     },
     "periodic_maxima": {
         "color": [0.85, 0.85, 0.85],
-        "size": 2.5,
+        "size": 5.0,
     },
     "internal_windows": {
         "color": 0xFFE600,
@@ -643,7 +643,7 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
     vmax = float(vals.max()) if len(vals) else 1.0
     denom = max(vmax - vmin, 1e-12)
     norm = (vals - vmin) / denom
-    sizes = (3.0 + 2.5 * norm).astype(float).tolist()
+    sizes = (6.0 + 5.0 * norm).astype(float).tolist()
     maxima_info = np.asarray(seg.get("maxima_info", []), dtype=int)
     maxima_pbc_dict_raw = seg.get("maxima_pbc_dict", {}) or {}
 
@@ -5979,10 +5979,10 @@ def make_percolation_windows_trace(
         data={
             "positions": np.array(all_window_positions).reshape(-1).tolist() if all_window_positions else [],
             "colors": ([1.0, 1.0, 0.0] * len(all_window_positions)) if all_window_positions else [],  # yellow, flat
-            "sizes": [6.0] * len(all_window_positions),
+            "sizes": [12.0] * len(all_window_positions),
             "n_points": len(all_window_positions),
         },
-        style={"color": [1.0, 1.0, 0.0], "size": 6.0, "symbol": "circle"},
+        style={"color": [1.0, 1.0, 0.0], "size": 12.0, "symbol": "circle"},
         hover=all_window_hover,
         visible=True,
     )
@@ -5995,10 +5995,10 @@ def make_percolation_windows_trace(
         data={
             "positions": np.array(pld_positions).reshape(-1).tolist() if pld_positions else [],
             "colors": ([1.0, 0.2, 0.2] * len(pld_positions)) if pld_positions else [],  # red, flat
-            "sizes": [8.0] * len(pld_positions),
+            "sizes": [16.0] * len(pld_positions),
             "n_points": len(pld_positions),
         },
-        style={"color": [1.0, 0.2, 0.2], "size": 8.0, "symbol": "diamond"},
+        style={"color": [1.0, 0.2, 0.2], "size": 16.0, "symbol": "diamond"},
         hover=pld_hover,
         visible=True,
     )
