@@ -8,6 +8,7 @@ import tempfile
 import time
 import hashlib
 import html
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -1936,7 +1937,7 @@ def main() -> None:
 
 
     results_key = f"{getattr(cif_path, 'name', 'uploaded')}::{spacing:.3f}::aabb={use_aabb_method}::bs={block_size}"
-    col_btn1, col_btn2, col_btn3 = st.columns([2.5, 1, 1])
+    col_btn1, col_btn2, col_btn3, col_btn4 = st.columns([2.5, 1, 0.8, 0.8])
     with col_btn1:
         compute_clicked = st.button("Compute and Visualize", use_container_width=True)
     with col_btn2:
@@ -1949,10 +1950,20 @@ def main() -> None:
     with col_btn3:
         st.markdown(
             "<button onclick='navigator.clipboard.writeText(window.location.href);this.textContent=\"📋 Copied!\";setTimeout(()=>this.textContent=\"📋 Copy link\",1500)' "
-            "style='width:100%;padding:0.45rem 0.25rem;font-size:0.82rem;background:rgba(128,128,128,0.12);border:1px solid rgba(128,128,128,0.25);"
-            "border-radius:0.35rem;cursor:pointer;color:inherit;'>📋 Copy link</button>",
+            "style='width:100%;padding:0.45rem 0.15rem;font-size:0.80rem;background:rgba(128,128,128,0.12);border:1px solid rgba(128,128,128,0.25);"
+            "border-radius:0.35rem;cursor:pointer;color:inherit;'>📋 Copy</button>",
             unsafe_allow_html=True,
         )
+    with col_btn4:
+        share_url = f"https://x.com/intent/tweet?text={urllib.parse.quote('Mofography — pore graph analysis & visualization of nanoporous materials')}&url={urllib.parse.quote('https://huggingface.co/spaces/arung-northwestern/mofography-web-demo')}"
+        st.markdown(
+            f"<a href='{share_url}' target='_blank' "
+            "style='display:block;text-align:center;text-decoration:none;width:calc(100%-2px);padding:0.45rem 0.15rem;font-size:0.80rem;"
+            "background:rgba(128,128,128,0.12);border:1px solid rgba(128,128,128,0.25);border-radius:0.35rem;color:inherit;'>"
+            "🐦 Share</a>",
+            unsafe_allow_html=True,
+        )
+
 
     if compute_clicked:
         if not _spaces_allow_compute_now():
