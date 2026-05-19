@@ -111,12 +111,12 @@ FEEDBACK_FORM_URL = os.environ.get("MGR_FEEDBACK_URL", "#")
 _SPACES_COMPUTE_LOCK = Lock()
 
 # ---- Compute worker queue (serializes all jobs across sessions) ----
-_JOB_QUEUE: "queue.Queue[Tuple[str, callable, tuple, dict]]" = queue.Queue()
+_JOB_QUEUE: "queue.PriorityQueue" = queue.PriorityQueue()
+_COMPUTE_TIMEOUT_SEC = int(os.environ.get("MGR_COMPUTE_TIMEOUT_SEC", "180"))
 _JOB_REGISTRY: Dict[str, dict] = {}
 _JOB_LOCK = Lock()
 _RESULT_CACHE: Dict[str, Any] = {}
 _QUEUE_WORKER_STARTED = False
-
 def _start_queue_worker():
     """Start a daemon thread that processes compute jobs one at a time."""
     global _QUEUE_WORKER_STARTED
@@ -125,16 +125,29 @@ def _start_queue_worker():
     _QUEUE_WORKER_STARTED = True
     def _worker():
         while True:
-            job_id, fn, args, kwargs = _JOB_QUEUE.get()
+            priority, job_id, fn, args, kwargs = _JOB_QUEUE.get()
             try:
                 with _JOB_LOCK:
                     if job_id in _JOB_REGISTRY:
                         _JOB_REGISTRY[job_id]["status"] = "running"
-                result = fn(*args, **kwargs)
+                # Run compute in a separate thread with timeout
+                result_container = {"result": None, "error": None}
+                def _run():
+                    try:
+                        result_container["result"] = fn(*args, **kwargs)
+                    except Exception as e:
+                        result_container["error"] = str(e)
+                t = Thread(target=_run, daemon=True)
+                t.start()
+                t.join(timeout=_COMPUTE_TIMEOUT_SEC)
+                if t.is_alive():
+                    raise TimeoutError(f"Compute exceeded {_COMPUTE_TIMEOUT_SEC}s time limit")
+                if result_container["error"]:
+                    raise RuntimeError(result_container["error"])
                 with _JOB_LOCK:
                     if job_id in _JOB_REGISTRY:
                         _JOB_REGISTRY[job_id]["status"] = "done"
-                        _JOB_REGISTRY[job_id]["result"] = result
+                        _JOB_REGISTRY[job_id]["result"] = result_container["result"]
             except Exception as exc:
                 with _JOB_LOCK:
                     if job_id in _JOB_REGISTRY:
@@ -2044,17 +2057,18 @@ def main() -> None:
             if progress.error:
                 raise RuntimeError(progress.error)
             return progress.result
-        if _is_spaces_deployment() and not _dev_mode:
-            # Queue path — serialize across all users
+        if _is_spaces_deployment():
+            # Queue path — devs get priority (0), users get 1
             import uuid
             job_id = str(uuid.uuid4())
+            priority = 0 if _dev_mode else 1
             with _JOB_LOCK:
-                _JOB_REGISTRY[job_id] = {"status": "queued", "results_key": results_key, "atoms_count": len(atoms)}
-            _JOB_QUEUE.put((job_id, _compute_fn, (), {}))
+                _JOB_REGISTRY[job_id] = {"status": "queued", "results_key": results_key, "atoms_count": len(atoms), "priority": priority}
+            _JOB_QUEUE.put((priority, job_id, _compute_fn, (), {}))
             st.session_state["_compute_job_id"] = job_id
             st.rerun()
         else:
-            # Dev mode or local — compute directly
+            # Local deployment — compute directly
             try:
                 result = _compute_fn()
             except RuntimeError as e:
