@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from threading import Lock, Thread
+import queue
 from typing import Any, Dict, List, Optional, Tuple
 from io import BytesIO, StringIO
 
@@ -108,6 +109,50 @@ SPACES_MIN_SECONDS_BETWEEN_RUNS = 15.0
 SPACES_MAX_ATOMS = 5000
 FEEDBACK_FORM_URL = os.environ.get("MGR_FEEDBACK_URL", "#")
 _SPACES_COMPUTE_LOCK = Lock()
+
+# ---- Compute worker queue (serializes all jobs across sessions) ----
+_JOB_QUEUE: "queue.Queue[Tuple[str, callable, tuple, dict]]" = queue.Queue()
+_JOB_REGISTRY: Dict[str, dict] = {}
+_JOB_LOCK = Lock()
+_RESULT_CACHE: Dict[str, Any] = {}
+_QUEUE_WORKER_STARTED = False
+
+def _start_queue_worker():
+    """Start a daemon thread that processes compute jobs one at a time."""
+    global _QUEUE_WORKER_STARTED
+    if _QUEUE_WORKER_STARTED:
+        return
+    _QUEUE_WORKER_STARTED = True
+    def _worker():
+        while True:
+            job_id, fn, args, kwargs = _JOB_QUEUE.get()
+            try:
+                with _JOB_LOCK:
+                    if job_id in _JOB_REGISTRY:
+                        _JOB_REGISTRY[job_id]["status"] = "running"
+                result = fn(*args, **kwargs)
+                with _JOB_LOCK:
+                    if job_id in _JOB_REGISTRY:
+                        _JOB_REGISTRY[job_id]["status"] = "done"
+                        _JOB_REGISTRY[job_id]["result"] = result
+            except Exception as exc:
+                with _JOB_LOCK:
+                    if job_id in _JOB_REGISTRY:
+                        _JOB_REGISTRY[job_id]["status"] = "error"
+                        _JOB_REGISTRY[job_id]["error"] = str(exc)
+            finally:
+                _JOB_QUEUE.task_done()
+    t = Thread(target=_worker, daemon=True)
+    t.start()
+
+def _queue_position(job_id: str) -> int:
+    """Return 0-based position in queue (0 = running/next). Does not count current job."""
+    with _JOB_LOCK:
+        queued = [jid for jid, v in _JOB_REGISTRY.items() if v.get("status") == "queued"]
+        try:
+            return queued.index(job_id)
+        except ValueError:
+            return -1
 
 
 def _is_spaces_deployment() -> bool:
@@ -1291,6 +1336,8 @@ def main() -> None:
         layout="wide",
         menu_items={"Get Help": None, "Report a bug": None, "About": None},
     )
+    if _is_spaces_deployment():
+        _start_queue_worker()
     st.session_state.setdefault("ui_logs", [])
     mode_label = "spaces" if _is_spaces_deployment() else "local"
     st.sidebar.caption(f"Debug: deployment mode = `{mode_label}`")
@@ -1970,40 +2017,78 @@ def main() -> None:
     if compute_clicked:
         if not _spaces_allow_compute_now():
             return
-        lock_acquired = True
-        if _is_spaces_deployment():
-            lock_acquired = _SPACES_COMPUTE_LOCK.acquire(blocking=False)
-            if not lock_acquired:
-                estimated = int(st.session_state.get("spaces_last_compute_duration_sec", 45))
-                estimated = max(10, min(180, estimated))
-                st.error(f"Server busy. Estimated wait: ~{estimated}s.")
-                st.caption("Another user is currently running a compute job on this demo instance.")
-                return
-            st.session_state["_compute_spaces_lock"] = True
-        st.session_state["_compute_started_at"] = time.time()
-        _min_box = min_box_thickness
-        if _is_spaces_deployment() and _min_box > SPACES_MAX_MIN_BOX_THICKNESS:
-            _min_box = SPACES_MAX_MIN_BOX_THICKNESS
-            st.info(
-                f"Minimum box thickness is clamped to {SPACES_MAX_MIN_BOX_THICKNESS:.1f} A on the hosted demo."
+        # Check result cache first
+        if results_key in _RESULT_CACHE:
+            st.session_state["_compute_progress"] = _StreamingProgress()
+            st.session_state["_compute_progress"].result = _RESULT_CACHE[results_key]
+            st.session_state["_compute_progress"].done = True
+            st.rerun()
+        # Submit to queue
+        import uuid
+        job_id = str(uuid.uuid4())
+        with _JOB_LOCK:
+            _JOB_REGISTRY[job_id] = {"status": "queued", "results_key": results_key, "atoms_count": len(atoms)}
+        def _compute_job():
+            _min_box = min_box_thickness
+            if _is_spaces_deployment() and _min_box > SPACES_MAX_MIN_BOX_THICKNESS:
+                _min_box = SPACES_MAX_MIN_BOX_THICKNESS
+            progress = _start_compute_thread(
+                atoms,
+                spacing=spacing,
+                mask_thickness=mask_thickness,
+                h_value=h_value,
+                min_distance=min_distance,
+                threshold_abs=threshold_abs,
+                extra_padding=extra_padding,
+                watershed_backend=watershed_backend,
+                use_aabb_method=use_aabb_method,
+                block_size=block_size,
+                min_box_thickness_enabled=min_box_thickness_enabled,
+                min_box_thickness=_min_box,
             )
-        _start_compute_thread(
-            atoms,
-            spacing=spacing,
-            mask_thickness=mask_thickness,
-            h_value=h_value,
-            min_distance=min_distance,
-            threshold_abs=threshold_abs,
-            extra_padding=extra_padding,
-            watershed_backend=watershed_backend,
-            use_aabb_method=use_aabb_method,
-            block_size=block_size,
-            min_box_thickness_enabled=min_box_thickness_enabled,
-            min_box_thickness=_min_box,
-        )
+            # Wait for thread to complete
+            while not progress.done:
+                time.sleep(0.1)
+            if progress.error:
+                raise RuntimeError(progress.error)
+            return progress.result
+        _JOB_QUEUE.put((job_id, _compute_job, (), {}))
+        st.session_state["_compute_job_id"] = job_id
         st.rerun()
-
-    if st.session_state.get("_compute_progress") is not None:
+    # Queue-based compute polling (Spaces) or legacy progress (local)
+    job_id = st.session_state.get("_compute_job_id")
+    if job_id and _is_spaces_deployment():
+        with _JOB_LOCK:
+            entry = _JOB_REGISTRY.get(job_id, {})
+            status = entry.get("status", "unknown")
+        if status == "queued":
+            pos = _queue_position(job_id)
+            if pos == 0:
+                st.info("⏳ Your analysis is next in line — starting shortly…")
+            else:
+                st.info(f"⏳ Queue position: {pos + 1}. Waiting for {pos} other job(s) to complete…")
+            time.sleep(1)
+            st.rerun()
+        elif status == "running":
+            st.info("⚡ Computing… your analysis is running now.")
+            time.sleep(1)
+            st.rerun()
+        elif status == "done":
+            results = entry.get("result", {})
+            _RESULT_CACHE[entry.get("results_key", results_key)] = results
+            st.session_state["_compute_progress"] = _StreamingProgress()
+            st.session_state["_compute_progress"].result = results
+            st.session_state["_compute_progress"].done = True
+            del st.session_state["_compute_job_id"]
+            with _JOB_LOCK:
+                _JOB_REGISTRY.pop(job_id, None)
+            st.rerun()
+        elif status == "error":
+            st.error(f"Compute failed: {entry.get('error', 'Unknown error')}")
+            del st.session_state["_compute_job_id"]
+            with _JOB_LOCK:
+                _JOB_REGISTRY.pop(job_id, None)
+    elif st.session_state.get("_compute_progress") is not None:
         progress = st.session_state["_compute_progress"]
         if not progress.done:
             _render_progress_ui(progress)
