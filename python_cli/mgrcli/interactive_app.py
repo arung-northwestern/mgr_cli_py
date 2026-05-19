@@ -105,6 +105,7 @@ SPACES_MAX_EXTRA_PADDING = 10.0
 SPACES_MAX_MIN_BOX_THICKNESS = 12.0
 SPACES_MIN_SECONDS_BETWEEN_RUNS = 15.0
 SPACES_MAX_ATOMS = 5000
+FEEDBACK_FORM_URL = os.environ.get("MGR_FEEDBACK_URL", "#")
 _SPACES_COMPUTE_LOCK = Lock()
 
 
@@ -1386,8 +1387,22 @@ def main() -> None:
         ),
         unsafe_allow_html=True,
     )
-    st.markdown("<div style='font-size:0.92rem;opacity:0.9;'>Pore Graph Analysis and Visualization of Nanoporous Materials</div>", unsafe_allow_html=True)
-    st.markdown("<div style='font-size:0.80rem;opacity:0.85;'><em>(code and research paper coming soon!)</em></div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div style='line-height:1.35;'>"
+        "<div style='font-size:0.92rem;opacity:0.9;'>Pore Graph Analysis &amp; Visualization of Nanoporous Materials</div>"
+        "<div style='font-size:0.80rem;opacity:0.85;margin-top:2px;'>"
+        "Arun Gopalan · Chao Zheng · Kaihang Shi · Lev Sarkisov"
+        "</div>"
+        "<div style='font-size:0.78rem;opacity:0.80;margin-top:4px;'>"
+        "📝 <em>Advanced, high-throughput characterization of nanoporous materials using pore graphs</em> — forthcoming<br>"
+        "📄 <a href='https://chemrxiv.org/doi/full/10.26434/chemrxiv-2025-gc17t-v2' "
+        "style='color:inherit;' target='_blank'>"
+        "PoroNet: pore-graph neural network for adsorption in MOFs (Zheng et al., <em>ChemRxiv</em>)</a><br>"
+        f"🐛 Pre-release demo · <a href='{FEEDBACK_FORM_URL}' style='color:inherit;' target='_blank'>send feedback →</a>"
+        "</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
     st.caption("Experimental; bugs and freezes may occur. Thank you for testing 🙏.")
     if show_logs:
         log_text = "\n".join(st.session_state.get("ui_logs", []))
@@ -1627,7 +1642,7 @@ def main() -> None:
         viz_backend = st.radio(
             "3D Rendering Backend",
             ["Plotly", "Three.js"],
-            index=0,
+            index=1,
             horizontal=True,
             help="Three.js: faster WebGL, SSAO, dynamic controls. Plotly: standard, offline-capable.",
         )
@@ -1902,7 +1917,7 @@ def main() -> None:
         )
         screen_door_surfaces = st.checkbox(
             "Screen-door transparency",
-            value=False,
+            value=True,
             help="Uses dithered transparency for surfaces to reduce sorting artifacts in overlapping semi-transparent meshes.",
         )
 
@@ -1920,7 +1935,14 @@ def main() -> None:
 
 
     results_key = f"{getattr(cif_path, 'name', 'uploaded')}::{spacing:.3f}::aabb={use_aabb_method}::bs={block_size}"
-    compute_clicked = st.button("Compute and Visualize")
+    col_btn1, col_btn2 = st.columns([3, 1])
+    with col_btn1:
+        compute_clicked = st.button("Compute and Visualize", use_container_width=True)
+    with col_btn2:
+        if st.button("🔄 Reset", use_container_width=True, help="Clear all results and reset to defaults"):
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.rerun()
 
     if compute_clicked:
         if not _spaces_allow_compute_now():
