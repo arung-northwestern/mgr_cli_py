@@ -1936,14 +1936,23 @@ def main() -> None:
 
 
     results_key = f"{getattr(cif_path, 'name', 'uploaded')}::{spacing:.3f}::aabb={use_aabb_method}::bs={block_size}"
-    col_btn1, col_btn2 = st.columns([3, 1])
+    col_btn1, col_btn2, col_btn3 = st.columns([2.5, 1, 1])
     with col_btn1:
         compute_clicked = st.button("Compute and Visualize", use_container_width=True)
     with col_btn2:
-        if st.button("🔄 Reset", use_container_width=True, help="Clear all results and reset to defaults"):
-            for key in list(st.session_state.keys()):
-                del st.session_state[key]
+        if st.button("🔄 Reset", use_container_width=True, help="Clear all inputs and results"):
+            clear_framework_cache()
+            next_gen = int(st.session_state.get("widget_reset_generation", 0)) + 1
+            st.session_state.clear()
+            st.session_state["widget_reset_generation"] = next_gen
             st.rerun()
+    with col_btn3:
+        st.markdown(
+            "<button onclick='navigator.clipboard.writeText(window.location.href);this.textContent=\"📋 Copied!\";setTimeout(()=>this.textContent=\"📋 Copy link\",1500)' "
+            "style='width:100%;padding:0.45rem 0.25rem;font-size:0.82rem;background:rgba(128,128,128,0.12);border:1px solid rgba(128,128,128,0.25);"
+            "border-radius:0.35rem;cursor:pointer;color:inherit;'>📋 Copy link</button>",
+            unsafe_allow_html=True,
+        )
 
     if compute_clicked:
         if not _spaces_allow_compute_now():
