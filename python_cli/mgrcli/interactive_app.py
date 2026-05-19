@@ -1408,17 +1408,17 @@ def main() -> None:
     # Small utility buttons
     col_u1, col_u2 = st.columns([1, 1])
     with col_u1:
-        st.markdown(
-            "<button onclick='navigator.clipboard.writeText(window.location.href);this.textContent=\"📋 Copied!\";setTimeout(()=>this.textContent=\"📋 Copy URL\",1500)' "
-            "style='width:100%;padding:0.25rem 0.15rem;font-size:0.75rem;background:rgba(128,128,128,0.10);border:1px solid rgba(128,128,128,0.20);"
-            "border-radius:0.35rem;cursor:pointer;color:inherit;'>📋 Copy URL</button>",
-            unsafe_allow_html=True,
-        )
+        if st.button("📋 Copy URL", use_container_width=True, key="copy_url_btn", help="Copy this page URL to clipboard"):
+            st.components.v1.html(
+                "<script>navigator.clipboard.writeText(window.parent.location.href)</script>",
+                height=0,
+            )
+            st.toast("🔗 URL copied to clipboard!", icon="📋")
     with col_u2:
         share_url = f"https://x.com/intent/tweet?text={urllib.parse.quote('Mofography — pore graph analysis & visualization of nanoporous materials')}&url={urllib.parse.quote('https://huggingface.co/spaces/arung-northwestern/mofography-web-demo')}"
         st.markdown(
             f"<a href='{share_url}' target='_blank' "
-            "style='display:block;text-align:center;text-decoration:none;width:calc(100%-2px);padding:0.25rem 0.15rem;font-size:0.75rem;"
+            "style='display:block;text-align:center;text-decoration:none;padding:0.28rem 0;font-size:0.78rem;"
             "background:rgba(128,128,128,0.10);border:1px solid rgba(128,128,128,0.20);border-radius:0.35rem;color:inherit;'>"
             "🐦 Share App</a>",
             unsafe_allow_html=True,
