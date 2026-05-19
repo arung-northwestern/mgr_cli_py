@@ -5672,8 +5672,18 @@ static BOND_LENGTHS: &[(&str, &str, f64, f64)] = &[
 
 /// Compute covalent bonds from an ASE Atoms object and AABB neighbor list.
 ///
-/// Returns (bonds_flat: Vec<i64>, bond_orders: Vec<f64>).
-/// bonds_flat is [a0, b0, a1, b1, ...].
+/// Compute covalent bonds with periodic image replication matching pymatgen.
+///
+/// For bonds crossing periodic boundaries, this function creates image atoms
+/// (just like pymatgen's CovalentBond workflow in update_with_covalent_bonds).
+/// The returned bond indices reference these image atoms, producing output
+/// identical to the Python pymatgen implementation.
+///
+/// Returns tuple of 4 lists:
+///   bonds_flat:      [a0, b0, a1, b1, ...] — b may be an image index (>= natoms)
+///   bond_orders:     [bo0, bo1, ...]
+///   image_positions: [x0, y0, z0, x1, y1, z1, ...] — Cartesian coords of image atoms
+///   image_atomic_numbers: [Z0, Z1, ...] — element Z of each image atom
 #[pyfunction]
 fn covalent_bonds(
     positions: Vec<f64>,       // flat [x0,y0,z0, x1,y1,z1, ...]
@@ -5682,7 +5692,7 @@ fn covalent_bonds(
     nlist_i: Vec<i64>,         // neighbor list source indices
     nlist_j: Vec<i64>,         // neighbor list target indices
     tol: f64,                  // bond tolerance (default 0.2)
-) -> (Vec<i64>, Vec<f64>) {
+) -> (Vec<i64>, Vec<f64>, Vec<f64>, Vec<i32>) {
     use std::collections::HashMap;
 
     // Periodic table: Z → element symbol
@@ -5708,6 +5718,9 @@ fn covalent_bonds(
     let npairs = nlist_i.len();
     let mut bonds_flat: Vec<i64> = Vec::new();
     let mut bond_orders: Vec<f64> = Vec::new();
+    let mut image_positions: Vec<f64> = Vec::new();
+    let mut image_atomic_numbers: Vec<i32> = Vec::new();
+    let mut n_images: usize = 0;
 
     // Build bond length database: (sym_a, sym_b) → Vec<(bond_order, length)>
     let mut bond_db: HashMap<(String, String), Vec<(f64, f64)>> = HashMap::new();
@@ -5716,9 +5729,16 @@ fn covalent_bonds(
         bond_db.entry(key).or_default().push((bo, len));
     }
 
-    // Parse cell
+    // Parse cell and compute fractional coordinates for all atoms
     let cell = nalgebra::Matrix3::from_column_slice(&cell);
     let inv_cell = cell.try_inverse().unwrap_or_else(|| nalgebra::Matrix3::identity());
+
+    // Precompute fractional coordinates (matches pymatgen struct.frac_coords)
+    let mut frac_coords: Vec<nalgebra::Vector3<f64>> = Vec::with_capacity(natoms);
+    for i in 0..natoms {
+        let cart = nalgebra::Vector3::new(positions[i*3], positions[i*3+1], positions[i*3+2]);
+        frac_coords.push(inv_cell * cart);
+    }
 
     for idx in 0..npairs {
         let i = nlist_i[idx] as usize;
@@ -5731,7 +5751,7 @@ fn covalent_bonds(
         let rj = get_cov_r(zj);
         let default_bl = ri + rj;
 
-        // Minimum image distance
+        // Minimum image distance (same as pymatgen)
         let pi = nalgebra::Vector3::new(positions[i*3], positions[i*3+1], positions[i*3+2]);
         let pj = nalgebra::Vector3::new(positions[j*3], positions[j*3+1], positions[j*3+2]);
         let diff = pi - pj;
@@ -5748,6 +5768,33 @@ fn covalent_bonds(
         if dist >= (1.0 + tol) * default_bl {
             continue;
         }
+
+        // Periodic image check (matches Python: shift = round(frac[a] - frac[b]))
+        // Use frac_coords which are in [0,1) for atoms inside the unit cell.
+        let dr = frac_coords[i] - frac_coords[j];
+        let shift_x = dr.x.round();
+        let shift_y = dr.y.round();
+        let shift_z = dr.z.round();
+        let is_periodic = shift_x != 0.0 || shift_y != 0.0 || shift_z != 0.0;
+
+        let b_idx: i64 = if is_periodic {
+            // Create image atom: new_site_frac = frac[b] + shift, then to Cartesian
+            let new_frac = nalgebra::Vector3::new(
+                frac_coords[j].x + shift_x,
+                frac_coords[j].y + shift_y,
+                frac_coords[j].z + shift_z,
+            );
+            let new_cart = cell * new_frac;
+            image_positions.push(new_cart.x);
+            image_positions.push(new_cart.y);
+            image_positions.push(new_cart.z);
+            image_atomic_numbers.push(zj);
+            let img_idx = (natoms + n_images) as i64;
+            n_images += 1;
+            img_idx
+        } else {
+            j as i64
+        };
 
         // get_bond_order
         let sym_a = *z_to_sym.get(&zi).unwrap_or(&"X");
@@ -5793,11 +5840,11 @@ fn covalent_bonds(
         };
 
         bonds_flat.push(i as i64);
-        bonds_flat.push(j as i64);
+        bonds_flat.push(b_idx);
         bond_orders.push(bo);
     }
 
-    (bonds_flat, bond_orders)
+    (bonds_flat, bond_orders, image_positions, image_atomic_numbers)
 }
 
 #[pymodule]

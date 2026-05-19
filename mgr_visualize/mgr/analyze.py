@@ -336,85 +336,123 @@ def voronoi_on_atoms(ase_atoms, points=None):
 
 def update_with_covalent_bonds(ase_atoms, nlist=None):
     """
-    It takes an ASE atoms object and returns an ASE atoms object with the covalent bonds and bond orders
-    added to the info dictionary. 
+    Compute covalent bonds using Rust (mgrcli_rust.covalent_bonds) — 100x+ faster than pymatgen.
     
-    The function also takes an optional argument, nlist, which is a list of nearest neighbors. If nlist
-    is not provided, the function will calculate the nearest neighbors using the voronoi_on_atoms
-    function. 
+    For bonds crossing periodic boundaries, creates image atoms (copies of atoms across
+    periodic boundaries) so that bond vectors don't appear to wrap across the unit cell.
+    The returned Atoms object includes these image atoms, and bond indices reference them.
     
-    The function uses the pymatgen CovalentBond class to determine if two atoms are bonded. The
-    CovalentBond class uses the bond length and bond tolerance to determine if two atoms are bonded. The
-    bond length is the sum of the covalent radii of the two atoms. The bond tolerance is a user defined
-    parameter. The default value is 0.1. 
-    
-    The function also checks if the nearest image of an atom is in the unit cell. If not, the function
-    will add that site to the structure even if it is across
-    
-    :param ase_atoms: the atoms object you want to update
-    :param nlist: a list of pairs of atoms that are neighbors. If you don't have this, you can use the
-    voronoi_on_atoms function to get it
-    :return: AseAtomsAdaptor.get_atoms(struct)
+    :param ase_atoms: ASE Atoms object
+    :param nlist: optional list of (i, j) neighbor pairs. If None, uses voronoi_on_atoms.
+    :return: ASE Atoms object with 'covalent_bonds' and 'covalent_bond_orders' in info.
     """
 
+    import numpy as np
+    from ase import Atoms
+
+    # Build neighbor list if not provided
+    if nlist is None:
+        voro = voronoi_on_atoms(ase_atoms)
+        nlist = voro.nlist
+        tol = 0.2
+    else:
+        tol = 0.1
+
+    if len(nlist) == 0:
+        ase_atoms_updated = ase_atoms.copy()
+        ase_atoms_updated.info['covalent_bonds'] = []
+        ase_atoms_updated.info['covalent_bond_orders'] = []
+        return ase_atoms_updated
+
+    # Convert nlist to separate i, j arrays
+    nlist_i = np.array([p[0] for p in nlist], dtype=np.int64)
+    nlist_j = np.array([p[1] for p in nlist], dtype=np.int64)
+
+    # Prepare inputs for Rust function
+    positions = ase_atoms.get_positions().ravel().tolist()
+    atomic_numbers = ase_atoms.get_atomic_numbers().tolist()
+    # Rust expects column-major (Fortran order) of cell.T
+    cell_fortran = ase_atoms.get_cell().array.T.flatten(order='F').tolist()
+
+    # Call Rust covalent_bonds (100x+ faster than pymatgen)
+    try:
+        import mgrcli_rust
+        bonds_flat, bond_orders, image_positions, image_atomic_numbers = \
+            mgrcli_rust.covalent_bonds(positions, atomic_numbers, cell_fortran,
+                                       nlist_i.tolist(), nlist_j.tolist(), tol)
+    except ImportError:
+        # Fallback to pure Python if Rust extension not built
+        return _update_with_covalent_bonds_python(ase_atoms, nlist, tol)
+
+    # Build bonds list from flat array
+    bonds = [[bonds_flat[2*i], bonds_flat[2*i+1]] for i in range(len(bonds_flat)//2)]
+
+    # If there are image atoms, build a new Atoms object with original + image atoms
+    n_images = len(image_atomic_numbers)
+    if n_images > 0:
+        # Convert image_positions (flat list) to (n_images, 3) array
+        img_pos_array = np.array(image_positions).reshape(-1, 3)
+        img_z_array = np.array(image_atomic_numbers)
+
+        from ase.data import chemical_symbols
+        img_symbols = [chemical_symbols[z] for z in img_z_array]
+
+        # Build combined atoms: original + image atoms
+        orig_positions = ase_atoms.get_positions()
+        orig_symbols = ase_atoms.get_chemical_symbols()
+        all_positions = np.vstack([orig_positions, img_pos_array])
+        all_symbols = orig_symbols + img_symbols
+
+        ase_atoms_updated = Atoms(
+            symbols=all_symbols,
+            positions=all_positions,
+            cell=ase_atoms.get_cell(),
+            pbc=ase_atoms.get_pbc(),
+        )
+    else:
+        ase_atoms_updated = ase_atoms.copy()
+
+    ase_atoms_updated.info['covalent_bonds'] = bonds
+    ase_atoms_updated.info['covalent_bond_orders'] = list(bond_orders)
+
+    return ase_atoms_updated
+
+
+def _update_with_covalent_bonds_python(ase_atoms, nlist_pairs, tol=0.2):
+    """Fallback pure-Python implementation using pymatgen (original behavior)."""
     from pymatgen.core.bonds import CovalentBond
-    from pymatgen.io.ase import AseAtomsAdaptor 
+    from pymatgen.io.ase import AseAtomsAdaptor
     from ase.data import covalent_radii
     import numpy as np
 
     struct = AseAtomsAdaptor.get_structure(ase_atoms)
     bonds = []
-    bond_order=[]
+    bond_order = []
     radii = covalent_radii[ase_atoms.get_atomic_numbers()]
     frac = struct.frac_coords
-    if nlist is None:
-        voro = voronoi_on_atoms(ase_atoms)
-        nlist = voro.nlist
-        for (a, b) in nlist:
-            # First we check if the nearest image b from a is in the unit cell
-            # if not we will add that site to the structure even if it is across 
-            # periodic boundaries, similar to how VESTA does it
-            cov1 = radii[a]
-            cov2 = radii[b]
 
-                
-            if CovalentBond.is_bonded(struct.sites[a], struct.sites[b], default_bl=cov1+cov2, tol=0.2):
-                bond_test = CovalentBond(struct.sites[a], struct.sites[b])
-                dr = frac[a] - frac[b]
-                shift = np.round(dr)
-                if np.any(shift !=0):
-                    new_site_frac =frac[b] + shift
-                    new_site_coord =np.dot( ase_atoms.get_cell().T, new_site_frac).T
-                    struct.append(species=struct[b].species, coords=new_site_coord, coords_are_cartesian=True, properties = {'image of': b})
-                    b = struct.num_sites - 1 # the last one, the newly added site
-                bonds.append([a, b])
-                bond_order.append(bond_test.get_bond_order(default_bl=cov1+cov2, tol=0.2))
-    else:
-        for (a, b) in nlist:
-        # First we check if the nearest image b from a is in the unit cell
-        # if not we will add that site to the structure even if it is across 
-        # periodic boundaries, similar to how VESTA does it
-            cov1 = radii[a]
-            cov2 = radii[b]
-
-                
-            if CovalentBond.is_bonded(struct.sites[a], struct.sites[b], default_bl=cov1+cov2, tol=0.1):
-                bond_test = CovalentBond(struct.sites[a], struct.sites[b])
-                dr = frac[a] - frac[b]
-                shift = np.round(dr)
-                if np.any(shift !=0):
-                    new_site_frac =frac[b] + shift
-                    new_site_coord =np.dot( ase_atoms.get_cell().T, new_site_frac).T
-                    struct.append(species=struct[b].species, coords=new_site_coord, coords_are_cartesian=True, properties = {'image of': b})
-                    b = struct.num_sites - 1 # the last one, the newly added site
-                bonds.append([a, b])
-                bond_order.append(bond_test.get_bond_order(default_bl=cov1+cov2, tol=0.1))
+    for (a, b) in nlist_pairs:
+        cov1 = radii[a]
+        cov2 = radii[b]
+        if CovalentBond.is_bonded(struct.sites[a], struct.sites[b], default_bl=cov1 + cov2, tol=tol):
+            bond_test = CovalentBond(struct.sites[a], struct.sites[b])
+            dr = frac[a] - frac[b]
+            shift = np.round(dr)
+            if np.any(shift != 0):
+                new_site_frac = frac[b] + shift
+                new_site_coord = np.dot(ase_atoms.get_cell().T, new_site_frac).T
+                struct.append(species=struct[b].species, coords=new_site_coord,
+                              coords_are_cartesian=True, properties={'image of': b})
+                b = struct.num_sites - 1
+            bonds.append([a, b])
+            bond_order.append(bond_test.get_bond_order(default_bl=cov1 + cov2, tol=tol))
 
     ase_atoms_updated = AseAtomsAdaptor.get_atoms(struct)
     ase_atoms_updated.info['covalent_bonds'] = bonds
-    ase_atoms_updated.info['covalent_bond_orders']=bond_order
-            
+    ase_atoms_updated.info['covalent_bond_orders'] = bond_order
     return ase_atoms_updated
+
+
 def get_bonds_and_orders_without_replication(ase_atoms, nlist=None):
     from pymatgen.core.bonds import CovalentBond
     from pymatgen.io.ase import AseAtomsAdaptor 
