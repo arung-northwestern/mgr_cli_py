@@ -2023,38 +2023,47 @@ def main() -> None:
             st.session_state["_compute_progress"].result = _RESULT_CACHE[results_key]
             st.session_state["_compute_progress"].done = True
             st.rerun()
-        # Submit to queue
-        import uuid
-        job_id = str(uuid.uuid4())
-        with _JOB_LOCK:
-            _JOB_REGISTRY[job_id] = {"status": "queued", "results_key": results_key, "atoms_count": len(atoms)}
-        def _compute_job():
+        # Dev bypass: append ?dev=true to URL to skip queue
+        _dev_mode = st.query_params.get("dev") == "true"
+        # Shared compute function (used by both queue and dev/local paths)
+        def _compute_fn():
             _min_box = min_box_thickness
             if _is_spaces_deployment() and _min_box > SPACES_MAX_MIN_BOX_THICKNESS:
                 _min_box = SPACES_MAX_MIN_BOX_THICKNESS
             progress = _start_compute_thread(
-                atoms,
-                spacing=spacing,
-                mask_thickness=mask_thickness,
-                h_value=h_value,
-                min_distance=min_distance,
-                threshold_abs=threshold_abs,
-                extra_padding=extra_padding,
-                watershed_backend=watershed_backend,
-                use_aabb_method=use_aabb_method,
-                block_size=block_size,
+                atoms, spacing=spacing, mask_thickness=mask_thickness,
+                h_value=h_value, min_distance=min_distance, threshold_abs=threshold_abs,
+                extra_padding=extra_padding, watershed_backend=watershed_backend,
+                use_aabb_method=use_aabb_method, block_size=block_size,
                 min_box_thickness_enabled=min_box_thickness_enabled,
                 min_box_thickness=_min_box,
             )
-            # Wait for thread to complete
             while not progress.done:
                 time.sleep(0.1)
             if progress.error:
                 raise RuntimeError(progress.error)
             return progress.result
-        _JOB_QUEUE.put((job_id, _compute_job, (), {}))
-        st.session_state["_compute_job_id"] = job_id
-        st.rerun()
+        if _is_spaces_deployment() and not _dev_mode:
+            # Queue path — serialize across all users
+            import uuid
+            job_id = str(uuid.uuid4())
+            with _JOB_LOCK:
+                _JOB_REGISTRY[job_id] = {"status": "queued", "results_key": results_key, "atoms_count": len(atoms)}
+            _JOB_QUEUE.put((job_id, _compute_fn, (), {}))
+            st.session_state["_compute_job_id"] = job_id
+            st.rerun()
+        else:
+            # Dev mode or local — compute directly
+            try:
+                result = _compute_fn()
+            except RuntimeError as e:
+                st.error(f"Compute failed: {e}")
+                return
+            _RESULT_CACHE[results_key] = result
+            st.session_state["_compute_progress"] = _StreamingProgress()
+            st.session_state["_compute_progress"].result = result
+            st.session_state["_compute_progress"].done = True
+            st.rerun()
     # Queue-based compute polling (Spaces) or legacy progress (local)
     job_id = st.session_state.get("_compute_job_id")
     if job_id and _is_spaces_deployment():
