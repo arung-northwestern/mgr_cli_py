@@ -111,24 +111,31 @@ FEEDBACK_FORM_URL = os.environ.get("MGR_FEEDBACK_URL", "#")
 _SPACES_COMPUTE_LOCK = Lock()
 
 # ---- Compute worker queue (serializes all jobs across sessions) ----
-_JOB_QUEUE: "queue.PriorityQueue" = queue.PriorityQueue()
-_COMPUTE_TIMEOUT_SEC = int(os.environ.get("MGR_COMPUTE_TIMEOUT_SEC", "180"))
-_JOB_REGISTRY: Dict[str, dict] = {}
-_JOB_LOCK = Lock()
-_RESULT_CACHE: Dict[str, Any] = {}
-_QUEUE_WORKER_STARTED = False
+# Queue state lives in mgr_src/mgr/queue_state.py, outside Streamlit's
+# file-watcher scope, so globals survive hot-reloads and devMode reruns.
+from mgr.queue_state import (
+    JOB_QUEUE as _JOB_QUEUE,
+    JOB_REGISTRY as _JOB_REGISTRY,
+    JOB_LOCK as _JOB_LOCK,
+    RESULT_CACHE as _RESULT_CACHE,
+    COMPUTE_TIMEOUT_SEC as _COMPUTE_TIMEOUT_SEC,
+    QUEUE_WORKER_STARTED as _QUEUE_WORKER_STARTED_REF,
+)
+import mgr.queue_state as _queue_state
+_QUEUE_WORKER_STARTED = _QUEUE_WORKER_STARTED_REF  # type: ignore[assignment]
+_LOG_PATH = "/tmp/mgr_queue.log"
 def _start_queue_worker():
     """Start a daemon thread that processes compute jobs one at a time."""
     global _QUEUE_WORKER_STARTED
-    if _QUEUE_WORKER_STARTED:
+    if _queue_state.QUEUE_WORKER_STARTED:
         return
+    _queue_state.QUEUE_WORKER_STARTED = True
     _QUEUE_WORKER_STARTED = True
-    _log_path = "/tmp/mgr_queue.log"
     def _worker():
         while True:
             priority, job_id, fn, args, kwargs = _JOB_QUEUE.get()
             try:
-                with open(_log_path, "a") as lf:
+                with open(_LOG_PATH, "a") as lf:
                     lf.write(f"WORKER picked job {job_id[:8]} priority={priority}\n")
                 with _JOB_LOCK:
                     if job_id in _JOB_REGISTRY:
@@ -137,31 +144,31 @@ def _start_queue_worker():
                 def _run():
                     try:
                         result_container["result"] = fn(*args, **kwargs)
-                        with open(_log_path, "a") as lf:
+                        with open(_LOG_PATH, "a") as lf:
                             lf.write(f"WORKER job {job_id[:8]} fn returned ok\n")
                     except Exception as e:
                         result_container["error"] = str(e)
-                        with open(_log_path, "a") as lf:
+                        with open(_LOG_PATH, "a") as lf:
                             lf.write(f"WORKER job {job_id[:8]} fn error: {e}\n")
                 t = Thread(target=_run, daemon=True)
                 t.start()
                 t.join(timeout=_COMPUTE_TIMEOUT_SEC)
                 if t.is_alive():
-                    with open(_log_path, "a") as lf:
+                    with open(_LOG_PATH, "a") as lf:
                         lf.write(f"WORKER job {job_id[:8]} TIMED OUT\n")
                     raise TimeoutError(f"Compute exceeded {_COMPUTE_TIMEOUT_SEC}s time limit")
                 if result_container["error"]:
-                    with open(_log_path, "a") as lf:
+                    with open(_LOG_PATH, "a") as lf:
                         lf.write(f"WORKER job {job_id[:8]} error: {result_container['error']}\n")
                     raise RuntimeError(result_container["error"])
                 with _JOB_LOCK:
                     if job_id in _JOB_REGISTRY:
                         _JOB_REGISTRY[job_id]["status"] = "done"
                         _JOB_REGISTRY[job_id]["result"] = result_container["result"]
-                with open(_log_path, "a") as lf:
+                with open(_LOG_PATH, "a") as lf:
                     lf.write(f"WORKER job {job_id[:8]} DONE\n")
             except Exception as exc:
-                with open(_log_path, "a") as lf:
+                with open(_LOG_PATH, "a") as lf:
                     lf.write(f"WORKER job {job_id[:8]} FAIL: {exc}\n")
                 with _JOB_LOCK:
                     if job_id in _JOB_REGISTRY:
@@ -171,7 +178,6 @@ def _start_queue_worker():
                 _JOB_QUEUE.task_done()
     t = Thread(target=_worker, daemon=True)
     t.start()
-
 def _queue_position(job_id: str) -> int:
     """Return 0-based position in queue (0 = running/next). Does not count current job."""
     with _JOB_LOCK:
@@ -1521,6 +1527,21 @@ def main() -> None:
 
     st.markdown("### Single material")
     st.markdown("<p style='font-size:0.82rem;opacity:0.75;font-style:italic;margin-top:-8px;'>Upload a CIF, tweak settings (or go with defaults), then hit Compute &amp; Visualize!</p>", unsafe_allow_html=True)
+    # Notify user immediately if they have a pending/computing job
+    if _is_spaces_deployment():
+        _pending_job_id = st.session_state.get("_compute_job_id")
+        if _pending_job_id:
+            with _JOB_LOCK:
+                _pentry = _JOB_REGISTRY.get(_pending_job_id, {})
+                _pstatus = _pentry.get("status", "unknown")
+                _ppos = _queue_position(_pending_job_id)
+            if _pstatus == "queued" and _ppos >= 0:
+                st.toast(f"⏳ Your analysis is in queue — position {_ppos + 1}", icon="⏳")
+            elif _pstatus == "running":
+                st.toast("⚡ Your analysis is computing now", icon="⚡")
+            elif _pstatus == "done":
+                # Job finished between reruns — shouldn't happen often but handle it
+                pass
     samples = _get_sample_cifs()
     sample_choice = None
     if samples:
@@ -2033,6 +2054,28 @@ def main() -> None:
 
 
 
+    # Pre-compute queue status banner (shows active jobs before user clicks)
+    if _is_spaces_deployment():
+        with _JOB_LOCK:
+            _active_queued = sum(
+                1 for v in _JOB_REGISTRY.values() if v.get("status") == "queued"
+            )
+            _active_running = sum(
+                1 for v in _JOB_REGISTRY.values() if v.get("status") == "running"
+            )
+        _total_active = _active_queued + _active_running
+        if _total_active > 0:
+            _cap = f"{_COMPUTE_TIMEOUT_SEC}s"
+            _msg_parts = []
+            if _active_running > 0:
+                _msg_parts.append(f"{'1 job' if _active_running == 1 else f'{_active_running} jobs'} computing")
+            if _active_queued > 0:
+                _msg_parts.append(f"{'1 job' if _active_queued == 1 else f'{_active_queued} jobs'} in queue")
+            st.caption(
+                f"🚦 Server busy: {' · '.join(_msg_parts)} · max {_cap} per job. "
+                f"Your job will be queued automatically."
+            )
+
     results_key = f"{getattr(cif_path, 'name', 'uploaded')}::{spacing:.3f}::aabb={use_aabb_method}::bs={block_size}"
     col_btn1, col_btn2 = st.columns([3, 1])
     with col_btn1:
@@ -2056,6 +2099,15 @@ def main() -> None:
             st.session_state["_compute_progress"].result = _RESULT_CACHE[results_key]
             st.session_state["_compute_progress"].done = True
             st.rerun()
+        # Guard: if a queued/running job already exists, don't submit a duplicate.
+        _existing_job_id = st.session_state.get("_compute_job_id")
+        if _existing_job_id:
+            with _JOB_LOCK:
+                _existing_status = _JOB_REGISTRY.get(_existing_job_id, {}).get("status")
+            if _existing_status in ("queued", "running"):
+                return  # Existing job still in progress; polling loop handles it.
+            # Job finished or lost — clean up stale entry before submitting new one.
+            st.session_state.pop("_compute_job_id", None)
         # Dev bypass: append ?dev=<token> to skip queue
         _dev_token = os.environ.get("MGR_DEV_TOKEN", "")
         _dev_mode = _is_spaces_deployment() and _dev_token and st.query_params.get("dev", "") == _dev_token
@@ -2072,6 +2124,14 @@ def main() -> None:
                 min_box_thickness_enabled=min_box_thickness_enabled,
                 min_box_thickness=_min_box,
             )
+            # Expose live progress so the polling loop can render it.
+            # job_id is in the enclosing scope (defined below).
+            try:
+                with _JOB_LOCK:
+                    if job_id in _JOB_REGISTRY:
+                        _JOB_REGISTRY[job_id]["progress"] = progress
+            except NameError:
+                pass  # non-queue path, no job_id
             while not progress.done:
                 time.sleep(0.1)
             if progress.error:
@@ -2105,18 +2165,39 @@ def main() -> None:
         with _JOB_LOCK:
             entry = _JOB_REGISTRY.get(job_id, {})
             status = entry.get("status", "unknown")
+            live_progress = entry.get("progress")
+            # Count total jobs in queue for context
+            total_queued = sum(
+                1 for v in _JOB_REGISTRY.values() if v.get("status") == "queued"
+            )
+            total_running = sum(
+                1 for v in _JOB_REGISTRY.values() if v.get("status") == "running"
+            )
         if status == "queued":
             pos = _queue_position(job_id)
+            parts = []
+            if total_running > 0:
+                parts.append(f"{'1 job' if total_running == 1 else f'{total_running} jobs'} running now")
+            if total_queued > 0:
+                parts.append(f"{'1 job' if total_queued == 1 else f'{total_queued} jobs'} ahead")
+            parts.append(f"max {_COMPUTE_TIMEOUT_SEC}s per job")
+            queue_summary = " · ".join(parts)
             if pos == 0:
-                st.info("⏳ Your analysis is next in line — starting shortly…")
+                st.info(f"⏳ Your analysis is next — starting shortly…\n*{queue_summary}*")
             else:
-                st.info(f"⏳ Queue position: {pos + 1}. Waiting for {pos} other job(s) to complete…")
+                st.info(f"⏳ Queue position: **{pos}** · {queue_summary}")
             time.sleep(1)
             st.rerun()
         elif status == "running":
-            st.info("⚡ Computing… your analysis is running now.")
-            time.sleep(1)
-            st.rerun()
+            # Render the rich progress UI (phase, logs, elapsed)
+            if live_progress is not None and not live_progress.done:
+                _render_progress_ui(live_progress)
+                time.sleep(0.6)
+                st.rerun()
+            else:
+                st.info("⚡ Computing… your analysis is running now.")
+                time.sleep(1)
+                st.rerun()
         elif status == "done":
             results = entry.get("result", {})
             _RESULT_CACHE[entry.get("results_key", results_key)] = results
@@ -2132,6 +2213,11 @@ def main() -> None:
             del st.session_state["_compute_job_id"]
             with _JOB_LOCK:
                 _JOB_REGISTRY.pop(job_id, None)
+        else:
+            # Job not found in registry — globals may have been reset by server
+            # restart, hot-reload, or OOM. Inform the user instead of silent failure.
+            st.warning("Compute job was lost (server may have restarted). Please try again.")
+            st.session_state.pop("_compute_job_id", None)
     elif st.session_state.get("_compute_progress") is not None:
         progress = st.session_state["_compute_progress"]
         if not progress.done:
@@ -2249,7 +2335,7 @@ def main() -> None:
                 1.0, time.time() - st.session_state.get("_compute_started_at", time.time())
             )
         del st.session_state["_compute_progress"]
-        del st.session_state["_compute_thread"]
+        st.session_state.pop("_compute_thread", None)
         st.session_state.pop("_compute_spaces_lock", None)
         st.session_state.pop("_compute_started_at", None)
 

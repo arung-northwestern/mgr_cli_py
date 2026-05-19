@@ -37,7 +37,6 @@ if [ -z "${RAYON_NUM_THREADS:-}" ]; then
   threads=$(calc_threads_from_mem "$mem_limit")
   export RAYON_NUM_THREADS="$threads"
 fi
-
 echo "MGR CLI Docker: before running in Docker Desktop GUI,"
 echo "map host port 8501 -> container 8501, then open http://localhost:8501"
 echo ""
