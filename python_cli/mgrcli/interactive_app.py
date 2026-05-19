@@ -535,10 +535,13 @@ def _queue_mesh_prewarm(results_data: Optional[Dict[str, Any]], cache_identity: 
 
 
 def _append_runtime_logs(lines: List[str]) -> None:
-    logs = st.session_state.setdefault("ui_logs", [])
-    logs.extend([line for line in lines if line and line.strip()])
-    if len(logs) > 600:
-        del logs[: len(logs) - 600]
+    try:
+        logs = st.session_state.setdefault("ui_logs", [])
+        logs.extend([line for line in lines if line and line.strip()])
+        if len(logs) > 600:
+            del logs[: len(logs) - 600]
+    except Exception:
+        pass  # no streamlit context
 
 
 def _run_with_output_capture(callable_obj, *args, **kwargs):
@@ -650,8 +653,11 @@ def _start_compute_thread(
 
     thread = Thread(target=_run, daemon=True)
     thread.start()
-    st.session_state["_compute_thread"] = thread
-    st.session_state["_compute_progress"] = progress
+    try:
+        st.session_state["_compute_thread"] = thread
+        st.session_state["_compute_progress"] = progress
+    except Exception:
+        pass  # no streamlit context (e.g. worker thread) — compute still runs
     return progress
 
 
