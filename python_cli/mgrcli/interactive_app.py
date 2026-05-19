@@ -628,6 +628,13 @@ def _start_compute_thread(
                         repetitions = mgr.get_repetitions_to_meet_cutoff(working_atoms, min_box_thickness)
                         w_atoms = working_atoms * repetitions
 
+                # Compute covalent bonds (fast Rust, ~1-2ms).
+                # Was previously done at CIF upload time; moved here so it
+                # runs inside the compute queue on Spaces deployments.
+                from mgr.analyze import update_with_covalent_bonds
+                progress.set_phase("Covalent bonds")
+                w_atoms = update_with_covalent_bonds(w_atoms)
+
                 if use_aabb_method:
                     from mgr.compute import dgrid_from_atoms
 
@@ -1596,11 +1603,8 @@ def main() -> None:
             cif_path = _safe_uploaded_cif_path(uploaded_file)
             st.session_state["uploaded_cif_temp_path"] = str(cif_path)
             atoms = _read_atoms_from_cif(cif_path)
-            from mgr.analyze import update_with_covalent_bonds
-
-            atoms = update_with_covalent_bonds(atoms)
-            st.toast(f"Structure loaded: {atoms.get_chemical_formula()} — {len(atoms)} atoms, "
-                     f"{len(atoms.info.get('covalent_bonds',[]))} bonds", icon="✅")
+            st.toast(f"Structure loaded: {atoms.get_chemical_formula()} — {len(atoms)} atoms"
+                     f" (bonds computed on 'Compute')", icon="✅")
             st.session_state[atoms_cache_key] = atoms
             st.session_state[atoms_source_key_state] = selected_source_key
             st.session_state[atoms_cif_path_state] = str(cif_path)
@@ -1619,11 +1623,8 @@ def main() -> None:
         cache_hit = st.session_state.get(atoms_source_key_state) == selected_source_key
         if not cache_hit:
             atoms = _read_atoms_from_cif(cif_path)
-            from mgr.analyze import update_with_covalent_bonds
-
-            atoms = update_with_covalent_bonds(atoms)
-            st.toast(f"Sample loaded: {atoms.get_chemical_formula()} — {len(atoms)} atoms, "
-                     f"{len(atoms.info.get('covalent_bonds',[]))} bonds", icon="✅")
+            st.toast(f"Sample loaded: {atoms.get_chemical_formula()} — {len(atoms)} atoms"
+                     f" (bonds computed on 'Compute')", icon="✅")
             st.session_state[atoms_cache_key] = atoms
             st.session_state[atoms_source_key_state] = selected_source_key
             st.session_state[atoms_cif_path_state] = str(cif_path)
