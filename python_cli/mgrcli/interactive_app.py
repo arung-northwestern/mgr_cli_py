@@ -123,32 +123,46 @@ def _start_queue_worker():
     if _QUEUE_WORKER_STARTED:
         return
     _QUEUE_WORKER_STARTED = True
+    _log_path = "/tmp/mgr_queue.log"
     def _worker():
         while True:
             priority, job_id, fn, args, kwargs = _JOB_QUEUE.get()
             try:
+                with open(_log_path, "a") as lf:
+                    lf.write(f"WORKER picked job {job_id[:8]} priority={priority}\n")
                 with _JOB_LOCK:
                     if job_id in _JOB_REGISTRY:
                         _JOB_REGISTRY[job_id]["status"] = "running"
-                # Run compute in a separate thread with timeout
                 result_container = {"result": None, "error": None}
                 def _run():
                     try:
                         result_container["result"] = fn(*args, **kwargs)
+                        with open(_log_path, "a") as lf:
+                            lf.write(f"WORKER job {job_id[:8]} fn returned ok\n")
                     except Exception as e:
                         result_container["error"] = str(e)
+                        with open(_log_path, "a") as lf:
+                            lf.write(f"WORKER job {job_id[:8]} fn error: {e}\n")
                 t = Thread(target=_run, daemon=True)
                 t.start()
                 t.join(timeout=_COMPUTE_TIMEOUT_SEC)
                 if t.is_alive():
+                    with open(_log_path, "a") as lf:
+                        lf.write(f"WORKER job {job_id[:8]} TIMED OUT\n")
                     raise TimeoutError(f"Compute exceeded {_COMPUTE_TIMEOUT_SEC}s time limit")
                 if result_container["error"]:
+                    with open(_log_path, "a") as lf:
+                        lf.write(f"WORKER job {job_id[:8]} error: {result_container['error']}\n")
                     raise RuntimeError(result_container["error"])
                 with _JOB_LOCK:
                     if job_id in _JOB_REGISTRY:
                         _JOB_REGISTRY[job_id]["status"] = "done"
                         _JOB_REGISTRY[job_id]["result"] = result_container["result"]
+                with open(_log_path, "a") as lf:
+                    lf.write(f"WORKER job {job_id[:8]} DONE\n")
             except Exception as exc:
+                with open(_log_path, "a") as lf:
+                    lf.write(f"WORKER job {job_id[:8]} FAIL: {exc}\n")
                 with _JOB_LOCK:
                     if job_id in _JOB_REGISTRY:
                         _JOB_REGISTRY[job_id]["status"] = "error"
