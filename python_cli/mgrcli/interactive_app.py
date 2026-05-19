@@ -1405,6 +1405,24 @@ def main() -> None:
         "</div>",
         unsafe_allow_html=True,
     )
+    # Small utility buttons
+    col_u1, col_u2 = st.columns([1, 1])
+    with col_u1:
+        st.markdown(
+            "<button onclick='navigator.clipboard.writeText(window.location.href);this.textContent=\"📋 Copied!\";setTimeout(()=>this.textContent=\"📋 Copy URL\",1500)' "
+            "style='width:100%;padding:0.25rem 0.15rem;font-size:0.75rem;background:rgba(128,128,128,0.10);border:1px solid rgba(128,128,128,0.20);"
+            "border-radius:0.35rem;cursor:pointer;color:inherit;'>📋 Copy URL</button>",
+            unsafe_allow_html=True,
+        )
+    with col_u2:
+        share_url = f"https://x.com/intent/tweet?text={urllib.parse.quote('Mofography — pore graph analysis & visualization of nanoporous materials')}&url={urllib.parse.quote('https://huggingface.co/spaces/arung-northwestern/mofography-web-demo')}"
+        st.markdown(
+            f"<a href='{share_url}' target='_blank' "
+            "style='display:block;text-align:center;text-decoration:none;width:calc(100%-2px);padding:0.25rem 0.15rem;font-size:0.75rem;"
+            "background:rgba(128,128,128,0.10);border:1px solid rgba(128,128,128,0.20);border-radius:0.35rem;color:inherit;'>"
+            "🐦 Share App</a>",
+            unsafe_allow_html=True,
+        )
     st.caption("Experimental; bugs and freezes may occur. Thank you for testing 🙏.")
     if show_logs:
         log_text = "\n".join(st.session_state.get("ui_logs", []))
@@ -1423,8 +1441,8 @@ def main() -> None:
         return
 
     st.markdown("### Single material")
+    st.markdown("<p style='font-size:0.82rem;opacity:0.75;font-style:italic;margin-top:-8px;'>Upload a CIF, tweak settings (or go with defaults), then hit Compute &amp; Visualize!</p>", unsafe_allow_html=True)
     samples = _get_sample_cifs()
-
     sample_choice = None
     if samples:
         sample_choice = st.selectbox(
@@ -1937,7 +1955,7 @@ def main() -> None:
 
 
     results_key = f"{getattr(cif_path, 'name', 'uploaded')}::{spacing:.3f}::aabb={use_aabb_method}::bs={block_size}"
-    col_btn1, col_btn2, col_btn3, col_btn4 = st.columns([2.5, 1, 0.8, 0.8])
+    col_btn1, col_btn2 = st.columns([3, 1])
     with col_btn1:
         compute_clicked = st.button("Compute and Visualize", use_container_width=True)
     with col_btn2:
@@ -1947,22 +1965,7 @@ def main() -> None:
             st.session_state.clear()
             st.session_state["widget_reset_generation"] = next_gen
             st.rerun()
-    with col_btn3:
-        st.markdown(
-            "<button onclick='navigator.clipboard.writeText(window.location.href);this.textContent=\"📋 Copied!\";setTimeout(()=>this.textContent=\"📋 Copy link\",1500)' "
-            "style='width:100%;padding:0.45rem 0.15rem;font-size:0.80rem;background:rgba(128,128,128,0.12);border:1px solid rgba(128,128,128,0.25);"
-            "border-radius:0.35rem;cursor:pointer;color:inherit;'>📋 Copy</button>",
-            unsafe_allow_html=True,
-        )
-    with col_btn4:
-        share_url = f"https://x.com/intent/tweet?text={urllib.parse.quote('Mofography — pore graph analysis & visualization of nanoporous materials')}&url={urllib.parse.quote('https://huggingface.co/spaces/arung-northwestern/mofography-web-demo')}"
-        st.markdown(
-            f"<a href='{share_url}' target='_blank' "
-            "style='display:block;text-align:center;text-decoration:none;width:calc(100%-2px);padding:0.45rem 0.15rem;font-size:0.80rem;"
-            "background:rgba(128,128,128,0.12);border:1px solid rgba(128,128,128,0.25);border-radius:0.35rem;color:inherit;'>"
-            "🐦 Share</a>",
-            unsafe_allow_html=True,
-        )
+
 
 
     if compute_clicked:
