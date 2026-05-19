@@ -1408,12 +1408,12 @@ def main() -> None:
     # Small utility buttons
     col_u1, col_u2 = st.columns([1, 1])
     with col_u1:
-        if st.button("📋 Copy URL", use_container_width=True, key="copy_url_btn", help="Copy this page URL to clipboard"):
-            st.components.v1.html(
-                "<script>navigator.clipboard.writeText(window.parent.location.href)</script>",
-                height=0,
-            )
-            st.toast("🔗 URL copied to clipboard!", icon="📋")
+    with col_u1:
+        st.components.v1.html(
+            "<button onclick=\"var t=document.createElement('textarea');t.value='https://arung-northwestern-mofography-web-demo.hf.space';document.body.appendChild(t);t.select();document.execCommand('copy');document.body.removeChild(t);this.textContent='✅ Copied!';setTimeout(function(){this.textContent='📋 Copy URL'}.bind(this),1500)\" "
+            "style='width:100%;padding:0.28rem 0.15rem;font-size:0.78rem;background:rgba(128,128,128,0.10);border:1px solid rgba(128,128,128,0.20);border-radius:0.35rem;cursor:pointer;color:inherit;'>📋 Copy URL</button>",
+            height=40,
+        )
     with col_u2:
         share_url = f"https://x.com/intent/tweet?text={urllib.parse.quote('Mofography — pore graph analysis & visualization of nanoporous materials')}&url={urllib.parse.quote('https://huggingface.co/spaces/arung-northwestern/mofography-web-demo')}"
         st.markdown(
