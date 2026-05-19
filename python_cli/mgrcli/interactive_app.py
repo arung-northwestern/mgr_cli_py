@@ -2023,8 +2023,9 @@ def main() -> None:
             st.session_state["_compute_progress"].result = _RESULT_CACHE[results_key]
             st.session_state["_compute_progress"].done = True
             st.rerun()
-        # Dev bypass: append ?dev=true to URL to skip queue
-        _dev_mode = st.query_params.get("dev") == "true"
+        # Dev bypass: append ?dev=<token> to skip queue
+        _dev_token = os.environ.get("MGR_DEV_TOKEN", "")
+        _dev_mode = _is_spaces_deployment() and _dev_token and st.query_params.get("dev", "") == _dev_token
         # Shared compute function (used by both queue and dev/local paths)
         def _compute_fn():
             _min_box = min_box_thickness
