@@ -1390,15 +1390,16 @@ def main() -> None:
     st.markdown(
         "<div style='line-height:1.35;'>"
         "<div style='font-size:0.92rem;opacity:0.9;'>Pore Graph Analysis &amp; Visualization of Nanoporous Materials</div>"
-        "<div style='font-size:0.80rem;opacity:0.85;margin-top:2px;'>"
+        "<div style='font-size:0.84rem;opacity:0.88;margin-top:3px;'>"
         "Arun Gopalan · Chao Zheng · Kaihang Shi · Lev Sarkisov"
         "</div>"
-        "<div style='font-size:0.78rem;opacity:0.80;margin-top:4px;'>"
-        "📝 <em>Advanced, high-throughput characterization of nanoporous materials using pore graphs</em> — forthcoming<br>"
+        "<div style='font-size:0.84rem;opacity:0.84;margin-top:4px;'>"
+        "📝 <em>Advanced, high-throughput characterization of nanoporous materials using pore graphs</em>"
+        " — research article coming very soon! 🚀<br>"
         "📄 <a href='https://chemrxiv.org/doi/full/10.26434/chemrxiv-2025-gc17t-v2' "
         "style='color:inherit;' target='_blank'>"
         "PoroNet: pore-graph neural network for adsorption in MOFs (Zheng et al., <em>ChemRxiv</em>)</a><br>"
-        f"🐛 Pre-release demo · <a href='{FEEDBACK_FORM_URL}' style='color:inherit;' target='_blank'>send feedback →</a>"
+        f"🐛 Pre-release demo · <a href='{FEEDBACK_FORM_URL}' style='color:inherit;' target='_blank'>Share your thoughts and suggestions with us!</a>"
         "</div>"
         "</div>",
         unsafe_allow_html=True,
