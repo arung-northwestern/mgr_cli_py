@@ -69,7 +69,7 @@ echo "Building Space bundle in: ${BUNDLE}"
 
 # Never ship local HTS artifacts, test junk, or binary logos (Hub rejects binaries without Xet)
 rm -f "${BUNDLE}/ZIF-8-RASPA.cif" "${BUNDLE}"/streamlit_*.png "${BUNDLE}/test_streamlit_app.py" 2>/dev/null || true
-rm -f "${BUNDLE}"/docs/*.png 2>/dev/null || true
+rm -f "${BUNDLE}"/queue_*.png "${BUNDLE}"/docs/*.png 2>/dev/null || true
 rm -rf "${BUNDLE}/hts_output" 2>/dev/null || true
 
 if [[ ! -d "${HF_CLONE_DIR}/.git" ]]; then
@@ -87,18 +87,7 @@ rsync -a --delete \
   "${BUNDLE}/" "${HF_CLONE_DIR}/"
 
 # Valid Space card metadata (avoids empty-template warnings on the Hub)
-cat > "${HF_CLONE_DIR}/README.md" <<'EOF'
----
-title: Mofography Web Demo
-emoji: 🧪
-colorFrom: blue
-colorTo: indigo
-sdk: docker
-pinned: false
----
-
-Interactive MOF pore analysis (Streamlit). Entry: `python_cli/mgrcli/interactive_app.py`.
-EOF
+cp "${REPO_ROOT}/spaces/README.hf.md" "${HF_CLONE_DIR}/README.md"
 
 if [[ -z "${COMMIT_MSG}" ]]; then
   COMMIT_MSG="Deploy: sync from mgr_cli_py $(date -u +%Y-%m-%dT%H:%MZ)"

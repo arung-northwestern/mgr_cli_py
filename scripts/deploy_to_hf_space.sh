@@ -42,6 +42,9 @@ rsync -a \
 # Use the Spaces Dockerfile at root (port 7860, MGR_DEPLOYMENT=spaces)
 cp "${REPO_ROOT}/spaces/Dockerfile" "${BUILD_DIR}/Dockerfile"
 
+# Hub requires YAML front matter in README.md (sdk: docker, app_port, etc.)
+cp "${REPO_ROOT}/spaces/README.hf.md" "${BUILD_DIR}/README.md"
+
 echo "Done. Directory ready to push to a Hugging Face Space."
 echo ""
 echo "Next steps:"
