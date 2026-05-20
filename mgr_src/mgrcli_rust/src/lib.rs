@@ -13,6 +13,8 @@ use std::collections::{HashSet};
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
 
+mod cif;
+
 // #[pyfunction]
 // #[pyo3(signature = (dgrid, cell, threshold_abs, min_distance=1.5))]
 // // fn find_local_maxima_pbc(
@@ -5672,7 +5674,8 @@ fn mgrcli_rust(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     // m.add_function(wrap_pyfunction!(find_local_maxima_pbc, m)?)?;
     // m.add_function(wrap_pyfunction!(find_local_maxima_cart, m)?)?;
     m.add_function(wrap_pyfunction!(find_pore_limiting_radius, m)?)?;
-    m.add("__all__", ["dgrid_from_atoms", "egrid_from_atoms", "window_connections", "periodic_gaussian_filter", "seeded_watershed_bucket", "seeded_watershed_det", "seeded_watershed_det_parallel", "seeded_watershed", "seeded_watershed_masked", "compute_pore_sizes_uniform","compute_pore_sizes_for_psd_pocketwise",  "detect_maxima_h_morph", "detect_maxima_h_morph_opening", "move_maxima_to_peaks", "detect_maxima_h_morph2", "detect_maxima_h_morph_simple", "detect_maxima_h_morph_no_spacing", "detect_maxima_adaptive_geometry", "detect_maxima_selective_smoothing", "detect_maxima_selective_smoothing_parallel", "detect_maxima_selective_smoothing_parallel2", "detect_maxima_percolation_guided", "detect_maxima_voronoi_based", "detect_maxima_multiscale_log", "detect_maxima_adaptive_h", "find_pore_limiting_radius", "rayon_num_threads"])?;
+    m.add_function(wrap_pyfunction!(cif::read_cif, m)?)?;
+    m.add("__all__", ["dgrid_from_atoms", "egrid_from_atoms", "window_connections", "periodic_gaussian_filter", "seeded_watershed_bucket", "seeded_watershed_det", "seeded_watershed_det_parallel", "seeded_watershed", "seeded_watershed_masked", "compute_pore_sizes_uniform","compute_pore_sizes_for_psd_pocketwise",  "detect_maxima_h_morph", "detect_maxima_h_morph_opening", "move_maxima_to_peaks", "detect_maxima_h_morph2", "detect_maxima_h_morph_simple", "detect_maxima_h_morph_no_spacing", "detect_maxima_adaptive_geometry", "detect_maxima_selective_smoothing", "detect_maxima_selective_smoothing_parallel", "detect_maxima_selective_smoothing_parallel2", "detect_maxima_percolation_guided", "detect_maxima_voronoi_based", "detect_maxima_multiscale_log", "detect_maxima_adaptive_h", "find_pore_limiting_radius", "rayon_num_threads", "read_cif"])?;
 
     // By returning Ok(()), the module initialization is successful.
     Ok(())

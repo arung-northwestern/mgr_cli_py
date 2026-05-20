@@ -55,9 +55,9 @@ mgr = _MgrProxy()
 
 
 def _read_atoms_from_cif(cif_path: Path):
-    from ase.io import read as _read
+    from mgr.cif_io import read_cif_to_ase
 
-    return _read(str(cif_path))
+    return read_cif_to_ase(cif_path)
 
 
 def _step_status(step: int, total: int, label: str, color: str = "#7FDBFF", bg: str = "#102a43"):
@@ -101,7 +101,7 @@ WATERSHED_BACKEND_ORDER: Tuple[str, ...] = (
     "skimage",
 )
 
-SPACES_MAX_UPLOAD_BYTES = 100 * 1024  # 100 KB (RASPA2 structures/mofs/cif: ~94% <= this)
+SPACES_MAX_UPLOAD_BYTES = 250 * 1024  # 250 KB (RASPA2 structures/mofs/cif)
 SPACES_MIN_SPACING = 0.4
 SPACES_MAX_EXTRA_PADDING = 10.0
 SPACES_MAX_MIN_BOX_THICKNESS = 12.0
