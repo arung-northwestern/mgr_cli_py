@@ -188,6 +188,97 @@ def _queue_position(job_id: str) -> int:
             return -1
 
 
+def _queue_activity_counts() -> Tuple[int, int]:
+    """Return (queued_count, running_count) across all sessions."""
+    with _JOB_LOCK:
+        queued = sum(1 for v in _JOB_REGISTRY.values() if v.get("status") == "queued")
+        running = sum(1 for v in _JOB_REGISTRY.values() if v.get("status") == "running")
+    return queued, running
+
+
+def _render_spaces_queue_banner(
+    placeholder: Any,
+    *,
+    job_id: Optional[str] = None,
+    status: Optional[str] = None,
+    show_global_busy: bool = True,
+) -> None:
+    """Prominent queue / wait banner in a slot directly under the Compute button."""
+    if not _is_spaces_deployment():
+        placeholder.empty()
+        return
+
+    title = ""
+    subtitle = ""
+    border_color = "#f39c12"
+    icon = "⏳"
+
+    active_queued, active_running = _queue_activity_counts()
+
+    if job_id and status == "queued":
+        pos = _queue_position(job_id)
+        parts: List[str] = []
+        if active_running > 0:
+            parts.append(
+                f"{'1 analysis' if active_running == 1 else f'{active_running} analyses'} running now"
+            )
+        if active_queued > 0:
+            parts.append(
+                f"{'1 job' if active_queued == 1 else f'{active_queued} jobs'} in queue"
+            )
+        parts.append(f"max {_COMPUTE_TIMEOUT_SEC}s per job")
+        summary = " · ".join(parts)
+        if pos == 0:
+            title = "Please wait — your analysis is next"
+            subtitle = f"Starting shortly. {summary}."
+        else:
+            title = f"Please wait — queue position {pos + 1}"
+            subtitle = f"{summary}. Do not close this tab."
+        border_color = "#f39c12"
+        icon = "⏳"
+    elif job_id and status == "running":
+        title = "Please wait — your analysis is running"
+        subtitle = (
+            "The shared demo runs one job at a time. "
+            "Elapsed time and phase updates appear below."
+        )
+        border_color = "#2ecc71"
+        icon = "⚡"
+    elif show_global_busy and (active_queued > 0 or active_running > 0):
+        parts = []
+        if active_running > 0:
+            parts.append(
+                f"{'1 analysis' if active_running == 1 else f'{active_running} analyses'} computing"
+            )
+        if active_queued > 0:
+            parts.append(
+                f"{'1 job' if active_queued == 1 else f'{active_queued} jobs'} waiting"
+            )
+        title = "Server busy — please wait"
+        subtitle = (
+            f"{' · '.join(parts)} · max {_COMPUTE_TIMEOUT_SEC}s per job. "
+            "Click Compute — your job joins the queue automatically."
+        )
+        border_color = "#58a6ff"
+        icon = "🚦"
+    else:
+        placeholder.empty()
+        return
+
+    safe_title = html.escape(title)
+    safe_subtitle = html.escape(subtitle)
+    markup = f"""<div style="border:2px solid {border_color};border-radius:10px;background:linear-gradient(135deg,#161b22 0%,#0d1117 100%);padding:16px 18px;margin:12px 0 8px 0;box-shadow:0 4px 14px rgba(0,0,0,0.35);">
+<div style="display:flex;align-items:flex-start;gap:14px;">
+  <div style="font-size:28px;line-height:1;">{icon}</div>
+  <div style="flex:1;">
+    <div style="color:{border_color};font-weight:700;font-size:17px;margin-bottom:6px;">{safe_title}</div>
+    <div style="color:#c9d1d9;font-size:14px;line-height:1.45;">{safe_subtitle}</div>
+  </div>
+</div>
+</div>"""
+    placeholder.markdown(markup, unsafe_allow_html=True)
+
+
 def _is_spaces_deployment() -> bool:
     # Local CLI runs can inherit shell env accidentally; allow an explicit local override.
     if os.environ.get("MGR_FORCE_LOCAL") == "1":
@@ -601,8 +692,10 @@ def _start_compute_thread(
     block_size: int,
     min_box_thickness_enabled: bool = False,
     min_box_thickness: float = 6.0,
+    progress: Optional[_StreamingProgress] = None,
 ) -> _StreamingProgress:
-    progress = _StreamingProgress()
+    if progress is None:
+        progress = _StreamingProgress()
 
     if use_aabb_method:
         progress.set_phase("Distance grid (AABB)")
@@ -622,6 +715,7 @@ def _start_compute_thread(
             with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
                 # Handle minimum box thickness
                 w_atoms = working_atoms
+
                 if min_box_thickness_enabled:
                     cell_lengths = working_atoms.get_cell_lengths_and_angles()[:3]
                     if min(cell_lengths) < min_box_thickness:
@@ -1534,21 +1628,6 @@ def main() -> None:
 
     st.markdown("### Single material")
     st.markdown("<p style='font-size:0.82rem;opacity:0.75;font-style:italic;margin-top:-8px;'>Upload a CIF, tweak settings (or go with defaults), then hit Compute &amp; Visualize!</p>", unsafe_allow_html=True)
-    # Notify user immediately if they have a pending/computing job
-    if _is_spaces_deployment():
-        _pending_job_id = st.session_state.get("_compute_job_id")
-        if _pending_job_id:
-            with _JOB_LOCK:
-                _pentry = _JOB_REGISTRY.get(_pending_job_id, {})
-                _pstatus = _pentry.get("status", "unknown")
-                _ppos = _queue_position(_pending_job_id)
-            if _pstatus == "queued" and _ppos >= 0:
-                st.toast(f"⏳ Your analysis is in queue — position {_ppos + 1}", icon="⏳")
-            elif _pstatus == "running":
-                st.toast("⚡ Your analysis is computing now", icon="⚡")
-            elif _pstatus == "done":
-                # Job finished between reruns — shouldn't happen often but handle it
-                pass
     samples = _get_sample_cifs()
     sample_choice = None
     if samples:
@@ -2055,28 +2134,6 @@ def main() -> None:
 
 
 
-    # Pre-compute queue status banner (shows active jobs before user clicks)
-    if _is_spaces_deployment():
-        with _JOB_LOCK:
-            _active_queued = sum(
-                1 for v in _JOB_REGISTRY.values() if v.get("status") == "queued"
-            )
-            _active_running = sum(
-                1 for v in _JOB_REGISTRY.values() if v.get("status") == "running"
-            )
-        _total_active = _active_queued + _active_running
-        if _total_active > 0:
-            _cap = f"{_COMPUTE_TIMEOUT_SEC}s"
-            _msg_parts = []
-            if _active_running > 0:
-                _msg_parts.append(f"{'1 job' if _active_running == 1 else f'{_active_running} jobs'} computing")
-            if _active_queued > 0:
-                _msg_parts.append(f"{'1 job' if _active_queued == 1 else f'{_active_queued} jobs'} in queue")
-            st.caption(
-                f"🚦 Server busy: {' · '.join(_msg_parts)} · max {_cap} per job. "
-                f"Your job will be queued automatically."
-            )
-
     results_key = f"{getattr(cif_path, 'name', 'uploaded')}::{spacing:.3f}::aabb={use_aabb_method}::bs={block_size}"
     col_btn1, col_btn2 = st.columns([3, 1])
     with col_btn1:
@@ -2089,7 +2146,23 @@ def main() -> None:
             st.session_state["widget_reset_generation"] = next_gen
             st.rerun()
 
-
+    compute_status_slot = st.empty()
+    if _is_spaces_deployment():
+        _banner_job_id = st.session_state.get("_compute_job_id")
+        if _banner_job_id:
+            with _JOB_LOCK:
+                _banner_status = _JOB_REGISTRY.get(_banner_job_id, {}).get("status")
+            if _banner_status in ("queued", "running"):
+                _render_spaces_queue_banner(
+                    compute_status_slot,
+                    job_id=_banner_job_id,
+                    status=_banner_status,
+                    show_global_busy=False,
+                )
+            else:
+                _render_spaces_queue_banner(compute_status_slot, show_global_busy=True)
+        else:
+            _render_spaces_queue_banner(compute_status_slot, show_global_busy=True)
 
     if compute_clicked:
         if not _spaces_allow_compute_now():
@@ -2106,52 +2179,86 @@ def main() -> None:
             with _JOB_LOCK:
                 _existing_status = _JOB_REGISTRY.get(_existing_job_id, {}).get("status")
             if _existing_status in ("queued", "running"):
+                _dup_pos = _queue_position(_existing_job_id)
+                if _existing_status == "queued" and _dup_pos >= 0:
+                    st.toast(
+                        f"Already in queue — position {_dup_pos + 1}. Please wait.",
+                        icon="⏳",
+                    )
+                else:
+                    st.toast("Your analysis is already running. Please wait.", icon="⚡")
+                _render_spaces_queue_banner(
+                    compute_status_slot,
+                    job_id=_existing_job_id,
+                    status=_existing_status,
+                    show_global_busy=False,
+                )
                 return  # Existing job still in progress; polling loop handles it.
             # Job finished or lost — clean up stale entry before submitting new one.
             st.session_state.pop("_compute_job_id", None)
         # Dev bypass: append ?dev=<token> to skip queue
         _dev_token = os.environ.get("MGR_DEV_TOKEN", "")
         _dev_mode = _is_spaces_deployment() and _dev_token and st.query_params.get("dev", "") == _dev_token
-        # Shared compute function (used by both queue and dev/local paths)
-        def _compute_fn():
-            _min_box = min_box_thickness
-            if _is_spaces_deployment() and _min_box > SPACES_MAX_MIN_BOX_THICKNESS:
-                _min_box = SPACES_MAX_MIN_BOX_THICKNESS
-            progress = _start_compute_thread(
-                atoms, spacing=spacing, mask_thickness=mask_thickness,
-                h_value=h_value, min_distance=min_distance, threshold_abs=threshold_abs,
-                extra_padding=extra_padding, watershed_backend=watershed_backend,
-                use_aabb_method=use_aabb_method, block_size=block_size,
-                min_box_thickness_enabled=min_box_thickness_enabled,
-                min_box_thickness=_min_box,
-            )
-            # Expose live progress so the polling loop can render it.
-            # job_id is in the enclosing scope (defined below).
-            try:
-                with _JOB_LOCK:
-                    if job_id in _JOB_REGISTRY:
-                        _JOB_REGISTRY[job_id]["progress"] = progress
-            except NameError:
-                pass  # non-queue path, no job_id
-            while not progress.done:
-                time.sleep(0.1)
-            if progress.error:
-                raise RuntimeError(progress.error)
-            return progress.result
+        def _make_compute_fn(queue_job_id: Optional[str] = None, queue_progress: Optional[_StreamingProgress] = None):
+            def _compute_fn():
+                _min_box = min_box_thickness
+                if _is_spaces_deployment() and _min_box > SPACES_MAX_MIN_BOX_THICKNESS:
+                    _min_box = SPACES_MAX_MIN_BOX_THICKNESS
+                progress = _start_compute_thread(
+                    atoms, spacing=spacing, mask_thickness=mask_thickness,
+                    h_value=h_value, min_distance=min_distance, threshold_abs=threshold_abs,
+                    extra_padding=extra_padding, watershed_backend=watershed_backend,
+                    use_aabb_method=use_aabb_method, block_size=block_size,
+                    min_box_thickness_enabled=min_box_thickness_enabled,
+                    min_box_thickness=_min_box,
+                    progress=queue_progress,
+                )
+                if queue_job_id is not None:
+                    with _JOB_LOCK:
+                        if queue_job_id in _JOB_REGISTRY:
+                            _JOB_REGISTRY[queue_job_id]["progress"] = progress
+                while not progress.done:
+                    time.sleep(0.1)
+                if progress.error:
+                    raise RuntimeError(progress.error)
+                return progress.result
+            return _compute_fn
         if _is_spaces_deployment():
             # Queue path — devs get priority (0), users get 1
             import uuid
             job_id = str(uuid.uuid4())
             priority = 0 if _dev_mode else 1
+            live_progress = _StreamingProgress()
             with _JOB_LOCK:
-                _JOB_REGISTRY[job_id] = {"status": "queued", "results_key": results_key, "atoms_count": len(atoms), "priority": priority}
-            _JOB_QUEUE.put((priority, job_id, _compute_fn, (), {}))
+                _JOB_REGISTRY[job_id] = {
+                    "status": "queued",
+                    "results_key": results_key,
+                    "atoms_count": len(atoms),
+                    "priority": priority,
+                    "progress": live_progress,
+                }
+            _JOB_QUEUE.put((priority, job_id, _make_compute_fn(job_id, live_progress), (), {}))
             st.session_state["_compute_job_id"] = job_id
+            _render_spaces_queue_banner(
+                compute_status_slot,
+                job_id=job_id,
+                status="queued",
+                show_global_busy=False,
+            )
+            _submit_pos = _queue_position(job_id)
+            _sq, _sr = _queue_activity_counts()
+            if _sr > 0 or _submit_pos > 0:
+                st.toast(
+                    f"Queued — position {_submit_pos + 1}. Please wait…",
+                    icon="⏳",
+                )
+            else:
+                st.toast("Starting your analysis…", icon="⚡")
             st.rerun()
         else:
             # Local deployment — compute directly
             try:
-                result = _compute_fn()
+                result = _make_compute_fn()()
             except RuntimeError as e:
                 st.error(f"Compute failed: {e}")
                 return
@@ -2175,36 +2282,44 @@ def main() -> None:
                 1 for v in _JOB_REGISTRY.values() if v.get("status") == "running"
             )
         if status == "queued":
-            pos = _queue_position(job_id)
-            parts = []
-            if total_running > 0:
-                parts.append(f"{'1 job' if total_running == 1 else f'{total_running} jobs'} running now")
-            if total_queued > 0:
-                parts.append(f"{'1 job' if total_queued == 1 else f'{total_queued} jobs'} ahead")
-            parts.append(f"max {_COMPUTE_TIMEOUT_SEC}s per job")
-            queue_summary = " · ".join(parts)
-            if pos == 0:
-                st.info(f"⏳ Your analysis is next — starting shortly…\n*{queue_summary}*")
-            else:
-                st.info(f"⏳ Queue position: **{pos}** · {queue_summary}")
-            time.sleep(1)
+            _render_spaces_queue_banner(
+                compute_status_slot,
+                job_id=job_id,
+                status="queued",
+                show_global_busy=False,
+            )
+            time.sleep(0.5)
             st.rerun()
         elif status == "running":
-            # Render the rich progress UI (phase, logs, elapsed)
-            if live_progress is not None and not live_progress.done:
+            _render_spaces_queue_banner(
+                compute_status_slot,
+                job_id=job_id,
+                status="running",
+                show_global_busy=False,
+            )
+            # Rich progress UI (phase title + dgrid/seg log lines) — same as production.
+            if live_progress is not None:
                 _render_progress_ui(live_progress)
                 time.sleep(0.6)
                 st.rerun()
             else:
-                st.info("⚡ Computing… your analysis is running now.")
-                time.sleep(1)
+                _render_spaces_queue_banner(
+                    compute_status_slot,
+                    job_id=job_id,
+                    status="running",
+                    show_global_busy=False,
+                )
+                time.sleep(0.5)
                 st.rerun()
         elif status == "done":
             results = entry.get("result", {})
             _RESULT_CACHE[entry.get("results_key", results_key)] = results
-            st.session_state["_compute_progress"] = _StreamingProgress()
-            st.session_state["_compute_progress"].result = results
-            st.session_state["_compute_progress"].done = True
+            # Preserve the progress object from the queue entry so that
+            # log lines, phase history, and timing survive the rerun.
+            done_progress = live_progress or _StreamingProgress()
+            done_progress.result = results
+            done_progress.done = True
+            st.session_state["_compute_progress"] = done_progress
             del st.session_state["_compute_job_id"]
             with _JOB_LOCK:
                 _JOB_REGISTRY.pop(job_id, None)
