@@ -101,7 +101,7 @@ WATERSHED_BACKEND_ORDER: Tuple[str, ...] = (
     "skimage",
 )
 
-SPACES_MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
+SPACES_MAX_UPLOAD_BYTES = 100 * 1024  # 100 KB (RASPA2 structures/mofs/cif: ~94% <= this)
 SPACES_MIN_SPACING = 0.4
 SPACES_MAX_EXTRA_PADDING = 10.0
 SPACES_MAX_MIN_BOX_THICKNESS = 12.0
@@ -1666,8 +1666,8 @@ def main() -> None:
             uploaded_size = int(getattr(uploaded_file, "size", 0) or len(uploaded_bytes))
             if uploaded_size > SPACES_MAX_UPLOAD_BYTES:
                 st.error(
-                    f"Uploaded CIF is too large ({uploaded_size / (1024 * 1024):.1f} MB). "
-                    f"Please keep uploads below {SPACES_MAX_UPLOAD_BYTES / (1024 * 1024):.0f} MB for the public demo."
+                    f"Uploaded CIF is too large ({uploaded_size / 1024:.1f} KB). "
+                    f"Please keep uploads below {SPACES_MAX_UPLOAD_BYTES // 1024} KB for the public demo."
                 )
                 return
 
@@ -2891,7 +2891,7 @@ def main() -> None:
                     f"""
 ### Hosted demo (Hugging Face Spaces)
 - **Cooldown:** allow about **{int(SPACES_MIN_SECONDS_BETWEEN_RUNS)} seconds** between compute runs; the public Space shares CPU with other visitors.
-- **Uploads:** CIFs up to **{SPACES_MAX_UPLOAD_BYTES / (1024 * 1024):.0f} MB**; structures larger than **{SPACES_MAX_ATOMS:,}** atoms are not supported here.
+- **Uploads:** CIFs up to **{SPACES_MAX_UPLOAD_BYTES // 1024} KB**; structures larger than **{SPACES_MAX_ATOMS:,}** atoms are not supported here.
 - **Parameters:** grid spacing is at least **{SPACES_MIN_SPACING:g} Å** and some padding / box settings are capped compared to running locally.
 - For the full feature set and best performance, run **`mgrcli interactive`** on your machine.
 """
