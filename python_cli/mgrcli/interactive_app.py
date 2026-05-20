@@ -102,7 +102,7 @@ WATERSHED_BACKEND_ORDER: Tuple[str, ...] = (
 )
 
 SPACES_MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
-SPACES_MIN_SPACING = 0.25
+SPACES_MIN_SPACING = 0.4
 SPACES_MAX_EXTRA_PADDING = 10.0
 SPACES_MAX_MIN_BOX_THICKNESS = 12.0
 SPACES_MIN_SECONDS_BETWEEN_RUNS = 15.0
@@ -1726,12 +1726,20 @@ def main() -> None:
     st.markdown("### 🔧 Workflow Parameters")
     st.info("After changing any parameter or material, please click 'Compute and Visualize' to update the results.")
 
+    _spacing_min = SPACES_MIN_SPACING if _is_spaces_deployment() else 0.1
     spacing = st.number_input(
         "Grid Spacing (Å)",
         value=0.5,
-        min_value=0.1,
+        min_value=_spacing_min,
         step=0.1,
-        help="Grid spacing in Angstroms. Smaller values increase resolution and runtime.",
+        help=(
+            "Grid spacing in Angstroms. Smaller values increase resolution and runtime."
+            + (
+                f" On the hosted demo, minimum is {SPACES_MIN_SPACING:g} Å."
+                if _is_spaces_deployment()
+                else ""
+            )
+        ),
     )
     if _is_spaces_deployment() and spacing < SPACES_MIN_SPACING:
         spacing = SPACES_MIN_SPACING
