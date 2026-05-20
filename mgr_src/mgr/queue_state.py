@@ -18,5 +18,5 @@ JOB_QUEUE: "queue.PriorityQueue" = queue.PriorityQueue()
 JOB_REGISTRY: Dict[str, dict] = {}
 JOB_LOCK = threading.Lock()
 RESULT_CACHE: Dict[str, Any] = {}
-COMPUTE_TIMEOUT_SEC: int = int(os.environ.get("MGR_COMPUTE_TIMEOUT_SEC", "180"))
+COMPUTE_TIMEOUT_SEC: int = int(os.environ.get("MGR_COMPUTE_TIMEOUT_SEC", "240"))
 QUEUE_WORKER_STARTED: bool = False
