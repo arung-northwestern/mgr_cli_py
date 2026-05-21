@@ -116,6 +116,7 @@ SPACES_MAX_EXTRA_PADDING = 10.0
 SPACES_MAX_MIN_BOX_THICKNESS = 12.0
 SPACES_MIN_SECONDS_BETWEEN_RUNS = 15.0
 SPACES_MAX_ATOMS = 5000
+SPACES_AABB_AUTO_ATOMS = 1500  # hosted demo: use freud AABB dgrid above this (memory-stable)
 FEEDBACK_FORM_URL = os.environ.get("MGR_FEEDBACK_URL", "#")
 _SPACES_COMPUTE_LOCK = Lock()
 
@@ -1759,12 +1760,31 @@ def main() -> None:
             "to keep runtime manageable."
         )
 
-    # Distance grid computation method selection
+    # Distance grid: on Spaces, auto-enable freud AABB dgrid for large structures (lower memory than Rust).
+    _atoms_key = st.session_state.get(atoms_source_key_state)
+    if _atoms_key != st.session_state.get("_spaces_aabb_atoms_key"):
+        st.session_state["_spaces_aabb_atoms_key"] = _atoms_key
+        st.session_state["use_aabb_method"] = (
+            _is_spaces_deployment() and len(atoms) > SPACES_AABB_AUTO_ATOMS
+        )
+    elif "use_aabb_method" not in st.session_state:
+        st.session_state["use_aabb_method"] = (
+            _is_spaces_deployment() and len(atoms) > SPACES_AABB_AUTO_ATOMS
+        )
+
+    if _is_spaces_deployment() and len(atoms) > SPACES_AABB_AUTO_ATOMS:
+        st.info(
+            f"Hosted demo: **{len(atoms):,} atoms** — using the faster approximate "
+            "**Python AABB (freud)** distance grid to limit memory and runtime. "
+            "Uncheck below to force the Rust exact grid (may be slow or run out of memory)."
+        )
+
     use_aabb_method = st.checkbox(
         "Use Python AABB (CPU) method for distance grid",
-        value=False,
+        key="use_aabb_method",
         help="Use the CPU-based AABB (Axis-Aligned Bounding Box) method with Freud library instead of Rust exact method. "
-             "This uses dask for parallelization and may be useful for very large systems or when Rust is unavailable."
+             "On the hosted demo this is selected automatically when the structure has more than "
+             f"{SPACES_AABB_AUTO_ATOMS:,} atoms.",
     )
 
     block_size = 50000  # Default block size for AABB method
