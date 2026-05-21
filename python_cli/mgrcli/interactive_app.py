@@ -122,7 +122,7 @@ SPACES_RAYON_THREADS = 8
 SPACES_DGRID_FLOAT_BYTES = 4
 SPACES_DGRID_RAM_BUDGET_BYTES = int(512 * 1024**2)  # auto-AABB if output grid alone is huge
 # Auto-AABB when n_grid × n_atoms exceeds this (runtime); ZIF-20 @0.4 Å ≈ 7e9 stays on Rust.
-SPACES_DGRID_OPS_AUTO_AABB = 10_000_000_000
+SPACES_DGRID_OPS_AUTO_AABB = 1_000_000_000
 # Local installs: larger RAM budget; same ops threshold unless MGR_DGRID_OPS_AUTO_AABB is set.
 LOCAL_DGRID_RAM_BUDGET_BYTES = int(16 * 1024**3)
 LOCAL_RAYON_THREADS_DEFAULT = 8
@@ -593,9 +593,8 @@ class _StreamingProgress:
     def set_phase(self, phase: str) -> None:
         with self._lock:
             self.phase = phase
-            self.lines.append(f"→ {phase}")
-            if len(self.lines) > 100:
-                self.lines = self.lines[-80:]
+        # Emit through logging so the UI log matches mgr.rust_fun INFO lines.
+        logging.getLogger("mgr.compute").info(phase)
 
     def latest_lines(self, count: int = 5) -> List[str]:
         with self._lock:
