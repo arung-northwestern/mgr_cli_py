@@ -427,7 +427,7 @@ def update_with_covalent_bonds(ase_atoms, nlist=None):
         bonds_flat, bond_orders, image_positions, image_atomic_numbers = \
             mgrcli_rust.covalent_bonds(positions, atomic_numbers, cell_fortran,
                                        nlist_i.tolist(), nlist_j.tolist(), tol)
-    except ImportError:
+    except (ImportError, AttributeError):
         # Fallback to pure Python if Rust extension not built
         return _update_with_covalent_bonds_python(ase_atoms, nlist, tol)
 
