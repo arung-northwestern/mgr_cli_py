@@ -55,9 +55,18 @@ mgr = _MgrProxy()
 
 
 def _read_atoms_from_cif(cif_path: Path):
-    from mgr.cif_io import read_cif_to_ase
+    from mgr.cif_io import LargeCifSlowAseError, read_cif_to_ase
 
-    return read_cif_to_ase(cif_path)
+    def _warn_large_cif(msg: str) -> None:
+        if _is_spaces_deployment():
+            st.warning(msg)
+
+    try:
+        return read_cif_to_ase(
+            cif_path, on_large_cif_slow_ase_warning=_warn_large_cif
+        )
+    except LargeCifSlowAseError:
+        return None
 
 
 def _step_status(step: int, total: int, label: str, color: str = "#7FDBFF", bg: str = "#102a43"):
@@ -101,7 +110,7 @@ WATERSHED_BACKEND_ORDER: Tuple[str, ...] = (
     "skimage",
 )
 
-SPACES_MAX_UPLOAD_BYTES = 250 * 1024  # 250 KB (RASPA2 structures/mofs/cif)
+SPACES_MAX_UPLOAD_BYTES = 1 * 1024 * 1024  # 1 MB (RASPA2 structures/mofs/cif)
 SPACES_MIN_SPACING = 0.4
 SPACES_MAX_EXTRA_PADDING = 10.0
 SPACES_MAX_MIN_BOX_THICKNESS = 12.0
@@ -1682,6 +1691,8 @@ def main() -> None:
             cif_path = _safe_uploaded_cif_path(uploaded_file)
             st.session_state["uploaded_cif_temp_path"] = str(cif_path)
             atoms = _read_atoms_from_cif(cif_path)
+            if atoms is None:
+                return
             st.toast(f"Structure loaded: {atoms.get_chemical_formula()} — {len(atoms)} atoms"
                      f" (bonds computed on 'Compute')", icon="✅")
             st.session_state[atoms_cache_key] = atoms
