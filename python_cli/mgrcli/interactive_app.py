@@ -116,8 +116,64 @@ SPACES_MAX_EXTRA_PADDING = 10.0
 SPACES_MAX_MIN_BOX_THICKNESS = 12.0
 SPACES_MIN_SECONDS_BETWEEN_RUNS = 15.0
 SPACES_MAX_ATOMS = 5000
-SPACES_AABB_AUTO_ATOMS = 1500  # hosted demo: use freud AABB dgrid above this (memory-stable)
+# Rust exact dgrid (Rayon): peak working set ≈ n_grid × n_atoms × 3 × float_bytes
+# with n_threads workers each handling ~n_grid/n_threads points (8 ≈ HF CPU basic).
+SPACES_RAYON_THREADS = 8
+SPACES_DGRID_FLOAT_BYTES = 4  # f32 output; coordinate model uses same width
+SPACES_DGRID_RAM_BUDGET_BYTES = int(1.5 * 1024**3)  # auto-AABB when estimate exceeds ~1.5 GiB
 FEEDBACK_FORM_URL = os.environ.get("MGR_FEEDBACK_URL", "#")
+
+
+def _dgrid_shape_from_cell_lengths(
+    cell_lengths_abc: Tuple[float, float, float], spacing: float
+) -> Tuple[int, int, int]:
+    """Match ``dgrid_from_atoms_rust``: (length / spacing).astype(int) + 1 per axis."""
+    spacing = max(float(spacing), 1e-9)
+    lengths = np.asarray(cell_lengths_abc[:3], dtype=float)
+    shape = (lengths / spacing).astype(int) + 1
+    return int(shape[0]), int(shape[1]), int(shape[2])
+
+
+def estimate_rust_dgrid_memory_bytes(
+    n_atoms: int,
+    spacing: float,
+    cell_lengths_abc: Tuple[float, float, float],
+    *,
+    n_threads: int = SPACES_RAYON_THREADS,
+    bytes_per_coord: int = SPACES_DGRID_FLOAT_BYTES,
+) -> Tuple[int, int, Tuple[int, int, int]]:
+    """Estimate Rust exact dgrid RAM (working + output).
+
+    Working set model (per hosted demo policy): ``n_threads`` Rayon workers, each
+    touching ~``n_grid / n_threads`` grid points and all ``n_atoms`` per point →
+    peak ``n_grid × n_atoms × 3 × bytes_per_coord``. Output grid is ``n_grid × 4`` f32.
+
+    Returns (total_bytes, n_grid_points, (nx, ny, nz)).
+    """
+    nx, ny, nz = _dgrid_shape_from_cell_lengths(cell_lengths_abc, spacing)
+    n_grid = nx * ny * nz
+    n_atoms = max(int(n_atoms), 0)
+    # n_threads is documented for parity with HF; peak equals n_grid * n_atoms * 3 * b.
+    _ = n_threads
+    working = n_grid * n_atoms * 3 * int(bytes_per_coord)
+    output = n_grid * 4
+    return working + output, n_grid, (nx, ny, nz)
+
+
+def spaces_should_auto_aabb_dgrid(atoms, spacing: float) -> Tuple[bool, Dict[str, Any]]:
+    """Whether hosted demo should default to freud AABB dgrid instead of Rust exact."""
+    lengths = tuple(float(x) for x in atoms.cell.cellpar()[:3])
+    total_b, n_grid, shape = estimate_rust_dgrid_memory_bytes(len(atoms), spacing, lengths)
+    use_aabb = total_b > SPACES_DGRID_RAM_BUDGET_BYTES
+    return use_aabb, {
+        "n_atoms": len(atoms),
+        "spacing": float(spacing),
+        "cell_lengths": lengths,
+        "grid_shape": shape,
+        "n_grid": n_grid,
+        "estimated_bytes": total_b,
+        "budget_bytes": SPACES_DGRID_RAM_BUDGET_BYTES,
+    }
 _SPACES_COMPUTE_LOCK = Lock()
 
 # ---- Compute worker queue (serializes all jobs across sessions) ----
@@ -1760,22 +1816,29 @@ def main() -> None:
             "to keep runtime manageable."
         )
 
-    # Distance grid: on Spaces, auto-enable freud AABB dgrid for large structures (lower memory than Rust).
-    _atoms_key = st.session_state.get(atoms_source_key_state)
-    if _atoms_key != st.session_state.get("_spaces_aabb_atoms_key"):
-        st.session_state["_spaces_aabb_atoms_key"] = _atoms_key
-        st.session_state["use_aabb_method"] = (
-            _is_spaces_deployment() and len(atoms) > SPACES_AABB_AUTO_ATOMS
-        )
+    # Distance grid: on Spaces, auto-enable freud AABB when Rust exact dgrid estimate exceeds RAM budget.
+    _aabb_policy_key = (
+        f"{st.session_state.get(atoms_source_key_state)}::{float(spacing):.4f}"
+    )
+    _auto_aabb = False
+    _aabb_meta: Dict[str, Any] = {}
+    if _is_spaces_deployment():
+        _auto_aabb, _aabb_meta = spaces_should_auto_aabb_dgrid(atoms, spacing)
+    if _aabb_policy_key != st.session_state.get("_spaces_aabb_policy_key"):
+        st.session_state["_spaces_aabb_policy_key"] = _aabb_policy_key
+        st.session_state["use_aabb_method"] = _auto_aabb
     elif "use_aabb_method" not in st.session_state:
-        st.session_state["use_aabb_method"] = (
-            _is_spaces_deployment() and len(atoms) > SPACES_AABB_AUTO_ATOMS
-        )
+        st.session_state["use_aabb_method"] = _auto_aabb
 
-    if _is_spaces_deployment() and len(atoms) > SPACES_AABB_AUTO_ATOMS:
+    if _is_spaces_deployment() and _auto_aabb:
+        _nx, _ny, _nz = _aabb_meta["grid_shape"]
+        _est_mib = _aabb_meta["estimated_bytes"] / (1024 * 1024)
+        _bud_mib = SPACES_DGRID_RAM_BUDGET_BYTES / (1024 * 1024)
         st.info(
-            f"Hosted demo: **{len(atoms):,} atoms** — using the faster approximate "
-            "**Python AABB (freud)** distance grid to limit memory and runtime. "
+            f"Hosted demo: estimated Rust exact distance grid ~**{_est_mib:.0f} MiB** "
+            f"({len(atoms):,} atoms × {_aabb_meta['n_grid']:,} grid points "
+            f"{_nx}×{_ny}×{_nz} at {spacing:g} Å; budget ~{_bud_mib:.0f} MiB). "
+            "Using the faster approximate **Python AABB (freud)** grid. "
             "Uncheck below to force the Rust exact grid (may be slow or run out of memory)."
         )
 
@@ -1783,8 +1846,9 @@ def main() -> None:
         "Use Python AABB (CPU) method for distance grid",
         key="use_aabb_method",
         help="Use the CPU-based AABB (Axis-Aligned Bounding Box) method with Freud library instead of Rust exact method. "
-             "On the hosted demo this is selected automatically when the structure has more than "
-             f"{SPACES_AABB_AUTO_ATOMS:,} atoms.",
+             "On the hosted demo this is selected automatically when the estimated Rust grid memory "
+             f"(≈ n_atoms × n_grid × 3 × {SPACES_DGRID_FLOAT_BYTES} B, plus the f32 grid) exceeds "
+             f"~{SPACES_DGRID_RAM_BUDGET_BYTES // (1024 * 1024)} MiB for {SPACES_RAYON_THREADS} parallel workers.",
     )
 
     block_size = 50000  # Default block size for AABB method
