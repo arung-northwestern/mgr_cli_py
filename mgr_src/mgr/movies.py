@@ -221,6 +221,16 @@ DEFAULT_STYLES: dict[str, dict[str, Any]] = {
         "roughness": 0.5,
         "side": "DoubleSide",
     },
+    "instanced_ring_outlines": {
+        "color": 0xFFFFFF,
+        "opacity": 1.0,
+    },
+    "instanced_ring_fills": {
+        "color": [0.20, 0.55, 0.95],
+        "opacity": 0.3,
+        "roughness": 0.5,
+        "side": "DoubleSide",
+    },
 }
 
 # CPK colors for hover text generation
@@ -1556,41 +1566,238 @@ def make_surface_trace(
     )
 
 
+
+def _aromatic_render_mode() -> str:
+    import os
+
+    return os.environ.get("MGR_AROMATIC_RENDER", "auto").lower()
+
+
+def _ring_pose_from_positions(ring_pos: np.ndarray) -> tuple[np.ndarray, np.ndarray, float, float] | None:
+    """Best-fit plane pose: center, unit normal, mean in-plane radius, inner outline radius."""
+    n = int(len(ring_pos))
+    if n < 3:
+        return None
+    center = ring_pos.mean(axis=0)
+    centered = ring_pos - center
+    normal = np.cross(centered[1] - centered[0], centered[min(2, n - 1)] - centered[0])
+    norm_len = float(np.linalg.norm(normal))
+    if norm_len < 1e-10 and n >= 3:
+        normal = np.cross(centered[2] - centered[0], centered[1] - centered[0])
+        norm_len = float(np.linalg.norm(normal))
+    if norm_len < 1e-10:
+        return None
+    normal = normal / norm_len
+    ring_proj = centered - np.outer(np.dot(centered, normal), normal)
+    radii = np.linalg.norm(ring_proj, axis=1)
+    radius = float(np.mean(radii[radii > 1e-8])) if np.any(radii > 1e-8) else float(np.mean(radii))
+    return center, normal, radius, radius * 0.4
+
+
+def _sorted_ring_vertices(ring_pos: np.ndarray, center: np.ndarray, normal: np.ndarray) -> np.ndarray:
+    from scipy.spatial.transform import Rotation as _Rot
+
+    centered = ring_pos - center
+    rot, _ = _Rot.align_vectors(normal.reshape(-1, 3), np.array([[0.0, 0.0, 1.0]]))
+    ring_rot = rot.apply(centered)
+    angles = np.arctan2(ring_rot[:, 1], ring_rot[:, 0])
+    return centered[np.argsort(angles)]
+
+
+def _merged_aromatic_highlight_payload(cycles: list[list[int]], positions: np.ndarray) -> dict[str, Any]:
+    """Single merged mesh for all ring fills (Plotly Mesh3d + Three.js mesh fallback)."""
+    all_verts: list[np.ndarray] = []
+    all_faces: list[np.ndarray] = []
+    for ring in cycles:
+        ring_pos = positions[ring]
+        pose = _ring_pose_from_positions(ring_pos)
+        if pose is None:
+            continue
+        center, normal, _radius, _inner = pose
+        ring_sorted = _sorted_ring_vertices(ring_pos, center, normal)
+        n_sides = len(ring_sorted)
+        verts = np.vstack([ring_sorted + center, center.reshape(1, -1)])
+        faces = np.array([[n_sides, i, (i + 1) % n_sides] for i in range(n_sides)], dtype=int)
+        all_verts.append(verts)
+        all_faces.append(faces)
+    if not all_verts:
+        return {"positions": [], "indices": [], "n_vertices": 0, "n_triangles": 0}
+    v_offsets = np.cumsum([0] + [len(v) for v in all_verts[:-1]])
+    merged_verts = np.vstack(all_verts)
+    merged_faces = np.vstack([f + off for f, off in zip(all_faces, v_offsets)])
+    return {
+        "positions": merged_verts.reshape(-1).tolist(),
+        "indices": merged_faces.reshape(-1).tolist(),
+        "n_vertices": int(len(merged_verts)),
+        "n_triangles": int(len(merged_faces)),
+    }
+
+
+def _make_aromatic_rings_instanced_trace(
+    cycles: list[list[int]],
+    positions: np.ndarray,
+    *,
+    style_circles: str | dict | None,
+    style_highlights: str | dict | None,
+    n_template_segments: int = 16,
+) -> dict[str, dict[str, Any]]:
+    centers_l: list[float] = []
+    normals_l: list[float] = []
+    inner_l: list[float] = []
+    pent_centers: list[float] = []
+    pent_normals: list[float] = []
+    pent_scales: list[float] = []
+    hex_centers: list[float] = []
+    hex_normals: list[float] = []
+    hex_scales: list[float] = []
+
+    for ring in cycles:
+        ring_pos = positions[ring]
+        pose = _ring_pose_from_positions(ring_pos)
+        if pose is None:
+            continue
+        center, normal, radius, inner = pose
+        centers_l.extend(center.tolist())
+        normals_l.extend(normal.tolist())
+        inner_l.append(float(inner))
+        n_sides = len(ring)
+        if n_sides == 5:
+            pent_centers.extend(center.tolist())
+            pent_normals.extend(normal.tolist())
+            pent_scales.append(float(radius))
+        elif n_sides == 6:
+            hex_centers.extend(center.tolist())
+            hex_normals.extend(normal.tolist())
+            hex_scales.append(float(radius))
+
+    n_rings = len(inner_l)
+    outlines = _make_trace(
+        "aromatic_rings",
+        "instanced_ring_outlines",
+        "Aromatic rings",
+        {
+            "centers": centers_l,
+            "normals": normals_l,
+            "inner_radii": inner_l,
+            "n_rings": n_rings,
+            "radial_segments": int(n_template_segments),
+        },
+        style=style_circles if style_circles else "instanced_ring_outlines",
+    )
+
+    fills_hex = None
+    fills_pent = None
+    if hex_scales:
+        fills_hex = _make_trace(
+            "aromatic_highlights_hex",
+            "instanced_ring_fills",
+            "Aromatic highlights (hex)",
+            {
+                "sides": 6,
+                "centers": hex_centers,
+                "normals": hex_normals,
+                "scales": hex_scales,
+                "n_instances": len(hex_scales),
+            },
+            style=style_highlights if style_highlights else "instanced_ring_fills",
+        )
+    if pent_scales:
+        fills_pent = _make_trace(
+            "aromatic_highlights_pent",
+            "instanced_ring_fills",
+            "Aromatic highlights (pent)",
+            {
+                "sides": 5,
+                "centers": pent_centers,
+                "normals": pent_normals,
+                "scales": pent_scales,
+                "n_instances": len(pent_scales),
+            },
+            style=style_highlights if style_highlights else "instanced_ring_fills",
+        )
+
+    # Compatibility: highlights key points at hex or pent or empty mesh
+    if fills_hex is not None:
+        highlights = fills_hex
+    elif fills_pent is not None:
+        highlights = fills_pent
+    else:
+        highlights = _make_trace(
+            "aromatic_highlights", "mesh", "Aromatic highlights",
+            {"positions": [], "indices": [], "n_vertices": 0, "n_triangles": 0},
+            style=style_highlights,
+        )
+
+    out: dict[str, dict[str, Any]] = {"circles": outlines, "highlights": highlights}
+    if fills_pent is not None:
+        out["fills_pent"] = fills_pent
+    if fills_hex is not None:
+        out["fills_hex"] = fills_hex
+    return out
+
+
+def _make_aromatic_rings_legacy_trace(
+    cycles: list[list[int]],
+    positions: np.ndarray,
+    *,
+    style_circles: str | dict | None,
+    style_highlights: str | dict | None,
+    n_circle_points: int,
+) -> dict[str, dict[str, Any]]:
+    from scipy.spatial.transform import Rotation as _Rot
+
+    theta = np.linspace(0, 2 * np.pi, n_circle_points, endpoint=False)
+    unit_circle = np.column_stack([np.cos(theta), np.sin(theta), np.zeros_like(theta)])
+    line_positions: list[float] = []
+
+    for ring in cycles:
+        ring_pos = positions[ring]
+        pose = _ring_pose_from_positions(ring_pos)
+        if pose is None:
+            continue
+        center, normal, _radius, inner = pose
+        rot, _ = _Rot.align_vectors(normal.reshape(-1, 3), np.array([[0.0, 0.0, 1.0]]))
+        circle_3d = rot.apply(unit_circle * inner) + center
+        for i in range(n_circle_points):
+            j = (i + 1) % n_circle_points
+            line_positions.extend(circle_3d[i].tolist())
+            line_positions.extend(circle_3d[j].tolist())
+
+    circles_trace = _make_trace(
+        "aromatic_rings", "line_segments", "Aromatic rings",
+        {"positions": line_positions, "n_segments": len(cycles) * n_circle_points},
+        style=style_circles,
+    )
+    payload = _merged_aromatic_highlight_payload(cycles, positions)
+    highlights_trace = _make_trace(
+        "aromatic_highlights", "mesh", "Aromatic highlights",
+        payload, style=style_highlights,
+    )
+    return {"circles": circles_trace, "highlights": highlights_trace}
+
+
 def make_aromatic_rings_trace(
     atoms: Atoms,
     cycles: list[list[int]] | None = None,
     style_circles: str | dict | None = "aromatic_rings",
     style_highlights: str | dict | None = "aromatic_highlights",
     n_circle_points: int = 72,
+    *,
+    use_instanced: bool | None = None,
+    n_template_segments: int = 16,
 ) -> dict[str, dict[str, Any]]:
-    """Build aromatic ring circle outlines (line_segments) + fill discs (mesh).
+    """Build aromatic ring traces (instanced torus/ngon when possible).
 
-    Parameters
-    ----------
-    atoms
-        ASE Atoms with covalent bonds (calls ``update_with_covalent_bonds`` if missing).
-    cycles
-        Precomputed aromatic cycles as list of atom-index lists.  If *None* the
-        function detects them via ``analyze.find_aromatic_cycles_in_sgraph``.
-    style_circles, style_highlights
-        Style name from ``DEFAULT_STYLES`` or a raw style dict.
-    n_circle_points
-        Number of vertices per circle outline and per fill disc polygon.
+    Instanced path (5–6 member rings, default): compact instance buffers + shared
+    torus/polygon geometry in the browser (~10 floats/ring vs 72-point circles).
 
-    Returns
-    -------
-    dict  {"circles": trace_dict, "highlights": trace_dict}
+    Legacy path (7–9 sides or ``MGR_AROMATIC_RENDER=legacy``): line_segments + merged mesh.
     """
-    from .analyze import find_aromatic_cycles_in_sgraph, sgraph_from_atoms
-    from scipy.spatial.transform import Rotation as _Rot
-
-    if "covalent_bonds" not in atoms.info:
-        from .analyze import update_with_covalent_bonds
-        atoms = update_with_covalent_bonds(atoms)
+    from .analyze import compute_aromatic_cycles
 
     if cycles is None:
         try:
-            cycles = find_aromatic_cycles_in_sgraph(sgraph_from_atoms(atoms))
+            cycles = compute_aromatic_cycles(atoms)
         except Exception:
             cycles = []
 
@@ -1603,81 +1810,31 @@ def make_aromatic_rings_trace(
         return {"circles": empty_circles, "highlights": empty_highlights}
 
     positions = atoms.get_positions()
-    theta = np.linspace(0, 2 * np.pi, n_circle_points, endpoint=False)
-    unit_circle = np.column_stack([np.cos(theta), np.sin(theta), np.zeros_like(theta)])
+    if use_instanced is None:
+        mode = _aromatic_render_mode()
+        if mode == "legacy":
+            use_instanced = False
+        elif mode == "instanced":
+            use_instanced = True
+        else:
+            use_instanced = all(5 <= len(r) <= 6 for r in cycles)
 
-    line_positions: list[float] = []
-    all_verts: list[np.ndarray] = []
-    all_faces: list[np.ndarray] = []
-
-    for ring in cycles:
-        ring_pos = positions[ring]
-        center = ring_pos.mean(axis=0)
-        ring_centered = ring_pos - center
-        # Best-fit plane normal via SVD — robust to non-planar rings
-        _, _, Vt = np.linalg.svd(ring_centered, full_matrices=False)
-        normal = Vt[-1]
-        norm_len = np.linalg.norm(normal)
-        if norm_len < 1e-10:
-            continue
-        normal /= norm_len
-        # Project onto best-fit plane, measure radius from projected coords
-        ring_proj = ring_centered - np.outer(np.dot(ring_centered, normal), normal)
-        radius = np.mean(np.linalg.norm(ring_proj, axis=1))
-
-        rot, _ = _Rot.align_vectors(normal.reshape(-1, 3), np.array([[0.0, 0.0, 1.0]]))
-
-        # Circle outline at ~40% of ring radius (chemistry textbook style)
-        inner_radius = radius * 0.4
-        circle_3d = rot.apply(unit_circle * inner_radius) + center
-        for i in range(n_circle_points):
-            j = (i + 1) % n_circle_points
-            line_positions.extend(circle_3d[i].tolist())
-            line_positions.extend(circle_3d[j].tolist())
-
-        # Fill polygon — fan-triangulate from center using projected ring atom
-        # positions.  Ring atom indices may be sorted (not walk-ordered), so
-        # sort projected vertices by angle in the ring plane to recover order.
-        ring_rot = rot.apply(ring_proj)
-        angles = np.arctan2(ring_rot[:, 1], ring_rot[:, 0])
-        order = np.argsort(angles)
-        ring_sorted = ring_proj[order]
-        n_sides = len(ring_sorted)
-        verts = np.vstack([ring_sorted + center, center.reshape(1, -1)])
-        faces = np.array(
-            [[n_sides, i, (i + 1) % n_sides] for i in range(n_sides)],
-            dtype=int,
+    if use_instanced:
+        return _make_aromatic_rings_instanced_trace(
+            cycles,
+            positions,
+            style_circles=style_circles,
+            style_highlights=style_highlights,
+            n_template_segments=n_template_segments,
         )
-        all_verts.append(verts)
-        all_faces.append(faces)
-
-    circles_trace = _make_trace(
-        "aromatic_rings", "line_segments", "Aromatic rings",
-        {"positions": line_positions, "n_segments": len(cycles) * n_circle_points},
-        style=style_circles,
+    return _make_aromatic_rings_legacy_trace(
+        cycles,
+        positions,
+        style_circles=style_circles,
+        style_highlights=style_highlights,
+        n_circle_points=n_circle_points,
     )
 
-    if all_verts:
-        v_offsets = np.cumsum([0] + [len(v) for v in all_verts[:-1]])
-        merged_verts = np.vstack(all_verts)
-        merged_faces = np.vstack([
-            f + off for f, off in zip(all_faces, v_offsets)
-        ])
-        payload = {
-            "positions": merged_verts.reshape(-1).tolist(),
-            "indices": merged_faces.reshape(-1).tolist(),
-            "n_vertices": int(len(merged_verts)),
-            "n_triangles": int(len(merged_faces)),
-        }
-    else:
-        payload = {"positions": [], "indices": [], "n_vertices": 0, "n_triangles": 0}
-
-    highlights_trace = _make_trace(
-        "aromatic_highlights", "mesh", "Aromatic highlights",
-        payload, style=style_highlights,
-    )
-
-    return {"circles": circles_trace, "highlights": highlights_trace}
 
 
 def make_maxima_trace(
@@ -2868,7 +3025,13 @@ class MovieFigure:
     ) -> "MovieFigure":
         traces = make_aromatic_rings_trace(atoms, cycles=cycles)
         self.add_trace(traces["circles"])
-        self.add_trace(traces["highlights"])
+        if traces["circles"].get("type") == "instanced_ring_outlines":
+            if traces.get("fills_pent") is not None:
+                self.add_trace(traces["fills_pent"])
+            if traces.get("fills_hex") is not None:
+                self.add_trace(traces["fills_hex"])
+        else:
+            self.add_trace(traces["highlights"])
         return self
 
     def add_cell(self, atoms: Atoms, **style: Any) -> "MovieFigure":
@@ -4059,6 +4222,124 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       return mesh;
     }
 
+
+    const _ringFillGeoCache = {};
+    function makeRingFillGeometry(sides) {
+      if (_ringFillGeoCache[sides]) return _ringFillGeoCache[sides];
+      const verts = [];
+      const indices = [];
+      for (let i = 0; i < sides; i++) {
+        const a = 2 * Math.PI * i / sides;
+        verts.push(Math.cos(a), Math.sin(a), 0);
+      }
+      verts.push(0, 0, 0);
+      const centerIdx = sides;
+      for (let i = 0; i < sides; i++) {
+        indices.push(centerIdx, i, (i + 1) % sides);
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
+      geo.setIndex(indices);
+      geo.computeVertexNormals();
+      _ringFillGeoCache[sides] = geo;
+      return geo;
+    }
+
+    const _zUpRing = new THREE.Vector3(0, 0, 1);
+    const _ringNormal = new THREE.Vector3();
+    const _ringQuat = new THREE.Quaternion();
+    const _ringDummy = new THREE.Object3D();
+
+    function orientRingInstance(dummy, cx, cy, cz, nx, ny, nz, scale) {
+      _ringNormal.set(nx, ny, nz);
+      if (_ringNormal.lengthSq() < 1e-16) _ringNormal.set(0, 0, 1);
+      else _ringNormal.normalize();
+      _ringQuat.setFromUnitVectors(_zUpRing, _ringNormal);
+      dummy.position.set(cx, cy, cz);
+      dummy.quaternion.copy(_ringQuat);
+      dummy.scale.set(scale, scale, scale);
+      dummy.updateMatrix();
+    }
+
+    function addInstancedRingOutlines(trace) {
+      const n = trace.data.n_rings || 0;
+      if (!n) { console.warn("Skipping empty instanced ring outlines:", trace.id); return null; }
+      const centers = trace.data.centers || [];
+      const normals = trace.data.normals || [];
+      const innerRadii = trace.data.inner_radii || [];
+      const radialSeg = trace.data.radial_segments || 16;
+      const style = styleFor(trace);
+      const geo = new THREE.TorusGeometry(1.0, 0.05, 8, radialSeg);
+      const mat = new THREE.MeshPhongMaterial({
+        color: threeColorFromStyle(style.color !== undefined ? style.color : 0xffffff, 0xffffff),
+        shininess: style.shininess !== undefined ? style.shininess : 10,
+        specular: style.specular !== undefined ? style.specular : 0x151515,
+      });
+      if (style.opacity !== undefined) {
+        mat.transparent = style.opacity < 1.0;
+        mat.opacity = style.opacity;
+      }
+      const mesh = new THREE.InstancedMesh(geo, mat, n);
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      for (let i = 0; i < n; i++) {
+        const r = innerRadii[i] || 1.0;
+        orientRingInstance(
+          _ringDummy,
+          centers[i * 3], centers[i * 3 + 1], centers[i * 3 + 2],
+          normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2],
+          r
+        );
+        mesh.setMatrixAt(i, _ringDummy.matrix);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.name = trace.id;
+      mesh.userData.originalOpacity = mat.opacity !== undefined ? mat.opacity : 1.0;
+      scene.add(mesh);
+      objectsById[trace.id] = mesh;
+      return mesh;
+    }
+
+    function addInstancedRingFills(trace) {
+      const n = trace.data.n_instances || 0;
+      const sides = trace.data.sides || 6;
+      if (!n) { console.warn("Skipping empty instanced ring fills:", trace.id); return null; }
+      const centers = trace.data.centers || [];
+      const normals = trace.data.normals || [];
+      const scales = trace.data.scales || [];
+      const style = styleFor(trace);
+      const geo = makeRingFillGeometry(sides);
+      const opacity = style.opacity !== undefined ? style.opacity : 0.3;
+      const isOpaque = opacity >= 1.0;
+      const mat = new THREE.MeshStandardMaterial({
+        color: threeColorFromStyle(style.color, 0x3399ee),
+        transparent: !isOpaque,
+        opacity: opacity,
+        roughness: style.roughness !== undefined ? style.roughness : 0.38,
+        metalness: style.metalness !== undefined ? style.metalness : 0.0,
+        side: style.side === "FrontSide" ? THREE.FrontSide : THREE.DoubleSide,
+        depthWrite: isOpaque,
+      });
+      const mesh = new THREE.InstancedMesh(geo, mat, n);
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      for (let i = 0; i < n; i++) {
+        const s = scales[i] || 1.0;
+        orientRingInstance(
+          _ringDummy,
+          centers[i * 3], centers[i * 3 + 1], centers[i * 3 + 2],
+          normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2],
+          s
+        );
+        mesh.setMatrixAt(i, _ringDummy.matrix);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.name = trace.id;
+      mesh.userData.originalSide = mat.side;
+      mesh.userData.originalOpacity = mat.opacity;
+      scene.add(mesh);
+      objectsById[trace.id] = mesh;
+      return mesh;
+    }
+
     function addUnitCellLines(trace) {
       const st = styleFor(trace);
       const c = st.color !== undefined ? st.color : 0xffa500;
@@ -4151,6 +4432,12 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       else if (trace.type === "instanced_cylinders") {
         addInstancedCylinders(trace);
       }
+      else if (trace.type === "instanced_ring_outlines") {
+        addInstancedRingOutlines(trace);
+      }
+      else if (trace.type === "instanced_ring_fills") {
+        addInstancedRingFills(trace);
+      }
     });
 
     // ---- Lazy surface loading ----
@@ -4194,6 +4481,8 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       else if (trace.type === "points") addPoints(trace);
       else if (trace.type === "unit_cell_lines") addUnitCellLines(trace);
       else if (trace.type === "instanced_cylinders") addInstancedCylinders(trace);
+      else if (trace.type === "instanced_ring_outlines") addInstancedRingOutlines(trace);
+      else if (trace.type === "instanced_ring_fills") addInstancedRingFills(trace);
     });
 
     // Guest instanced meshes for animation (supports multi-component ids like guests_CO2)
@@ -4428,7 +4717,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     //   Keep local maxima in the central cell with raw surface (not in pore-graph copy).
     //   Original cell stays at center and is controlled independently by showCell.
     const _explodeGroups = [
-      { ids: ["framework", "framework_stick", "framework_spacefill", "framework_atoms", "framework_bonds", "aromatic_rings", "aromatic_highlights", "cell_framework"], x: -1, y: 0 },
+      { ids: ["framework", "framework_stick", "framework_spacefill", "framework_atoms", "framework_bonds", "aromatic_rings", "aromatic_highlights", "aromatic_highlights_hex", "aromatic_highlights_pent", "cell_framework"], x: -1, y: 0 },
       { ids: ["windows_internal", "connections_internal", "connections_internal_nodes",
               "maxima_outside", "windows_periodic", "connections_periodic", "connections_periodic_nodes",
               "cell_copy"], x: 1, y: 0 },
@@ -4472,7 +4761,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     const meshOpacityContainer = document.getElementById("meshOpacityContainer");
     if (meshOpacityContainer) {
       const meshTraces = [];
-      const _opacityTypes = ["mesh", "instanced_spheres", "instanced_cylinders"];
+      const _opacityTypes = ["mesh", "instanced_spheres", "instanced_cylinders", "instanced_ring_outlines", "instanced_ring_fills"];
       staticTraces.forEach(t => { if (_opacityTypes.indexOf(t.type) >= 0) meshTraces.push(t); });
       if (getFrameCount() > 0 && getFrame(0) && getFrame(0).traces) {
         getFrame(0).traces.forEach(t => {
@@ -4480,7 +4769,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         });
       }
       // IDs of all framework sub-traces that should NOT get individual sliders
-      const fwSubIds = ["framework", "framework_stick", "framework_spacefill", "framework_atoms", "framework_bonds", "framework_stick_atoms", "framework_stick_bonds", "aromatic_rings", "aromatic_highlights"];
+      const fwSubIds = ["framework", "framework_stick", "framework_spacefill", "framework_atoms", "framework_bonds", "framework_stick_atoms", "framework_stick_bonds", "aromatic_rings", "aromatic_highlights", "aromatic_highlights_hex", "aromatic_highlights_pent"];
       meshTraces.forEach(trace => {
         // Skip framework sub-traces — they get a single merged slider below
         if (fwSubIds.indexOf(trace.id) >= 0) return;
@@ -4506,12 +4795,12 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           const targetIds = [trace.id];
           // If this is any framework slider, also update linked traces
           if (trace.id === "framework" || trace.id === "framework_atoms" || trace.id === "framework_bonds") {
-            targetIds.push("framework_atoms", "framework_bonds", "aromatic_rings", "aromatic_highlights");
+            targetIds.push("framework_atoms", "framework_bonds", "aromatic_rings", "aromatic_highlights", "aromatic_highlights_hex", "aromatic_highlights_pent");
           }
           targetIds.forEach(tid => {
             const obj = objectsById[tid];
             if (obj && obj.material) {
-              var isFw = tid === "framework" || tid === "framework_stick" || tid === "framework_spacefill" || tid === "framework_atoms" || tid === "framework_bonds" || tid === "aromatic_rings" || tid === "aromatic_highlights";
+              var isFw = tid === "framework" || tid === "framework_stick" || tid === "framework_spacefill" || tid === "framework_atoms" || tid === "framework_bonds" || tid === "aromatic_rings" || tid === "aromatic_highlights" || tid === "aromatic_highlights_hex" || tid === "aromatic_highlights_pent";
               var hiddenByOpacity = val <= 0.001;
               if (obj.userData && obj.userData.originalCastShadow === undefined) {
                 obj.userData.originalCastShadow = obj.castShadow;
@@ -4715,6 +5004,10 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       if (scatterBonds && !fw) scatterBonds.visible = showFramework.checked && val === "ball_and_stick";
       if (arRings) arRings.visible = showFramework.checked;
       if (arHigh) arHigh.visible = showFramework.checked;
+      ["aromatic_highlights_hex", "aromatic_highlights_pent"].forEach(function(id) {
+        const o = objectsById[id];
+        if (o) o.visible = showFramework.checked;
+      });
       updateFrameworkCellVisibility();
     }
     showFramework.addEventListener("change", updateFrameworkVisibility);

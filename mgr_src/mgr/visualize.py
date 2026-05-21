@@ -1171,106 +1171,73 @@ def plot_aromatic_rings(ase_atoms, isomorphic_aromatic_cycles=None,
                                         legendgroup='aromatics', legendgrouptitle_text='Aromatic rings', name='Aromatic rings'),
                         kwargs_highlight=dict(color='skyblue', opacity=0.5, showlegend=False,
                         legendgroup='aromatics', legendgrouptitle_text='Aromatic rings', name='Aromatic highlights')):
-    """
-    It takes in a graph and a list of aromatic cycles, and returns a tuple of plotly traces that can be
-    used to plot the aromatic cycles
-    
-    :param sgraph: the sgraph object
-    :param isomorphic_aromatic_cycles: a list of lists of node indices that are aromatic rings. If you
-    don't have this, you can set it to None and the function will try to find it for you
-    :param highlight_color: The color of the highlighted aromatic rings, defaults to lightskyblue
-    (optional)
-    :return: A tuple of the data_circle and ring_highlight_traces
-    """
-    from .analyze import find_aromatic_cycles_in_sgraph, update_with_covalent_bonds, sgraph_from_atoms
-
-    if not ('covalent_bonds' in ase_atoms.info.keys()):
-        ase_atoms = update_with_covalent_bonds(ase_atoms)
-
-    sgraph = sgraph_from_atoms(ase_atoms)
+    """Plotly traces for aromatic rings: 16-pt circle outlines + one merged Mesh3d fill."""
+    from .analyze import compute_aromatic_cycles, update_with_covalent_bonds
+    from .movies import _merged_aromatic_highlight_payload, _ring_pose_from_positions
     import plotly.graph_objects as go
     import numpy as np
+    from scipy.spatial.transform import Rotation as R
+
+    if 'covalent_bonds' not in ase_atoms.info:
+        ase_atoms = update_with_covalent_bonds(ase_atoms)
 
     if isomorphic_aromatic_cycles is None:
         print('isomorphic aromatic cycles is None, trying to calculate')
         try:
-            isomorphic_aromatic_cycles = find_aromatic_cycles_in_sgraph(sgraph)
-            # print(isomorphic_aromatic_cycles)
-        except:
-            Exception('Cannot find aromatic cycles from sgraph! Please provide as input.')
+            isomorphic_aromatic_cycles = compute_aromatic_cycles(ase_atoms)
+        except Exception as exc:
+            raise Exception('Cannot find aromatic cycles from structure! Please provide as input.') from exc
+
+    if not isomorphic_aromatic_cycles:
+        return tuple()
+
+    positions = ase_atoms.get_positions()
+    n_circle_points = 16
+    theta = np.linspace(0, 2 * np.pi, n_circle_points, endpoint=False)
+    unit_circle = np.column_stack([np.cos(theta), np.sin(theta), np.zeros_like(theta)])
     circle_data = []
-    from numpy.core.numeric import cross
-    theta = np.linspace(0, 2 * np.pi, 100)
-    xc = 0.5 * np.cos(theta)
-    yc = 0.5 * np.sin(theta)
-    zc = np.ones(np.shape(xc))
-    circle_coord = np.array([xc, yc, zc]).T
 
-    from scipy.spatial.transform import Rotation as R
-    import networkx as nx
-    # coord  = nx.get_node_attributes(sgraph, "position")# ring circles
-    try:
-        coord = np.vstack(list(nx.get_node_attributes(sgraph, "position").values()))
-    except:
-        raise Exception("Cannot find position data in your sgraph")
-    # print(isomorphic_aromatic_cycles)
-    if isomorphic_aromatic_cycles is not None:
-        if len(isomorphic_aromatic_cycles) >0:
-            for ring in isomorphic_aromatic_cycles:
-                ring_coord = coord[ring]
-                ring_center = np.mean(ring_coord, axis=0)
-                ring_normal = np.cross(ring_coord[3] - ring_coord[2], ring_coord[2] - ring_coord[1])
-                ring_normal = ring_normal / np.linalg.norm(ring_normal)
-                r = R.align_vectors(ring_normal.reshape(-1, 3), np.array([0, 0, 1]).reshape(-1, 3))
-                new_circle = r[0].apply(circle_coord)
-                new_circle = new_circle + ring_center - np.mean(new_circle, axis=0)
-                circle_data.append(new_circle)
-                circle_data.append([None, None, None])
-            circle_data = np.vstack(circle_data)
-            data_circle = go.Scatter3d(x=circle_data[:, 0], y=circle_data[:, 1], z=circle_data[:, 2], **kwargs_rings)
+    for ring in isomorphic_aromatic_cycles:
+        ring_pos = positions[ring]
+        pose = _ring_pose_from_positions(ring_pos)
+        if pose is None:
+            continue
+        center, normal, _radius, inner = pose
+        rot, _ = R.align_vectors(normal.reshape(-1, 3), np.array([[0.0, 0.0, 1.0]]))
+        circle_3d = rot.apply(unit_circle * inner) + center
+        circle_data.append(circle_3d)
+        circle_data.append(np.array([[np.nan, np.nan, np.nan]]))
 
-            import pyvista as pv
-            ring_coords = [coord[r] for r in isomorphic_aromatic_cycles]
-            ring_centers = [np.mean(coord[r], axis=0) for r in isomorphic_aromatic_cycles]
-            # ring_normals = [np.cross(co[3]-co[2], co[2]-co[1]) for co in ring_coords]
-            # ring_points = [np.vstack((r,c)) for r,c in zip(ring_coords,ring_centers)]
-            polys = [pv.Polygon(center=c, radius=np.linalg.norm(r[0] - c) * 0.95, normal=np.cross(r[3] - r[2], r[2] - r[1]),
-                                n_sides=len(r)).delaunay_2d() for r, c in zip(ring_coords, ring_centers)]
+    if not circle_data:
+        return tuple()
 
-            # polys = [pv.PolyData(rp).delaunay_2d(inplace=True).subdivide(2, subfilter='butterfly', inplace=True) for rp in ring_points]
-            # polygons = [pv.Polygon(center = c ,radius=np.linalg.norm(co[0]-c), normal = n, n_sides = len(co)).triangulate() for  co,c,n in zip(ring_coords, ring_centers, ring_normals)]
-            verts = [p.points for p in polys]
-            faces = [p.faces.reshape((-1, 4))[:, 1:] for p in polys]
-            ring_highlight_traces = [
-                go.Mesh3d(x=v[:, 0], y=v[:, 1], z=v[:, 2], i=f[:, 0], j=f[:, 1], k=f[:, 2], **kwargs_highlight) for v, f in
-                zip(verts, faces)]
+    circle_data_arr = np.vstack(circle_data)
+    data_circle = go.Scatter3d(
+        x=circle_data_arr[:, 0],
+        y=circle_data_arr[:, 1],
+        z=circle_data_arr[:, 2],
+        **kwargs_rings,
+    )
 
-        # aromatic_graphs = [sgraph.subgraph(g) for g in isomorphic_aromatic_cycles]
-        # aromatic_vectorize = [np.vectorize({an:i for i,an in enumerate(a.nodes())}.get) for a in aromatic_graphs]
-        # aromatic_tri_faces = [v(np.vstack(list(a.edges()))) for a,v in zip(aromatic_graphs,aromatic_vectorize)]
-        # from icecream import ic
-        # ic.disable()
-        # # ring highlight
+    payload = _merged_aromatic_highlight_payload(isomorphic_aromatic_cycles, positions)
+    if not payload.get('n_vertices'):
+        return tuple([data_circle])
 
-        # ring_centers = []
-        # ring_highlight_traces = []
+    verts = np.asarray(payload['positions'], dtype=float).reshape(-1, 3)
+    faces = np.asarray(payload['indices'], dtype=int).reshape(-1, 3)
+    highlight_trace = go.Mesh3d(
+        x=verts[:, 0],
+        y=verts[:, 1],
+        z=verts[:, 2],
+        i=faces[:, 1],
+        j=faces[:, 2],
+        k=faces[:, 0],
+        **kwargs_highlight,
+    )
+    return tuple([data_circle, highlight_trace])
 
-        # for i,ring in enumerate(isomorphic_aromatic_cycles):
-        #     ring_coord = coord[ring]
-        #     ring_centers.append(np.mean(ring_coord, axis=0))
 
-        #     faces = np.insert(aromatic_tri_faces[i],2,len(ring_coord), axis=1)
-        #     ring_coord = np.vstack((ring_coord , (np.mean(ring_coord, axis=0))))
-        #     ic(faces)
-        #     ic(ring_coord)
-        #     # ring_highlight_trace = go.Mesh3d(x=ring_coord[:,0],y=ring_coord[:,1],z=ring_coord[:,2], i=faces[:,0], j=faces[:,1], k=faces[:,2],**kwargs_highlight)
-        #     ring_highlight_trace = go.Mesh3d(x=highlight.vertices[:,0],y=highlight.vertices[:,1],z=highlight.vertices[:,2], i=highlight.faces[:,0], j=highlight.faces[:,1], k=highlight.faces[:,2],**kwargs_highlight)
-        #     # ring_highlight_trace = go.Surface(x=ring_coord[:,0],y=ring_coord[:,1],z=ring_coord[:,2], **kwargs_highlight)
-        #     ring_highlight_traces.append(ring_highlight_trace)
 
-            return tuple([data_circle] + ring_highlight_traces)
-    else:
-        return tuple([])
 
 
 def plot_cycle_highlights(sgraph, cycles_to_highlight,

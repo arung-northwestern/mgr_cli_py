@@ -245,7 +245,10 @@ def show_mof_threejs(
             )
         if defaults.get("plot_framework_show_rings", True):
             _emit(_step_labels[_step_idx])
-            fig.add_aromatic_rings(mat_atoms)
+            fig.add_aromatic_rings(
+                mat_atoms,
+                cycles=mat_atoms.info.get("aromatic_cycles"),
+            )
 
     # Cell
     if defaults.get("plot_cell", True):
