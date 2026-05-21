@@ -123,6 +123,10 @@ SPACES_DGRID_FLOAT_BYTES = 4
 SPACES_DGRID_RAM_BUDGET_BYTES = int(512 * 1024**2)  # auto-AABB if output grid alone is huge
 # Auto-AABB when n_grid × n_atoms exceeds this (runtime); ZIF-20 @0.4 Å ≈ 7e9 stays on Rust.
 SPACES_DGRID_OPS_AUTO_AABB = 10_000_000_000
+# Local installs: larger RAM budget; same ops threshold unless MGR_DGRID_OPS_AUTO_AABB is set.
+LOCAL_DGRID_RAM_BUDGET_BYTES = int(16 * 1024**3)
+LOCAL_RAYON_THREADS_DEFAULT = 8
+LOCAL_RAYON_GIB_PER_THREAD = 2
 FEEDBACK_FORM_URL = os.environ.get("MGR_FEEDBACK_URL", "#")
 
 
@@ -158,16 +162,42 @@ def estimate_rust_dgrid_memory_bytes(
     return estimated, n_grid, (nx, ny, nz)
 
 
-def spaces_should_auto_aabb_dgrid(atoms, spacing: float) -> Tuple[bool, Dict[str, Any]]:
-    """Whether hosted demo should default to freud AABB dgrid instead of Rust exact."""
+def _dgrid_ops_auto_aabb_threshold() -> int:
+    raw = os.environ.get("MGR_DGRID_OPS_AUTO_AABB", "").strip()
+    if raw:
+        try:
+            return int(float(raw))
+        except ValueError:
+            pass
+    return SPACES_DGRID_OPS_AUTO_AABB
+
+
+def spaces_should_auto_aabb_dgrid(
+    atoms,
+    spacing: float,
+    *,
+    ram_budget_bytes: Optional[int] = None,
+    ops_threshold: Optional[int] = None,
+) -> Tuple[bool, Dict[str, Any]]:
+    """Whether to default to freud AABB dgrid instead of Rust exact dgrid."""
+    budget = (
+        SPACES_DGRID_RAM_BUDGET_BYTES
+        if ram_budget_bytes is None
+        else int(ram_budget_bytes)
+    )
+    ops_thr = (
+        _dgrid_ops_auto_aabb_threshold()
+        if ops_threshold is None
+        else int(ops_threshold)
+    )
     lengths = tuple(float(x) for x in atoms.cell.cellpar()[:3])
     memory_b, n_grid, shape = estimate_rust_dgrid_memory_bytes(len(atoms), spacing, lengths)
     ops = n_grid * len(atoms)
     reason = None
-    if memory_b > SPACES_DGRID_RAM_BUDGET_BYTES:
+    if memory_b > budget:
         use_aabb = True
         reason = "memory"
-    elif ops > SPACES_DGRID_OPS_AUTO_AABB:
+    elif ops > ops_thr:
         use_aabb = True
         reason = "work"
     else:
@@ -179,11 +209,27 @@ def spaces_should_auto_aabb_dgrid(atoms, spacing: float) -> Tuple[bool, Dict[str
         "grid_shape": shape,
         "n_grid": n_grid,
         "estimated_bytes": memory_b,
-        "budget_bytes": SPACES_DGRID_RAM_BUDGET_BYTES,
+        "budget_bytes": budget,
         "ops": ops,
-        "ops_threshold": SPACES_DGRID_OPS_AUTO_AABB,
+        "ops_threshold": ops_thr,
         "reason": reason,
     }
+
+
+def _configure_rayon_threads() -> int:
+    """Set ``RAYON_NUM_THREADS`` when unset (local default 8; Spaces default 8)."""
+    for key in ("RAYON_NUM_THREADS", "MGR_RAYON_THREADS"):
+        raw = os.environ.get(key, "").strip()
+        if raw:
+            try:
+                n = max(1, int(raw))
+                os.environ["RAYON_NUM_THREADS"] = str(n)
+                return n
+            except ValueError:
+                pass
+    n = SPACES_RAYON_THREADS if _is_spaces_deployment() else LOCAL_RAYON_THREADS_DEFAULT
+    os.environ["RAYON_NUM_THREADS"] = str(n)
+    return n
 _SPACES_COMPUTE_LOCK = Lock()
 
 # ---- Compute worker queue (serializes all jobs across sessions) ----
@@ -547,6 +593,9 @@ class _StreamingProgress:
     def set_phase(self, phase: str) -> None:
         with self._lock:
             self.phase = phase
+            self.lines.append(f"→ {phase}")
+            if len(self.lines) > 100:
+                self.lines = self.lines[-80:]
 
     def latest_lines(self, count: int = 5) -> List[str]:
         with self._lock:
@@ -801,9 +850,11 @@ def _start_compute_thread(
                 # Compute covalent bonds (fast Rust, ~1-2ms).
                 # Was previously done at CIF upload time; moved here so it
                 # runs inside the compute queue on Spaces deployments.
-                from mgr.analyze import update_with_covalent_bonds
+                from mgr.analyze import compute_aromatic_cycles, update_with_covalent_bonds
                 progress.set_phase("Covalent bonds")
                 w_atoms = update_with_covalent_bonds(w_atoms)
+                progress.set_phase("Aromatic rings")
+                compute_aromatic_cycles(w_atoms)
 
                 if use_aabb_method:
                     from mgr.compute import dgrid_from_atoms
@@ -1174,8 +1225,9 @@ def _hts_one_material(
         return re.sub(r"[^\w\-.]", "_", s)[:120]
 
     try:
-        from mgr.analyze import update_with_covalent_bonds
+        from mgr.analyze import compute_aromatic_cycles, update_with_covalent_bonds
         atoms = update_with_covalent_bonds(atoms)
+        compute_aromatic_cycles(atoms)
     except Exception:
         pass
 
@@ -1554,9 +1606,12 @@ def main() -> None:
     )
     if _is_spaces_deployment():
         _start_queue_worker()
+    _rayon_threads = _configure_rayon_threads()
     st.session_state.setdefault("ui_logs", [])
     mode_label = "spaces" if _is_spaces_deployment() else "local"
-    st.sidebar.caption(f"Debug: deployment mode = `{mode_label}`")
+    st.sidebar.caption(
+        f"Debug: deployment mode = `{mode_label}` · Rayon threads = `{_rayon_threads}`"
+    )
     show_logs = st.sidebar.toggle("Show runtime logs", value=False, key="show_runtime_logs")
     col_reset, col_logs, col_refresh = st.sidebar.columns(3)
     with col_reset:
@@ -1834,7 +1889,7 @@ def main() -> None:
             "to keep runtime manageable."
         )
 
-    # Distance grid: on Spaces, auto-enable freud AABB when Rust exact dgrid estimate exceeds RAM budget.
+    # Distance grid: auto-enable freud AABB when Rust exact dgrid estimate exceeds RAM/work budget.
     _aabb_policy_key = (
         f"{st.session_state.get(atoms_source_key_state)}::{float(spacing):.4f}"
     )
@@ -1842,21 +1897,28 @@ def main() -> None:
     _aabb_meta: Dict[str, Any] = {}
     if _is_spaces_deployment():
         _auto_aabb, _aabb_meta = spaces_should_auto_aabb_dgrid(atoms, spacing)
-    if _aabb_policy_key != st.session_state.get("_spaces_aabb_policy_key"):
-        st.session_state["_spaces_aabb_policy_key"] = _aabb_policy_key
+    else:
+        _auto_aabb, _aabb_meta = spaces_should_auto_aabb_dgrid(
+            atoms,
+            spacing,
+            ram_budget_bytes=LOCAL_DGRID_RAM_BUDGET_BYTES,
+        )
+    if _aabb_policy_key != st.session_state.get("_aabb_policy_key"):
+        st.session_state["_aabb_policy_key"] = _aabb_policy_key
         st.session_state["use_aabb_method"] = _auto_aabb
     elif "use_aabb_method" not in st.session_state:
         st.session_state["use_aabb_method"] = _auto_aabb
 
-    if _is_spaces_deployment() and _auto_aabb:
+    if _auto_aabb:
         _nx, _ny, _nz = _aabb_meta["grid_shape"]
         _est_mib = _aabb_meta["estimated_bytes"] / (1024 * 1024)
-        _bud_mib = SPACES_DGRID_RAM_BUDGET_BYTES / (1024 * 1024)
+        _bud_mib = _aabb_meta["budget_bytes"] / (1024 * 1024)
         _ops = _aabb_meta.get("ops", 0)
         _ops_thr = _aabb_meta.get("ops_threshold", SPACES_DGRID_OPS_AUTO_AABB)
+        _scope = "Hosted demo" if _is_spaces_deployment() else "Local install"
         if _aabb_meta.get("reason") == "work":
             _why = (
-                f"grid×atoms work **{_ops / 1e9:.1f}×10⁹** exceeds demo threshold "
+                f"grid×atoms work **{_ops / 1e9:.1f}×10⁹** exceeds threshold "
                 f"**{_ops_thr / 1e9:.0f}×10⁹**"
             )
         else:
@@ -1864,19 +1926,23 @@ def main() -> None:
                 f"estimated Rust grid RAM **~{_est_mib:.0f} MiB** exceeds budget **~{_bud_mib:.0f} MiB**"
             )
         st.info(
-            f"Hosted demo: {_why} "
+            f"{_scope}: auto-switched to **Python AABB (freud)** — {_why} "
             f"({len(atoms):,} atoms, {_aabb_meta['n_grid']:,} grid points {_nx}×{_ny}×{_nz} "
-            f"at {spacing:g} Å). Using the faster approximate **Python AABB (freud)** grid. "
-            "Uncheck below to keep the Rust exact grid."
+            f"at {spacing:g} Å). Uncheck below to force the Rust exact grid."
         )
 
+    _aabb_help_budget_mib = (
+        SPACES_DGRID_RAM_BUDGET_BYTES // (1024 * 1024)
+        if _is_spaces_deployment()
+        else LOCAL_DGRID_RAM_BUDGET_BYTES // (1024 * 1024)
+    )
     use_aabb_method = st.checkbox(
         "Use Python AABB (CPU) method for distance grid",
         key="use_aabb_method",
         help="Use the CPU-based AABB (Axis-Aligned Bounding Box) method with Freud library instead of Rust exact method. "
-             "On the hosted demo this is selected automatically when the Rust f32 grid alone would exceed "
-             f"~{SPACES_DGRID_RAM_BUDGET_BYTES // (1024 * 1024)} MiB, or when grid points × atoms exceeds "
-             f"{SPACES_DGRID_OPS_AUTO_AABB / 1e9:.0f}×10⁹ (brute-force work, not RAM).",
+             "Selected automatically when the Rust f32 grid alone would exceed "
+             f"~{_aabb_help_budget_mib} MiB, or when grid points × atoms exceeds "
+             f"{_dgrid_ops_auto_aabb_threshold() / 1e9:.0f}×10⁹ (brute-force work, not RAM).",
     )
 
     block_size = 50000  # Default block size for AABB method
@@ -2387,16 +2453,23 @@ def main() -> None:
                 st.toast("Starting your analysis…", icon="⚡")
             st.rerun()
         else:
-            # Local deployment — compute directly
-            try:
-                result = _make_compute_fn()()
-            except RuntimeError as e:
-                st.error(f"Compute failed: {e}")
-                return
-            _RESULT_CACHE[results_key] = result
-            st.session_state["_compute_progress"] = _StreamingProgress()
-            st.session_state["_compute_progress"].result = result
-            st.session_state["_compute_progress"].done = True
+            # Local deployment — background thread + progress polling (preserves logs)
+            _min_box = min_box_thickness
+            progress = _start_compute_thread(
+                atoms,
+                spacing=spacing,
+                mask_thickness=mask_thickness,
+                h_value=h_value,
+                min_distance=min_distance,
+                threshold_abs=threshold_abs,
+                extra_padding=extra_padding,
+                watershed_backend=watershed_backend,
+                use_aabb_method=use_aabb_method,
+                block_size=block_size,
+                min_box_thickness_enabled=min_box_thickness_enabled,
+                min_box_thickness=_min_box,
+            )
+            st.session_state["_compute_progress"] = progress
             st.rerun()
     # Queue-based compute polling (Spaces) or legacy progress (local)
     job_id = st.session_state.get("_compute_job_id")
@@ -2563,6 +2636,7 @@ def main() -> None:
                 "watershed_backend": str(watershed_backend),
             }
             st.session_state["analysis_key"] = results_key
+            _RESULT_CACHE[results_key] = results
             pld_cache = st.session_state.setdefault("pld_cache", {})
             pld_cache.pop(results_key, None)
 

@@ -42,3 +42,21 @@ def test_mil101_like_uses_aabb_at_fine_spacing():
     use_aabb, meta = spaces_should_auto_aabb_dgrid(atoms, 0.4)
     assert use_aabb
     assert meta.get("reason") == "work"
+
+def test_local_budget_constant_is_16_gib():
+    from mgrcli.interactive_app import LOCAL_DGRID_RAM_BUDGET_BYTES
+
+    assert LOCAL_DGRID_RAM_BUDGET_BYTES == int(16 * 1024**3)
+
+
+def test_zif20_like_stays_on_rust_with_local_budget():
+    from mgrcli.interactive_app import LOCAL_DGRID_RAM_BUDGET_BYTES, spaces_should_auto_aabb_dgrid
+
+    atoms = _cubic_atoms(4800, 45.0)
+    for spacing in (0.5, 0.4):
+        use_aabb, meta = spaces_should_auto_aabb_dgrid(
+            atoms, spacing, ram_budget_bytes=LOCAL_DGRID_RAM_BUDGET_BYTES
+        )
+        assert not use_aabb, meta
+        assert meta["budget_bytes"] == LOCAL_DGRID_RAM_BUDGET_BYTES
+
