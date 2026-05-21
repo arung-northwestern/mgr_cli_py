@@ -35,12 +35,8 @@ def _spaces_large_cif_slow_ase_message(path: Path) -> str:
 
 
 def _use_fast_cif() -> bool:
-    if os.environ.get("MGR_FORCE_LOCAL") == "1":
-        return os.environ.get("MGR_FAST_CIF", "0") == "1"
-    deployment = (os.environ.get("MGR_DEPLOYMENT") or "").strip().lower()
-    if deployment == "spaces":
-        return os.environ.get("MGR_FAST_CIF", "1") != "0"
-    return os.environ.get("MGR_FAST_CIF", "0") == "1"
+    # Default: Rust parser everywhere (Spaces and local). Set MGR_FAST_CIF=0 for ASE-only.
+    return os.environ.get("MGR_FAST_CIF", "1") != "0"
 
 
 def read_cif_to_ase(
