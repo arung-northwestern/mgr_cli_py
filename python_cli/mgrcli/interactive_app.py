@@ -1708,8 +1708,16 @@ def main() -> None:
     **Note:** If you upload a CIF file, it will be used instead of the selected sample material below.
     """)
     _upload_key = int(st.session_state.get("widget_reset_generation", 0))
+    _upload_help = (
+        f"Maximum {SPACES_MAX_UPLOAD_BYTES // (1024 * 1024)} MB per CIF on the hosted demo."
+        if _is_spaces_deployment()
+        else None
+    )
     uploaded_file = st.file_uploader(
-        "Upload CIF file", type=["cif"], key=f"single_cif_upload_{_upload_key}"
+        "Upload CIF file",
+        type=["cif"],
+        key=f"single_cif_upload_{_upload_key}",
+        help=_upload_help,
     )
 
     atoms = None

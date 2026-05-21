@@ -3,3 +3,5 @@
 # See: https://huggingface.co/docs/hub/spaces-cookie-limitations
 [server]
 enableXsrfProtection = false
+# Match SPACES_MAX_UPLOAD_BYTES in interactive_app.py (value is megabytes).
+maxUploadSize = 1
