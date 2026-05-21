@@ -116,11 +116,13 @@ SPACES_MAX_EXTRA_PADDING = 10.0
 SPACES_MAX_MIN_BOX_THICKNESS = 12.0
 SPACES_MIN_SECONDS_BETWEEN_RUNS = 15.0
 SPACES_MAX_ATOMS = 5000
-# Rust exact dgrid (Rayon): peak working set ≈ n_grid × n_atoms × 3 × float_bytes
-# with n_threads workers each handling ~n_grid/n_threads points (8 ≈ HF CPU basic).
+# Rust exact dgrid (Rayon) actually allocates one f32 per grid point (+ small atom buffers).
+# Do not use n_grid × n_atoms as a RAM estimate — that is brute-force *work*, not memory.
 SPACES_RAYON_THREADS = 8
-SPACES_DGRID_FLOAT_BYTES = 4  # f32 output; coordinate model uses same width
-SPACES_DGRID_RAM_BUDGET_BYTES = int(1.5 * 1024**3)  # auto-AABB when estimate exceeds ~1.5 GiB
+SPACES_DGRID_FLOAT_BYTES = 4
+SPACES_DGRID_RAM_BUDGET_BYTES = int(512 * 1024**2)  # auto-AABB if output grid alone is huge
+# Auto-AABB when n_grid × n_atoms exceeds this (runtime); ZIF-20 @0.4 Å ≈ 7e9 stays on Rust.
+SPACES_DGRID_OPS_AUTO_AABB = 10_000_000_000
 FEEDBACK_FORM_URL = os.environ.get("MGR_FEEDBACK_URL", "#")
 
 
@@ -138,41 +140,49 @@ def estimate_rust_dgrid_memory_bytes(
     n_atoms: int,
     spacing: float,
     cell_lengths_abc: Tuple[float, float, float],
-    *,
-    n_threads: int = SPACES_RAYON_THREADS,
-    bytes_per_coord: int = SPACES_DGRID_FLOAT_BYTES,
 ) -> Tuple[int, int, Tuple[int, int, int]]:
-    """Estimate Rust exact dgrid RAM (working + output).
+    """Estimate Rust exact dgrid peak RAM (not CPU work).
 
-    Working set model (per hosted demo policy): ``n_threads`` Rayon workers, each
-    touching ~``n_grid / n_threads`` grid points and all ``n_atoms`` per point →
-    peak ``n_grid × n_atoms × 3 × bytes_per_coord``. Output grid is ``n_grid × 4`` f32.
+    ``mgrcli_rust.dgrid_from_atoms`` builds a single ``Vec<f32>`` of length ``n_grid``
+    plus modest atom inputs — it does *not* materialize an ``n_grid × n_atoms`` array.
 
-    Returns (total_bytes, n_grid_points, (nx, ny, nz)).
+    Returns (estimated_bytes, n_grid_points, (nx, ny, nz)).
     """
     nx, ny, nz = _dgrid_shape_from_cell_lengths(cell_lengths_abc, spacing)
     n_grid = nx * ny * nz
     n_atoms = max(int(n_atoms), 0)
-    # n_threads is documented for parity with HF; peak equals n_grid * n_atoms * 3 * b.
-    _ = n_threads
-    working = n_grid * n_atoms * 3 * int(bytes_per_coord)
-    output = n_grid * 4
-    return working + output, n_grid, (nx, ny, nz)
+    output_bytes = n_grid * SPACES_DGRID_FLOAT_BYTES
+    input_bytes = n_atoms * 32  # fractional coords + radii (order-of-magnitude)
+    # Rayon ``collect`` may briefly hold both partial and final buffers.
+    estimated = int((output_bytes + input_bytes) * 2)
+    return estimated, n_grid, (nx, ny, nz)
 
 
 def spaces_should_auto_aabb_dgrid(atoms, spacing: float) -> Tuple[bool, Dict[str, Any]]:
     """Whether hosted demo should default to freud AABB dgrid instead of Rust exact."""
     lengths = tuple(float(x) for x in atoms.cell.cellpar()[:3])
-    total_b, n_grid, shape = estimate_rust_dgrid_memory_bytes(len(atoms), spacing, lengths)
-    use_aabb = total_b > SPACES_DGRID_RAM_BUDGET_BYTES
+    memory_b, n_grid, shape = estimate_rust_dgrid_memory_bytes(len(atoms), spacing, lengths)
+    ops = n_grid * len(atoms)
+    reason = None
+    if memory_b > SPACES_DGRID_RAM_BUDGET_BYTES:
+        use_aabb = True
+        reason = "memory"
+    elif ops > SPACES_DGRID_OPS_AUTO_AABB:
+        use_aabb = True
+        reason = "work"
+    else:
+        use_aabb = False
     return use_aabb, {
         "n_atoms": len(atoms),
         "spacing": float(spacing),
         "cell_lengths": lengths,
         "grid_shape": shape,
         "n_grid": n_grid,
-        "estimated_bytes": total_b,
+        "estimated_bytes": memory_b,
         "budget_bytes": SPACES_DGRID_RAM_BUDGET_BYTES,
+        "ops": ops,
+        "ops_threshold": SPACES_DGRID_OPS_AUTO_AABB,
+        "reason": reason,
     }
 _SPACES_COMPUTE_LOCK = Lock()
 
@@ -1842,21 +1852,31 @@ def main() -> None:
         _nx, _ny, _nz = _aabb_meta["grid_shape"]
         _est_mib = _aabb_meta["estimated_bytes"] / (1024 * 1024)
         _bud_mib = SPACES_DGRID_RAM_BUDGET_BYTES / (1024 * 1024)
+        _ops = _aabb_meta.get("ops", 0)
+        _ops_thr = _aabb_meta.get("ops_threshold", SPACES_DGRID_OPS_AUTO_AABB)
+        if _aabb_meta.get("reason") == "work":
+            _why = (
+                f"grid×atoms work **{_ops / 1e9:.1f}×10⁹** exceeds demo threshold "
+                f"**{_ops_thr / 1e9:.0f}×10⁹**"
+            )
+        else:
+            _why = (
+                f"estimated Rust grid RAM **~{_est_mib:.0f} MiB** exceeds budget **~{_bud_mib:.0f} MiB**"
+            )
         st.info(
-            f"Hosted demo: estimated Rust exact distance grid ~**{_est_mib:.0f} MiB** "
-            f"({len(atoms):,} atoms × {_aabb_meta['n_grid']:,} grid points "
-            f"{_nx}×{_ny}×{_nz} at {spacing:g} Å; budget ~{_bud_mib:.0f} MiB). "
-            "Using the faster approximate **Python AABB (freud)** grid. "
-            "Uncheck below to force the Rust exact grid (may be slow or run out of memory)."
+            f"Hosted demo: {_why} "
+            f"({len(atoms):,} atoms, {_aabb_meta['n_grid']:,} grid points {_nx}×{_ny}×{_nz} "
+            f"at {spacing:g} Å). Using the faster approximate **Python AABB (freud)** grid. "
+            "Uncheck below to keep the Rust exact grid."
         )
 
     use_aabb_method = st.checkbox(
         "Use Python AABB (CPU) method for distance grid",
         key="use_aabb_method",
         help="Use the CPU-based AABB (Axis-Aligned Bounding Box) method with Freud library instead of Rust exact method. "
-             "On the hosted demo this is selected automatically when the estimated Rust grid memory "
-             f"(≈ n_atoms × n_grid × 3 × {SPACES_DGRID_FLOAT_BYTES} B, plus the f32 grid) exceeds "
-             f"~{SPACES_DGRID_RAM_BUDGET_BYTES // (1024 * 1024)} MiB for {SPACES_RAYON_THREADS} parallel workers.",
+             "On the hosted demo this is selected automatically when the Rust f32 grid alone would exceed "
+             f"~{SPACES_DGRID_RAM_BUDGET_BYTES // (1024 * 1024)} MiB, or when grid points × atoms exceeds "
+             f"{SPACES_DGRID_OPS_AUTO_AABB / 1e9:.0f}×10⁹ (brute-force work, not RAM).",
     )
 
     block_size = 50000  # Default block size for AABB method
