@@ -4134,10 +4134,15 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         : (Array.isArray(c) && c.length >= 3
             ? new THREE.Color(c[0], c[1], c[2])
             : (typeof c === "number" ? new THREE.Color(c) : new THREE.Color(0xff69b4)));
+      const opacity = style.opacity !== undefined ? style.opacity : 1.0;
+      const isOpaque = opacity >= 0.999;
       const mat = new THREE.MeshPhongMaterial({
         color: col,
         shininess: style.shininess !== undefined ? style.shininess : 10,
         specular: style.specular !== undefined ? style.specular : 0x151515,
+        transparent: !isOpaque,
+        opacity: opacity,
+        depthWrite: isOpaque,
       });
       const mesh = new THREE.InstancedMesh(geo, mat, n);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -4181,10 +4186,15 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const geo = new THREE.CylinderGeometry(1.0, 1.0, 1.0, 10);
       const hasColors = colors.length >= 3;
       const col = hasColors ? new THREE.Color(1, 1, 1) : new THREE.Color(0x808080);
+      const opacity = style.opacity !== undefined ? style.opacity : 1.0;
+      const isOpaque = opacity >= 0.999;
       const mat = new THREE.MeshPhongMaterial({
         color: col,
         shininess: style.shininess !== undefined ? style.shininess : 10,
         specular: style.specular !== undefined ? style.specular : 0x151515,
+        transparent: !isOpaque,
+        opacity: opacity,
+        depthWrite: isOpaque,
       });
       const mesh = new THREE.InstancedMesh(geo, mat, n);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -4717,7 +4727,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     //   Keep local maxima in the central cell with raw surface (not in pore-graph copy).
     //   Original cell stays at center and is controlled independently by showCell.
     const _explodeGroups = [
-      { ids: ["framework", "framework_stick", "framework_spacefill", "framework_atoms", "framework_bonds", "aromatic_rings", "aromatic_highlights", "aromatic_highlights_hex", "aromatic_highlights_pent", "cell_framework"], x: -1, y: 0 },
+      { ids: ["framework", "framework_stick", "framework_spacefill", "framework_atoms", "framework_bonds", "framework_stick_atoms", "framework_stick_bonds", "aromatic_rings", "aromatic_highlights", "aromatic_highlights_hex", "aromatic_highlights_pent", "cell_framework"], x: -1, y: 0 },
       { ids: ["windows_internal", "connections_internal", "connections_internal_nodes",
               "maxima_outside", "windows_periodic", "connections_periodic", "connections_periodic_nodes",
               "cell_copy"], x: 1, y: 0 },
@@ -4725,6 +4735,8 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       { ids: ["surface_pbc", "surface_regions_pbc", "maxima_pbc", "cell_pbc"], x: 0, y: 1 },
       { ids: ["surface_pocket", "surface_regions_cluster", "cell_pocket"], x: 0, y: -1 },
     ];
+
+    const _explodeOrig = {};
 
     // Create unit-cell copies for exploded view — each group gets its own copy
     let cellCopy = null;
@@ -4795,12 +4807,12 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           const targetIds = [trace.id];
           // If this is any framework slider, also update linked traces
           if (trace.id === "framework" || trace.id === "framework_atoms" || trace.id === "framework_bonds") {
-            targetIds.push("framework_atoms", "framework_bonds", "aromatic_rings", "aromatic_highlights", "aromatic_highlights_hex", "aromatic_highlights_pent");
+            targetIds.push("framework_atoms", "framework_bonds", "framework_stick_atoms", "framework_stick_bonds", "aromatic_rings", "aromatic_highlights", "aromatic_highlights_hex", "aromatic_highlights_pent");
           }
           targetIds.forEach(tid => {
             const obj = objectsById[tid];
             if (obj && obj.material) {
-              var isFw = tid === "framework" || tid === "framework_stick" || tid === "framework_spacefill" || tid === "framework_atoms" || tid === "framework_bonds" || tid === "aromatic_rings" || tid === "aromatic_highlights" || tid === "aromatic_highlights_hex" || tid === "aromatic_highlights_pent";
+              var isFw = tid === "framework" || tid === "framework_stick" || tid === "framework_spacefill" || tid === "framework_atoms" || tid === "framework_bonds" || tid === "framework_stick_atoms" || tid === "framework_stick_bonds" || tid === "aromatic_rings" || tid === "aromatic_highlights" || tid === "aromatic_highlights_hex" || tid === "aromatic_highlights_pent";
               var hiddenByOpacity = val <= 0.001;
               if (obj.userData && obj.userData.originalCastShadow === undefined) {
                 obj.userData.originalCastShadow = obj.castShadow;
@@ -4815,7 +4827,8 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
                 const scaledOpacity = val * baseOp;
                 obj.material.opacity = scaledOpacity;
                 obj.material.transparent = scaledOpacity < 1.0;
-                obj.material.depthWrite = scaledOpacity >= 1.0;
+                // Keep depth writes on so bonds stay occluded by atoms even when translucent.
+                obj.material.depthWrite = true;
                 obj.material.depthTest = true;
                 if (obj.userData && obj.userData.originalSide !== undefined) {
                   obj.material.side = obj.userData.originalSide;
@@ -4849,7 +4862,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
             const active = objectsById[activeId];
             if (active) active.visible = showFramework.checked && val > 0.001;
             // Also handle scatter traces
-            ["framework_atoms", "framework_bonds"].forEach(function(sid) {
+            ["framework_atoms", "framework_bonds", "framework_stick_atoms", "framework_stick_bonds"].forEach(function(sid) {
               const sobj = objectsById[sid];
               if (sobj) sobj.visible = showFramework.checked && val > 0.001;
             });
@@ -4882,7 +4895,8 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
             const sv = v * b;
             o.material.opacity = sv;
             o.material.transparent = sv < 1.0;
-            o.material.depthWrite = sv >= 1.0;
+            // Keep depth writes on so framework pieces stay seated when translucent.
+            o.material.depthWrite = true;
             o.material.depthTest = true;
             if (o.userData.originalSide !== undefined) o.material.side = o.userData.originalSide;
             o.visible = v > 0.001;
@@ -5009,6 +5023,8 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         if (o) o.visible = showFramework.checked;
       });
       updateFrameworkCellVisibility();
+      // Re-apply exploded offsets so newly active representations land in the right cell.
+      applyExplodeOffsets();
     }
     showFramework.addEventListener("change", updateFrameworkVisibility);
     reprSelect.addEventListener("change", updateFrameworkVisibility);
@@ -5072,7 +5088,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     function updateFrameworkCellVisibility() {
       const exploded = parseFloat(explodeSlider.value) > 0;
       if (cellFramework) {
-        const ids = ["framework", "framework_stick", "framework_spacefill", "framework_atoms", "framework_bonds"];
+        const ids = ["framework", "framework_stick", "framework_spacefill", "framework_atoms", "framework_bonds", "framework_stick_atoms", "framework_stick_bonds"];
         const anyVisible = ids.some(id => { const obj = objectsById[id]; return obj && obj.visible; });
         cellFramework.visible = exploded && anyVisible;
       }
@@ -5235,8 +5251,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       dirFill.intensity = (_lightOrig.fill !== undefined ? _lightOrig.fill : 0.32) * mult;
     });
 
-    const _explodeOrig = {};
-    explodeSlider.addEventListener("input", () => {
+    function applyExplodeOffsets() {
       const dist = parseFloat(explodeSlider.value);
       const spacing = dist * 8.0;
       _explodeGroups.forEach(function(group) {
@@ -5255,7 +5270,9 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       updateFrameworkCellVisibility();
       updateCellCopyVisibility();
       updateSurfaceCellVisibility();
-    });
+    }
+
+    explodeSlider.addEventListener("input", applyExplodeOffsets);
 
     bgPicker.addEventListener("input", () => {
       updateSceneBackground();
