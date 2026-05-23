@@ -3679,39 +3679,107 @@ def add_clustering_to_rag_geometry_js(
     # Determine whether to use pocket-PSD vectors instead of geometry distances
     _use_pocket_psd = (psd_source == "pocket_psd")
     _psd_vectors = []  # one vector per group (pbc) or per node (non-pbc)
+    _psd_bin_centers = []  # bin_centers corresponding to each histogram vector
     _psd_key = "psd_y_pbc" if use_pbc else "psd_y"
+    _psd_x_key = "psd_x_pbc" if use_pbc else "psd_x"
 
     if _use_pocket_psd:
-        # Collect per-group PSD histogram vectors from rag nodes
         if use_pbc:
             for group in pbc_groups:
-                # Pick first node in group that has the PSD vector
                 vec = None
+                bcs = None
                 for g in group:
                     v = rag.nodes[g].get(_psd_key)
+                    b = rag.nodes[g].get(_psd_x_key)
                     if v is not None:
                         vec = np.asarray(v, dtype=float).ravel()
+                        bcs = np.asarray(b, dtype=float).ravel() if b is not None else None
                         break
-                if vec is not None:
+                if vec is not None and bcs is not None:
                     _psd_vectors.append(vec)
+                    _psd_bin_centers.append(bcs)
                 else:
-                    # Fallback: no PSD vector for this group
                     _use_pocket_psd = False
                     break
         else:
             for node in rag.nodes:
                 v = rag.nodes[node].get(_psd_key)
-                if v is not None:
+                b = rag.nodes[node].get(_psd_x_key)
+                if v is not None and b is not None:
                     _psd_vectors.append(np.asarray(v, dtype=float).ravel())
+                    _psd_bin_centers.append(np.asarray(b, dtype=float).ravel())
                 else:
                     _use_pocket_psd = False
                     break
 
     if not _use_pocket_psd:
         _psd_vectors = []
+        _psd_bin_centers = []
 
+    # Material-level tolerances for peak-first clustering
+    if _use_pocket_psd and _psd_bin_centers:
+        _bw = float(abs(_psd_bin_centers[0][1] - _psd_bin_centers[0][0]))
+        tau_peak = max(2 * _bw, 0.35)
+        tau_med = max(2 * _bw, 0.40)
+    else:
+        tau_peak = 0.50
+        tau_med = 0.50
 
-    # * now copute the js graph
+    # ── Peak-first pocket clustering helper ──
+    def _peak_first_cluster(hists, bin_centers_list, groups_local):
+        """Cluster pockets by dominant PSD peak (adjacent-link rule)."""
+        n = len(hists)
+        if n == 0:
+            return [], []
+        if n == 1:
+            return [set(groups_local[0])], [{"peak_spread": 0, "median_check": "PASS", "pockets": list(groups_local[0])}]
+
+        peak_ds = []
+        median_ds = []
+        for i in range(n):
+            h, bc = hists[i], bin_centers_list[i]
+            mi = int(np.argmax(h))
+            peak_ds.append(float(bc[mi]))
+            cum, total = 0.0, h.sum()
+            md = float(bc[-1])
+            for j in range(len(h)):
+                cum += h[j]
+                if cum >= 0.5 * total:
+                    md = float(bc[j])
+                    break
+            median_ds.append(md)
+
+        order = sorted(range(n), key=lambda i: peak_ds[i])
+        peak_groups = []
+        cur = [order[0]]
+        for k in range(1, len(order)):
+            if abs(peak_ds[order[k]] - peak_ds[cur[-1]]) <= tau_peak:
+                cur.append(order[k])
+            else:
+                peak_groups.append(cur)
+                cur = [order[k]]
+        peak_groups.append(cur)
+
+        diags = []
+        for grp in peak_groups:
+            meds = [median_ds[i] for i in grp]
+            pks = [peak_ds[i] for i in grp]
+            ms = max(meds) - min(meds)
+            diags.append({
+                "peak_range": (min(pks), max(pks)),
+                "peak_spread": max(pks) - min(pks),
+                "median_spread": ms,
+                "median_check": "PASS" if ms <= tau_med else "REVIEW",
+                "pockets": [int(p) for idx in grp for p in groups_local[idx]],
+            })
+
+        eg = [set() for _ in peak_groups]
+        for gi, grp in enumerate(peak_groups):
+            for idx in grp:
+                eg[gi].update(groups_local[idx])
+        return eg, diags
+
+    # * now compute the clustering
     if use_pbc:
         # if pbc_groups is None:
         #     raise ValueError('pbc_groups must be provided if use_pbc=True')
@@ -3730,48 +3798,35 @@ def add_clustering_to_rag_geometry_js(
         iterlist = list(itertools.combinations(range(len(pbc_groups)), 2))
 
         if _use_pocket_psd:
-            js_dist = [
-                _safe_js_vectors(_psd_vectors[t[0]], _psd_vectors[t[1]])
-                for t in tqdm(iterlist, desc="comp. PSD dist. for clustering")
-            ]
+            # Peak-first clustering (replaces JS for pocketwise PSDs)
+            energy_groups, peak_diags = _peak_first_cluster(
+                _psd_vectors, _psd_bin_centers, pbc_groups
+            )
+            print(f"Peak-first clustering: {len(energy_groups)} types, diagnostics: {peak_diags}")
+            G.graph['peak_clustering_diagnostics'] = peak_diags
         else:
+            js_graph = nx.Graph()
+            js_graph.add_nodes_from(range(len(pbc_groups)))
+            iterlist = list(itertools.combinations(range(len(pbc_groups)), 2))
             js_dist = [
                 get_js_dist_geom(t[0], t[1])
                 for t in tqdm(iterlist, desc="comp. dist. for clustering")
             ]
-        # for t in iterlist:
-        #     js_dist.append(delayed(get_js_dist_geom)(t[0], t[1]))
-        # js_dist = dask.compute(js_dist)
-        print(js_dist)
-        # js_dist = db.from_sequence(iterlist).map(get_js_dist_geom).compute()
-        # * print the the JS distances between regions
-        # print(js_dist)
-        # * check wher teh JS distance is less than the threshold and add edges from iterlist
-        add_these_edges = [
-            iterlist[k] for k in range(len(js_dist)) if js_dist[k] < js_threshold
-        ]
-        # print('adding these edges: ', add_these_edges)
-        js_graph.add_edges_from(add_these_edges)
-        # for k, (i, j) in enumerate(iterlist):
-        #     # js = get_js_dist(i, j)
-        #     js = js_dist[k]
-        #     print(
-        #         f'Jensen-Shannon distance for {i}:{pbc_groups[i]} and {j}:{pbc_groups[j]} is {js}')
-        #     if js < js_threshold:
-        #         js_graph.add_edge(i, j)
-        conn = list(nx.connected_components(js_graph))
-
-        # print('connected components are: ', conn)
-        energy_groups = [
-            set(itertools.chain.from_iterable(np.array(pbc_groups)[list(c)]))
-            for c in conn
-        ]
+            print(js_dist)
+            add_these_edges = [
+                iterlist[k] for k in range(len(js_dist)) if js_dist[k] < js_threshold
+            ]
+            js_graph.add_edges_from(add_these_edges)
+            conn = list(nx.connected_components(js_graph))
+            energy_groups = [
+                set(itertools.chain.from_iterable(np.array(pbc_groups)[list(c)]))
+                for c in conn
+            ]
 
         # * add the cluster info to the rag
         for i in G.nodes():
-            G.nodes[i]["cluster_geom_pbc"] = str(
-                np.where([i in g for g in energy_groups])[0][0]
-            )
+            matches = np.where([i in g for g in energy_groups])[0]
+            G.nodes[i]["cluster_geom_pbc"] = str(matches[0]) if len(matches) > 0 else "-1"
     elif use_pbc == False:
         # * we will be working with the actual nodes (regions)
         # energies_list = [get_energies_for_group2(
@@ -3790,33 +3845,35 @@ def add_clustering_to_rag_geometry_js(
         iterlist = list(itertools.combinations(range(len(G.nodes())), 2))
 
         if _use_pocket_psd:
-            js_dist = [
-                _safe_js_vectors(_psd_vectors[t[0]], _psd_vectors[t[1]])
-                for t in tqdm(iterlist, desc="comp. PSD dist. for clustering")
-            ]
+            # Peak-first clustering for non-PBC (each node is its own "group")
+            node_list = list(G.nodes())
+            node_groups = [{n} for n in node_list]
+            energy_groups_nopbc, peak_diags_nopbc = _peak_first_cluster(
+                _psd_vectors, _psd_bin_centers, node_groups
+            )
+            print(f"Peak-first clustering (non-pbc): {len(energy_groups_nopbc)} types")
+            G.graph['peak_clustering_diagnostics'] = peak_diags_nopbc
+            for i in G.nodes():
+                G.nodes[i]["cluster_geom_nopbc"] = str(
+                    np.where([i in g for g in energy_groups_nopbc])[0][0]
+                )
         else:
+            js_graph = nx.Graph()
+            js_graph.add_nodes_from(range(len(G.nodes())))
+            iterlist = list(itertools.combinations(range(len(G.nodes())), 2))
             js_dist = [
                 get_js_dist_geom(t[0], t[1])
                 for t in tqdm(iterlist, desc="comp. dist. for clustering")
             ]
-        add_these_edges = [
-            iterlist[k] for k in range(len(iterlist)) if js_dist[k] < js_threshold
-        ]
-        # print('adding these edges: ', add_these_edges)
-
-        js_graph.add_edges_from(add_these_edges)
-
-        # for i, j in itertools.combinations(len(rag.nodes()), 2):
-        #     js = get_js_dist(i,j)
-        #     if js < js_threshold:
-        #         js_graph.add_edge(i, j)
-        conn = list(nx.connected_components(js_graph))
-        # print('connected components are: ', conn)
-        # * add the clustering info  to the rag
-        for i in G.nodes():
-            G.nodes[i]["cluster_geom_nopbc"] = str(
-                np.where([i in g for g in conn])[0][0]
-            )
+            add_these_edges = [
+                iterlist[k] for k in range(len(iterlist)) if js_dist[k] < js_threshold
+            ]
+            js_graph.add_edges_from(add_these_edges)
+            conn = list(nx.connected_components(js_graph))
+            for i in G.nodes():
+                G.nodes[i]["cluster_geom_nopbc"] = str(
+                    np.where([i in g for g in conn])[0][0]
+                )
 
     return G
 
