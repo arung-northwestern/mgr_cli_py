@@ -3399,7 +3399,7 @@ def add_centroids_to_rag_with_pbc(rag, props, pbc_groups, ase_atoms, shape):
     return G
 
 
-def add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, ase_atoms, shape):
+def add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, ase_atoms, shape, pocket_psds=None):
     """
     > It takes a rag, a list of properties, a list of pbc groups, a list of bins, an ase atoms object
     and a shape and returns a region adjacency graph with pbc properties added to it.
@@ -3419,6 +3419,11 @@ def add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, ase_atoms, shape):
     :param bins: the bins for the histogram
     :param ase_atoms: ASE atoms object
     :param shape: shape of the image
+    :param pocket_psds: optional dict of precomputed pocketwise PSDs from the Rust sampler.
+        Keys are region IDs; values are dicts with 'hist' and 'bin_centers' arrays.
+        When provided, PSD histograms are taken from this dict instead of centroid-distance
+        histograms. If a group has no representative region in pocket_psds, it falls back
+        to the legacy centroid-distance histogram.
     :return: The graph with the pbc properties added to the nodes.
     """
 
@@ -3450,21 +3455,43 @@ def add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, ase_atoms, shape):
     # shape = regions.shape
     G = copy.deepcopy(rag)
     prop_labels = np.array([prop["label"] for prop in props])
+
+    # Tag the PSD source on the graph metadata so downstream consumers can inspect it.
+    if pocket_psds is not None:
+        G.graph["psd_source"] = "pocketwise_rust"
+    else:
+        G.graph["psd_source"] = "centroid_distance"
+
     for group in pbc_groups:
         prop_indices = [np.where(prop_labels == g)[0][0] for g in group]
         # print(group, prop_indices)
+
+        # Try to find a representative region in this group that has precomputed pocket PSD data
+        _pocket_psd_representative = None
+        if pocket_psds is not None:
+            for g in group:
+                if g in pocket_psds:
+                    _pocket_psd_representative = g
+                    break
+
         if len(group) > 1:
             # * fractional coordinates of all the points present in this group
             coords = np.vstack([props[pi]["coords"] for pi in prop_indices]) / shape
             # print(coords.shape)
             # * pbc centroid of the group in fractional coordinates
             centroid = stats.circmean(coords, axis=0, low=0, high=1)
-            # * distances for the group in cartesian units
-            distances = get_pbc_distances(coords, centroid, ase_atoms)
-            # * histogram of the distances and bin centers
-            psd_y_pbc, bine = np.histogram(distances, bins=bins, density=True)
-            psd_x_pbc = (bine[1:] + bine[:-1]) / 2
-            # * Now update the property of all the nodes in the graph with the pbc psd and cetnroid properties
+
+            if _pocket_psd_representative is not None:
+                # Use precomputed pocketwise PSD for this group
+                psd_y_pbc = pocket_psds[_pocket_psd_representative]["hist"].astype(float)
+                psd_x_pbc = pocket_psds[_pocket_psd_representative]["bin_centers"].astype(float)
+            else:
+                # Legacy: centroid-distance histogram
+                distances = get_pbc_distances(coords, centroid, ase_atoms)
+                psd_y_pbc, bine = np.histogram(distances, bins=bins, density=True)
+                psd_x_pbc = (bine[1:] + bine[:-1]) / 2
+
+            # * Now update the property of all the nodes in the graph with the pbc psd and centroid properties
             for i, g in enumerate(group):
                 G.nodes[props[prop_indices[i]]["label"]]["centroid_pbc"] = (
                     find_coord_from_indices(
@@ -3479,12 +3506,17 @@ def add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, ase_atoms, shape):
             # * get coordinates and centroids
             coords = props[pi]["coords"] / shape
             centroid = np.mean(coords, axis=0)
-            # * histogram of the distances and bin centers
-            distances = get_pbc_distances(coords, centroid, ase_atoms)
-            psd_y_pbc, bine = np.histogram(distances, bins=bins, density=True)
-            psd_x_pbc = (bine[1:] + bine[:-1]) / 2
 
-            # * Now update the property of all the nodes in the graph with the pbc psd and cetnroid properties
+            if _pocket_psd_representative is not None:
+                psd_y_pbc = pocket_psds[_pocket_psd_representative]["hist"].astype(float)
+                psd_x_pbc = pocket_psds[_pocket_psd_representative]["bin_centers"].astype(float)
+            else:
+                # Legacy: centroid-distance histogram
+                distances = get_pbc_distances(coords, centroid, ase_atoms)
+                psd_y_pbc, bine = np.histogram(distances, bins=bins, density=True)
+                psd_x_pbc = (bine[1:] + bine[:-1]) / 2
+
+            # * Now update the property of all the nodes in the graph with the pbc psd and centroid properties
             G.nodes[props[pi]["label"]]["centroid_pbc"] = find_coord_from_indices(
                 indices=centroid * shape, ase_atoms=ase_atoms, shape=shape
             )
@@ -3495,7 +3527,8 @@ def add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, ase_atoms, shape):
 
 
 def add_clustering_to_rag_geometry_js(
-    rag, props, pbc_groups, ase_atoms, shape, use_pbc=True, js_threshold=0.15
+    rag, props, pbc_groups, ase_atoms, shape, use_pbc=True, js_threshold=0.15,
+    psd_source="geometry"
 ):
     """
     Adds cluster information to a region adjacency graph (RAG) by calculating the Jensen-Shannon distance between two histograms of distances.
@@ -3508,6 +3541,10 @@ def add_clustering_to_rag_geometry_js(
         shape (tuple): shape of the region
         use_pbc (bool): whether to use PBC or not
         js_threshold (float): the threshold for the Jensen-Shannon distance
+        psd_source (str): "geometry" (legacy, default) uses centroid-distance histograms computed from
+            region coordinates. "pocket_psd" uses the per-group/per-node PSD histogram vectors already
+            attached to rag nodes (psd_y_pbc for pbc mode, psd_y for non-pbc mode). If those vectors
+            are not available, falls back to geometry mode.
 
     Returns:
         networkx.Graph: the RAG with cluster information added under keys 'cluster_geom_pbc' or 'cluster_geom_nopbc' depending on whether 'use_pbc' is True or False
@@ -3555,6 +3592,18 @@ def add_clustering_to_rag_geometry_js(
         d1_hist, bins = np.histogram(d1, bins=bins)
         d2_hist, bins = np.histogram(d2, bins=bins)
         return jensenshannon(d1_hist, d2_hist)
+
+    def _safe_js_vectors(v1, v2):
+        """JS distance between two histogram vectors, robust to NaN/inf/zero."""
+        a = np.asarray(v1, dtype=float).ravel()
+        b = np.asarray(v2, dtype=float).ravel()
+        # Replace NaN/inf with 0
+        a = np.where(np.isfinite(a), a, 0.0)
+        b = np.where(np.isfinite(b), b, 0.0)
+        # If either is all-zero, JS is undefined → return inf (treat as maximally dissimilar)
+        if np.sum(a) == 0 or np.sum(b) == 0:
+            return float("inf")
+        return float(jensenshannon(a, b))
 
     from scipy import stats
     import numpy as np
@@ -3627,6 +3676,41 @@ def add_clustering_to_rag_geometry_js(
             distances = get_pbc_distances(coords, centroid, ase_atoms)
             distances_list.append(distances)
 
+    # Determine whether to use pocket-PSD vectors instead of geometry distances
+    _use_pocket_psd = (psd_source == "pocket_psd")
+    _psd_vectors = []  # one vector per group (pbc) or per node (non-pbc)
+    _psd_key = "psd_y_pbc" if use_pbc else "psd_y"
+
+    if _use_pocket_psd:
+        # Collect per-group PSD histogram vectors from rag nodes
+        if use_pbc:
+            for group in pbc_groups:
+                # Pick first node in group that has the PSD vector
+                vec = None
+                for g in group:
+                    v = rag.nodes[g].get(_psd_key)
+                    if v is not None:
+                        vec = np.asarray(v, dtype=float).ravel()
+                        break
+                if vec is not None:
+                    _psd_vectors.append(vec)
+                else:
+                    # Fallback: no PSD vector for this group
+                    _use_pocket_psd = False
+                    break
+        else:
+            for node in rag.nodes:
+                v = rag.nodes[node].get(_psd_key)
+                if v is not None:
+                    _psd_vectors.append(np.asarray(v, dtype=float).ravel())
+                else:
+                    _use_pocket_psd = False
+                    break
+
+    if not _use_pocket_psd:
+        _psd_vectors = []
+
+
     # * now copute the js graph
     if use_pbc:
         # if pbc_groups is None:
@@ -3645,10 +3729,16 @@ def add_clustering_to_rag_geometry_js(
         # * let's add edges between the pbc groups based on teh JS distance
         iterlist = list(itertools.combinations(range(len(pbc_groups)), 2))
 
-        js_dist = [
-            get_js_dist_geom(t[0], t[1])
-            for t in tqdm(iterlist, desc="comp. dist. for clustering")
-        ]
+        if _use_pocket_psd:
+            js_dist = [
+                _safe_js_vectors(_psd_vectors[t[0]], _psd_vectors[t[1]])
+                for t in tqdm(iterlist, desc="comp. PSD dist. for clustering")
+            ]
+        else:
+            js_dist = [
+                get_js_dist_geom(t[0], t[1])
+                for t in tqdm(iterlist, desc="comp. dist. for clustering")
+            ]
         # for t in iterlist:
         #     js_dist.append(delayed(get_js_dist_geom)(t[0], t[1]))
         # js_dist = dask.compute(js_dist)
@@ -3699,10 +3789,16 @@ def add_clustering_to_rag_geometry_js(
         # * let's add edges between the pbc groups based on teh JS distance
         iterlist = list(itertools.combinations(range(len(G.nodes())), 2))
 
-        js_dist = [
-            get_js_dist_geom(t[0], t[1])
-            for t in tqdm(iterlist, desc="comp. dist. for clustering")
-        ]
+        if _use_pocket_psd:
+            js_dist = [
+                _safe_js_vectors(_psd_vectors[t[0]], _psd_vectors[t[1]])
+                for t in tqdm(iterlist, desc="comp. PSD dist. for clustering")
+            ]
+        else:
+            js_dist = [
+                get_js_dist_geom(t[0], t[1])
+                for t in tqdm(iterlist, desc="comp. dist. for clustering")
+            ]
         add_these_edges = [
             iterlist[k] for k in range(len(iterlist)) if js_dist[k] < js_threshold
         ]

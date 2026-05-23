@@ -814,6 +814,9 @@ def _start_compute_thread(
     watershed_backend: str,
     use_aabb_method: bool,
     block_size: int,
+    dgrid_method: str = "rust_exact",
+    n_neighbors: int = 10,
+    coarse_factor: int = 2,
     min_box_thickness_enabled: bool = False,
     min_box_thickness: float = 6.0,
     progress: Optional[_StreamingProgress] = None,
@@ -821,8 +824,14 @@ def _start_compute_thread(
     if progress is None:
         progress = _StreamingProgress()
 
-    if use_aabb_method:
+    if dgrid_method == "python_aabb":
         progress.set_phase("Distance grid (AABB)")
+    elif dgrid_method == "rust_aabb":
+        progress.set_phase("Distance grid (Rust AABB)")
+    elif dgrid_method == "rust_aabb_interp":
+        progress.set_phase("Distance grid (Rust AABB Interp)")
+    else:
+        progress.set_phase("Distance grid (Rust)")
 
     root_logger = logging.getLogger()
     handler = _BufferingLogHandler(streaming_progress=progress)
@@ -855,7 +864,7 @@ def _start_compute_thread(
                 progress.set_phase("Aromatic rings")
                 compute_aromatic_cycles(w_atoms)
 
-                if use_aabb_method:
+                if dgrid_method == "python_aabb":
                     from mgr.compute import dgrid_from_atoms
 
                     def _aabb_progress(current: int, total: int, label: str):
@@ -868,8 +877,17 @@ def _start_compute_thread(
                         progress_callback=_aabb_progress,
                     )
                     dgrid = dgrid_dask.compute().astype(np.float32)
+                elif dgrid_method == "rust_aabb":
+                    dgrid = compute_dgrid_rust(w_atoms, spacing, method="rust_aabb", n_neighbors=n_neighbors)
+                elif dgrid_method == "rust_aabb_interp":
+                    dgrid = compute_dgrid_rust(
+                        w_atoms,
+                        spacing,
+                        method="rust_aabb_interp",
+                        n_neighbors=n_neighbors,
+                        coarse_factor=coarse_factor,
+                    )
                 else:
-                    progress.set_phase("Distance grid (Rust)")
                     dgrid = compute_dgrid_rust(w_atoms, spacing)
 
                 _results = _run_segmentation(
@@ -1243,9 +1261,12 @@ def _hts_one_material(
     try:
         spacing = float(params.get("spacing", 0.5))
         use_aabb = bool(params.get("use_aabb_method", False))
+        dgrid_method = str(params.get("dgrid_method", "python_aabb" if use_aabb else "rust_exact"))
         block_size = int(params.get("block_size", 50000))
+        n_neighbors = int(params.get("n_neighbors", 10))
+        coarse_factor = int(params.get("coarse_factor", 2))
 
-        if use_aabb:
+        if dgrid_method == "python_aabb" or use_aabb:
             from mgr.compute import dgrid_from_atoms_cpu
             dgrid = dgrid_from_atoms_cpu(atoms, spacing=spacing, block_size=block_size).astype(np.float32)
         else:
@@ -1257,7 +1278,20 @@ def _hts_one_material(
                 if str(_root) not in sys.path:
                     sys.path.insert(0, str(_root))
                 from python_cli.mgrcli.cli import compute_dgrid_rust
-            dgrid = compute_dgrid_rust(atoms, spacing)
+            _method = (
+                "rust_aabb"
+                if dgrid_method == "rust_aabb"
+                else "rust_aabb_interp"
+                if dgrid_method == "rust_aabb_interp"
+                else "exact"
+            )
+            dgrid = compute_dgrid_rust(
+                atoms,
+                spacing,
+                method=_method,
+                n_neighbors=n_neighbors,
+                coarse_factor=coarse_factor,
+            )
 
         mask_thickness = float(params.get("mask_thickness", 0.5))
         h_value = float(params.get("h_value", 0.4))
@@ -1368,11 +1402,30 @@ def _hts_one_material(
                 rag = mgr.add_maxima_to_rag(rag, maxima, maxima_radii, dgrid_r.shape, atoms)
                 props = regionprops(results["regions"])
                 bins = np.linspace(0, 30, 50)
-                rag = mgr.add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, atoms, dgrid_r.shape)
+
+                # Compute pocketwise probe-occupiable PSDs via Rust backend
+                _probe_psd = float(options.get("probe_radius_psd", 1.2))
+                regions_pbc = results.get("regions_pbc", results["regions"])
+                try:
+                    pocket_psds = mgr.compute_psds_pocketwise_rust(
+                        dgrid_r, regions_pbc, atoms,
+                        num_samples_per_region=1000,
+                        bins=bins,
+                        return_fig=False,
+                        probe_center_min_radius=_probe_psd,
+                    )
+                except Exception:
+                    pocket_psds = None
+
+                rag = mgr.add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, atoms, dgrid_r.shape, pocket_psds=pocket_psds)
                 js_threshold = float(options.get("js_threshold", 0.2))
-                rag = mgr.add_clustering_to_rag_geometry_js(rag, props, pbc_groups, atoms, dgrid_r.shape, use_pbc=True, js_threshold=js_threshold)
+                _psd_source = "pocket_psd" if pocket_psds is not None else "geometry"
+                rag = mgr.add_clustering_to_rag_geometry_js(rag, props, pbc_groups, atoms, dgrid_r.shape, use_pbc=True, js_threshold=js_threshold, psd_source=_psd_source)
                 results["regions_cluster"] = mgr.clustering_grid_from_regions(results["regions"], rag, cluster_key="cluster_geom_pbc")
                 results["pocket_types_detected"] = True
+                results["psd_source"] = _psd_source
+                if pocket_psds is not None:
+                    results["probe_radius_psd_used"] = _probe_psd
             except Exception:
                 pass
 
@@ -1888,7 +1941,7 @@ def main() -> None:
             "to keep runtime manageable."
         )
 
-    # Distance grid: auto-enable freud AABB when Rust exact dgrid estimate exceeds RAM/work budget.
+    # Distance grid: auto-enable Rust AABB when Rust exact dgrid estimate exceeds RAM/work budget.
     _aabb_policy_key = (
         f"{st.session_state.get(atoms_source_key_state)}::{float(spacing):.4f}"
     )
@@ -1902,11 +1955,17 @@ def main() -> None:
             spacing,
             ram_budget_bytes=LOCAL_DGRID_RAM_BUDGET_BYTES,
         )
+
+    # Derive default method from auto-switch policy.
+    _auto_default_method = "rust_aabb" if _auto_aabb else "rust_exact"
     if _aabb_policy_key != st.session_state.get("_aabb_policy_key"):
         st.session_state["_aabb_policy_key"] = _aabb_policy_key
-        st.session_state["use_aabb_method"] = _auto_aabb
-    elif "use_aabb_method" not in st.session_state:
-        st.session_state["use_aabb_method"] = _auto_aabb
+        st.session_state["dgrid_method"] = _auto_default_method
+    elif "dgrid_method" not in st.session_state:
+        st.session_state["dgrid_method"] = _auto_default_method
+
+    # Backward-compat: sync legacy use_aabb_method key from current method.
+    st.session_state["use_aabb_method"] = st.session_state.get("dgrid_method") in ("python_aabb", "rust_aabb")
 
     if _auto_aabb:
         _nx, _ny, _nz = _aabb_meta["grid_shape"]
@@ -1925,9 +1984,9 @@ def main() -> None:
                 f"estimated Rust grid RAM **~{_est_mib:.0f} MiB** exceeds budget **~{_bud_mib:.0f} MiB**"
             )
         st.info(
-            f"{_scope}: auto-switched to **Python AABB (freud)** — {_why} "
+            f"{_scope}: auto-switched to **Rust AABB (R\\*-tree)** — {_why} "
             f"({len(atoms):,} atoms, {_aabb_meta['n_grid']:,} grid points {_nx}×{_ny}×{_nz} "
-            f"at {spacing:g} Å). Uncheck below to force the Rust exact grid."
+            f"at {spacing:g} Å). Change below to use a different method."
         )
 
     _aabb_help_budget_mib = (
@@ -1935,16 +1994,31 @@ def main() -> None:
         if _is_spaces_deployment()
         else LOCAL_DGRID_RAM_BUDGET_BYTES // (1024 * 1024)
     )
-    use_aabb_method = st.checkbox(
-        "Use Python AABB (CPU) method for distance grid",
-        key="use_aabb_method",
-        help="Use the CPU-based AABB (Axis-Aligned Bounding Box) method with Freud library instead of Rust exact method. "
-             "Selected automatically when the Rust f32 grid alone would exceed "
-             f"~{_aabb_help_budget_mib} MiB, or when grid points × atoms exceeds "
-             f"{_dgrid_ops_auto_aabb_threshold() / 1e9:.0f}×10⁹ (brute-force work, not RAM).",
+
+    dgrid_method = st.selectbox(
+        "Distance Grid Method",
+        options=["rust_exact", "python_aabb", "rust_aabb", "rust_aabb_interp"],
+        format_func=lambda m: {
+            "rust_exact": "Rust exact (brute-force, accurate)",
+            "python_aabb": "Python AABB (freud, CPU-blocked)",
+            "rust_aabb": "Rust AABB (R*-tree, 27-cell neighbor queries)",
+            "rust_aabb_interp": "Rust AABB interp (R*-tree + coarse→fine interpolation)",
+        }[m],
+        key="dgrid_method",
+        help=(
+            "Method for computing the distance grid. "
+            "Auto-switched to Rust AABB (R*-tree) when the Rust exact grid alone would exceed "
+            f"~{_aabb_help_budget_mib} MiB, or when grid points × atoms exceeds "
+            f"{_dgrid_ops_auto_aabb_threshold() / 1e9:.0f}×10⁹."
+        ),
     )
+    # Derive the legacy bool from the method selector.
+    use_aabb_method = dgrid_method == "python_aabb"
+    _is_rust_aabb = dgrid_method in ("rust_aabb", "rust_aabb_interp")
 
     block_size = 50000  # Default block size for AABB method
+    n_neighbors = 10  # Default for Rust AABB
+    coarse_factor = 2  # Default for Rust AABB interpolation
     if use_aabb_method:
         block_size = st.number_input(
             "AABB Block Size (number of grid points per worker)",
@@ -1953,8 +2027,38 @@ def main() -> None:
             max_value=200000,
             step=5000,
             help="Number of grid points processed by each dask worker. Larger values use more memory but may be faster. "
-                 "Default is 50000. Adjust based on your system's available RAM."
+                 "Default is 50000. Adjust based on your system's available RAM.",
         )
+    if _is_rust_aabb:
+        if dgrid_method == "rust_aabb":
+            n_neighbors = st.number_input(
+                "R*-tree neighbors per grid point",
+                value=10,
+                min_value=1,
+                max_value=200,
+                step=1,
+                help="Number of nearest periodically-replicated atoms to check per grid point (from 27 PBC cells). "
+                     "Higher values improve accuracy at the cost of runtime. Default is 10.",
+            )
+        elif dgrid_method == "rust_aabb_interp":
+            n_neighbors = st.number_input(
+                "R*-tree neighbors per coarse grid point",
+                value=10,
+                min_value=1,
+                max_value=200,
+                step=1,
+                help="Neighbors queried during coarse R*-tree distance evaluation. "
+                     "Higher values improve accuracy at the cost of runtime.",
+            )
+            coarse_factor = st.number_input(
+                "Coarse factor (interp smoothing)",
+                value=2,
+                min_value=1,
+                max_value=8,
+                step=1,
+                help="1 disables coarsening (equivalent to rust_aabb). "
+                     "Higher values smooth more and reduce work.",
+            )
 
     # Minimum box thickness option
     min_box_thickness_enabled = st.checkbox(
@@ -2220,7 +2324,10 @@ def main() -> None:
             # LCD (if available from PLD cache) minus 1 A.
             iso_min = max(0.1, float(mask_thickness) + 0.25)
             lcd_cap = None
-            _active_key = f"{getattr(cif_path, 'name', 'uploaded')}::{spacing:.3f}::aabb={use_aabb_method}::bs={block_size}"
+            _active_key = (
+                f"{getattr(cif_path, 'name', 'uploaded')}::{spacing:.3f}::method={dgrid_method}"
+                f"::bs={block_size}::nn={n_neighbors}::cf={coarse_factor}"
+            )
             _pld_cache = st.session_state.get("pld_cache", {})
             _pld_entry = _pld_cache.get(_active_key) if isinstance(_pld_cache, dict) else None
             if isinstance(_pld_entry, dict):
@@ -2330,7 +2437,10 @@ def main() -> None:
 
 
 
-    results_key = f"{getattr(cif_path, 'name', 'uploaded')}::{spacing:.3f}::aabb={use_aabb_method}::bs={block_size}"
+    results_key = (
+        f"{getattr(cif_path, 'name', 'uploaded')}::{spacing:.3f}::method={dgrid_method}"
+        f"::bs={block_size}::nn={n_neighbors}::cf={coarse_factor}"
+    )
     col_btn1, col_btn2 = st.columns([3, 1])
     with col_btn1:
         compute_clicked = st.button("Compute and Visualize", use_container_width=True)
@@ -2405,6 +2515,8 @@ def main() -> None:
                     h_value=h_value, min_distance=min_distance, threshold_abs=threshold_abs,
                     extra_padding=extra_padding, watershed_backend=watershed_backend,
                     use_aabb_method=use_aabb_method, block_size=block_size,
+                    dgrid_method=dgrid_method, n_neighbors=n_neighbors,
+                    coarse_factor=coarse_factor,
                     min_box_thickness_enabled=min_box_thickness_enabled,
                     min_box_thickness=_min_box,
                     progress=queue_progress,
@@ -2465,6 +2577,9 @@ def main() -> None:
                 watershed_backend=watershed_backend,
                 use_aabb_method=use_aabb_method,
                 block_size=block_size,
+                dgrid_method=dgrid_method,
+                n_neighbors=n_neighbors,
+                coarse_factor=coarse_factor,
                 min_box_thickness_enabled=min_box_thickness_enabled,
                 min_box_thickness=_min_box,
             )
@@ -2608,17 +2723,37 @@ def main() -> None:
 
                         props = regionprops(regions)
                         bins = np.linspace(0, 30, 50)
-                        rag = mgr.add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, mat_atoms_r, dgrid_r.shape)
-                        rag = mgr.add_clustering_to_rag_geometry_js(rag, props, pbc_groups, mat_atoms_r, dgrid_r.shape, use_pbc=True, js_threshold=js_threshold)
+
+                        # Compute pocketwise probe-occupiable PSDs via Rust backend
+                        _probe_psd = 1.2  # helium default
+                        try:
+                            from mgr.rust_fun import compute_psds_pocketwise_rust
+                            pocket_psds = mgr.compute_psds_pocketwise_rust(
+                                dgrid_r, regions_pbc, mat_atoms_r,
+                                num_samples_per_region=1000,
+                                bins=bins,
+                                return_fig=False,
+                                probe_center_min_radius=_probe_psd,
+                            )
+                        except Exception:
+                            pocket_psds = None
+
+                        rag = mgr.add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, mat_atoms_r, dgrid_r.shape, pocket_psds=pocket_psds)
+                        _psd_source = "pocket_psd" if pocket_psds is not None else "geometry"
+                        rag = mgr.add_clustering_to_rag_geometry_js(rag, props, pbc_groups, mat_atoms_r, dgrid_r.shape, use_pbc=True, js_threshold=js_threshold, psd_source=_psd_source)
 
                         regions_cluster = mgr.clustering_grid_from_regions(regions, rag, cluster_key="cluster_geom_pbc")
                         results["regions_cluster"] = regions_cluster
                         results["rag_clustered"] = rag
                         results["pocket_types_detected"] = True
                         results["js_threshold_used"] = js_threshold
+                        results["psd_source"] = _psd_source
+                        if pocket_psds is not None:
+                            results["probe_radius_psd_used"] = _probe_psd
 
                         num_clusters = len(np.unique(regions_cluster)) - 1
-                        st.info(f"Found {num_clusters} different pocket types using JS threshold: {js_threshold}")
+                        _psd_label = "pocketwise probe-occupiable PSDs" if pocket_psds is not None else "centroid-distance histograms"
+                        st.info(f"Found {num_clusters} different pocket types using JS threshold: {js_threshold} (PSD source: {_psd_label})")
                     else:
                         results["pocket_types_detected"] = False
                 except Exception as e:
@@ -4062,10 +4197,28 @@ def _render_hts_mode() -> None:
         )
         st.markdown("#### Dgrid options")
         hts_spacing = st.number_input("Grid spacing (Å)", value=0.5, min_value=0.1, step=0.1, key="hts_spacing")
-        hts_use_aabb = st.checkbox("Use Python AABB (CPU) method for distance grid", value=False, key="hts_aabb")
+        hts_dgrid_method = st.selectbox(
+            "Distance grid method",
+            options=["rust_exact", "python_aabb", "rust_aabb", "rust_aabb_interp"],
+            format_func=lambda m: {
+                "rust_exact": "Rust exact (brute-force)",
+                "python_aabb": "Python AABB (freud)",
+                "rust_aabb": "Rust AABB (R-tree)",
+                "rust_aabb_interp": "Rust AABB interp (R-tree + coarse interpolation)",
+            }[m],
+            key="hts_dgrid_method",
+        )
+        hts_use_aabb = hts_dgrid_method == "python_aabb"
         hts_block_size = 50000
+        hts_n_neighbors = 10
+        hts_coarse_factor = 2
         if hts_use_aabb:
             hts_block_size = st.number_input("AABB block size (grid points per worker)", value=50000, min_value=1000, max_value=200000, step=5000, key="hts_bs")
+        elif hts_dgrid_method == "rust_aabb":
+            hts_n_neighbors = st.number_input("R-tree neighbors per grid point", value=10, min_value=1, max_value=200, step=1, key="hts_nn")
+        elif hts_dgrid_method == "rust_aabb_interp":
+            hts_n_neighbors = st.number_input("R-tree neighbors per coarse grid point", value=10, min_value=1, max_value=200, step=1, key="hts_nn_interp")
+            hts_coarse_factor = st.number_input("Coarse factor (interp smoothing)", value=2, min_value=1, max_value=8, step=1, key="hts_cf")
 
         st.markdown("#### Segmentation options")
         hts_mask = st.number_input("Mask thickness (Å)", value=0.5, min_value=0.05, key="hts_mask")
@@ -4232,6 +4385,9 @@ def _render_hts_mode() -> None:
                     params = {
                         "spacing": hts_spacing,
                         "use_aabb_method": hts_use_aabb,
+                        "dgrid_method": hts_dgrid_method,
+                        "n_neighbors": hts_n_neighbors,
+                        "coarse_factor": hts_coarse_factor,
                         "block_size": hts_block_size,
                         "mask_thickness": hts_mask,
                         "h_value": hts_h,

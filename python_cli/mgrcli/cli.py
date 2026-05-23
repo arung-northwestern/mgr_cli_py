@@ -66,31 +66,86 @@ except ImportError:
     HAS_NUMPY = False
     np = None
 
-def compute_dgrid_rust(mat_atoms, spacing):
-    """Compute distance grid using Rust backend."""
+def compute_dgrid_rust(mat_atoms, spacing, method="exact", n_neighbors=10, coarse_factor=2):
+    """Compute distance grid using Rust backend.
+
+    :param method: "exact", "rust_aabb", or "rust_aabb_interp".
+    :param n_neighbors: Number of nearest neighbors for R-tree methods.
+    :param coarse_factor: Coarsening factor for rust_aabb_interp.
+    """
+    if method == "rust_aabb":
+        try:
+            from mgr.rust_fun import dgrid_from_atoms_aabb_rust
+            return dgrid_from_atoms_aabb_rust(mat_atoms, spacing, n_neighbors=n_neighbors)
+        except ImportError:
+            try:
+                from mgr_visualize.mgr.rust.rust_fun import dgrid_from_atoms_aabb_rust
+                return dgrid_from_atoms_aabb_rust(mat_atoms, spacing, n_neighbors=n_neighbors)
+            except ImportError:
+                import mgrcli_rust
+                from ase.geometry import cellpar_to_cell
+                from ase.data import vdw_radii
+                radii = vdw_radii[mat_atoms.get_atomic_numbers()]
+                fpoints = mat_atoms.get_scaled_positions() - 0.5
+                cell = cellpar_to_cell(mat_atoms.cell.cellpar())
+                nx, ny, nz = (mat_atoms.cell.cellpar()[:3] / spacing).astype(int) + 1
+                return mgrcli_rust.dgrid_from_atoms_aabb(
+                    fpoints, cell, int(nx), int(ny), int(nz),
+                    radii=radii, n_neighbors=n_neighbors,
+                )
+    if method == "rust_aabb_interp":
+        try:
+            from mgr.rust_fun import dgrid_from_atoms_aabb_interp_rust
+            return dgrid_from_atoms_aabb_interp_rust(
+                mat_atoms,
+                spacing,
+                coarse_factor=coarse_factor,
+                n_neighbors=n_neighbors,
+            )
+        except ImportError:
+            try:
+                from mgr_visualize.mgr.rust.rust_fun import dgrid_from_atoms_aabb_interp_rust
+                return dgrid_from_atoms_aabb_interp_rust(
+                    mat_atoms,
+                    spacing,
+                    coarse_factor=coarse_factor,
+                    n_neighbors=n_neighbors,
+                )
+            except ImportError:
+                import mgrcli_rust
+                from ase.geometry import cellpar_to_cell
+                from ase.data import vdw_radii
+                radii = vdw_radii[mat_atoms.get_atomic_numbers()]
+                fpoints = mat_atoms.get_scaled_positions() - 0.5
+                cell = cellpar_to_cell(mat_atoms.cell.cellpar())
+                nx, ny, nz = (mat_atoms.cell.cellpar()[:3] / spacing).astype(int) + 1
+                return mgrcli_rust.dgrid_from_atoms_aabb_interp(
+                    fpoints,
+                    cell,
+                    int(nx),
+                    int(ny),
+                    int(nz),
+                    int(coarse_factor),
+                    radii,
+                    int(n_neighbors),
+                )
+    # method == "exact" (default)
     try:
-        # Try to use the reference implementation first
         from mgr.rust_fun import dgrid_from_atoms_rust
         return dgrid_from_atoms_rust(mat_atoms, spacing)
     except ImportError:
         try:
-            # Fallback to mgr_visualize
             from mgr_visualize.mgr.rust_fun import dgrid_from_atoms_rust
             return dgrid_from_atoms_rust(mat_atoms, spacing)
         except ImportError:
-            # Final fallback to direct mgrcli_rust call
             try:
                 import mgrcli_rust
-                # Convert ASE atoms to required format
                 fpoints = mat_atoms.get_positions()
-                cell = mat_atoms.get_cell().array.T  # Transpose to match expected format
-                radii = np.array([1.0] * len(fpoints), dtype=np.float64)  # Default radii
-
-                # Get grid dimensions
+                cell = mat_atoms.get_cell().array.T
+                radii = np.array([1.0] * len(fpoints), dtype=np.float64)
                 nx, ny, nz = int(np.round(cell[0,0] / spacing)), int(np.round(cell[1,1] / spacing)), int(np.round(cell[2,2] / spacing))
-
                 return mgrcli_rust.dgrid_from_atoms(fpoints, cell, radii, nx, ny, nz)
-            except ImportError as e:
+            except ImportError:
                 print("Error: mgrcli_rust Rust library not found. Please build the project first.")
                 print("Run: maturin build --release && pip install --force-reinstall target/wheels/*.whl")
                 sys.exit(1)
@@ -834,6 +889,10 @@ class MCLI:
     # Default configuration values
     DEFAULTS = {
         'spacing': 0.5,
+        'dgrid_method': 'rust_exact',
+        'dgrid_block_size': 50000,
+        'dgrid_n_neighbors': 10,
+        'dgrid_coarse_factor': 2,
         'h': 0.2,
         'mask_thickness': 0.5,
         'threshold_abs': 1.5,
@@ -946,6 +1005,23 @@ Notes:
         param_group.add_argument(
             '-s', '--spacing', type=float,
             help=f'Grid spacing in Å (default: {self.DEFAULTS["spacing"]})'
+        )
+        param_group.add_argument(
+            '--dgrid-method',
+            choices=['rust_exact', 'python_aabb', 'rust_aabb', 'rust_aabb_interp'],
+            help='Distance grid method: rust_exact, python_aabb, rust_aabb, rust_aabb_interp'
+        )
+        param_group.add_argument(
+            '--dgrid-block-size', type=int,
+            help=f'Block size for python_aabb dgrid (default: {self.DEFAULTS["dgrid_block_size"]})'
+        )
+        param_group.add_argument(
+            '--dgrid-n-neighbors', type=int,
+            help=f'R-tree neighbors for rust_aabb/rust_aabb_interp (default: {self.DEFAULTS["dgrid_n_neighbors"]})'
+        )
+        param_group.add_argument(
+            '--dgrid-coarse-factor', type=int,
+            help=f'Coarse factor for rust_aabb_interp (default: {self.DEFAULTS["dgrid_coarse_factor"]})'
         )
         param_group.add_argument(
             '-H', '--h', type=float,
@@ -1523,8 +1599,26 @@ Notes:
                                 print("Debug: Removing groups with label 0")
                                 pbc_groups = [group for group in pbc_groups if 0 not in group]
 
-                            rag = mgr.add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, original_atoms, dgrid.shape)
-                            rag = mgr.add_clustering_to_rag_geometry_js(rag, props, pbc_groups, original_atoms, dgrid.shape, use_pbc=True, js_threshold=js_threshold)
+                            # Compute pocketwise probe-occupiable PSDs via Rust backend
+                            _probe_psd = getattr(args, 'probe_radius', None)
+                            if _probe_psd is None:
+                                from ase.data import vdw_radii
+                                _probe_psd = vdw_radii[2]  # helium default
+                            regions_pbc_for_psd = result.get('regions_pbc', regions)
+                            try:
+                                pocket_psds = mgr.compute_psds_pocketwise_rust(
+                                    dgrid, regions_pbc_for_psd, original_atoms,
+                                    num_samples_per_region=1000,
+                                    bins=bins,
+                                    return_fig=False,
+                                    probe_center_min_radius=_probe_psd,
+                                )
+                            except Exception:
+                                pocket_psds = None
+
+                            rag = mgr.add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, original_atoms, dgrid.shape, pocket_psds=pocket_psds)
+                            _psd_source = "pocket_psd" if pocket_psds is not None else "geometry"
+                            rag = mgr.add_clustering_to_rag_geometry_js(rag, props, pbc_groups, original_atoms, dgrid.shape, use_pbc=True, js_threshold=js_threshold, psd_source=_psd_source)
 
                             # Generate regions cluster
                             regions_cluster = mgr.clustering_grid_from_regions(regions, rag, cluster_key="cluster_geom_pbc")
@@ -1537,6 +1631,9 @@ Notes:
                             result['regions_cluster'] = regions_cluster
                             result['pocket_types_detected'] = True
                             result['js_threshold_used'] = js_threshold
+                            result['psd_source'] = _psd_source
+                            if pocket_psds is not None:
+                                result['probe_radius_psd_used'] = _probe_psd
 
                             # Save RAG pickle if --types or --rag is set
                             if getattr(args, 'types', False) or getattr(args, 'rag', False):
@@ -1546,7 +1643,8 @@ Notes:
                                     pickle.dump(rag, f)
                                 print(f"RAG (region adjacency graph) saved to: {rag_pickle_path}")
 
-                            print(f"Pocket types detected using JS threshold: {js_threshold}")
+                            _psd_label = "pocketwise probe-occupiable PSDs" if pocket_psds is not None else "centroid-distance histograms"
+                            print(f"Pocket types detected using JS threshold: {js_threshold} (PSD source: {_psd_label})")
                             num_clusters = len(np.unique(regions_cluster)) - 1  # -1 for background
                             print(f"Found {num_clusters} different pocket types")
                         else:
@@ -1852,6 +1950,10 @@ Notes:
         # Override with command line arguments
         arg_mapping = {
             'spacing': 'spacing',
+            'dgrid_method': 'dgrid_method',
+            'dgrid_block_size': 'dgrid_block_size',
+            'dgrid_n_neighbors': 'dgrid_n_neighbors',
+            'dgrid_coarse_factor': 'dgrid_coarse_factor',
             'h': 'h',
             'mask_thickness': 'mask_thickness',
             'threshold_abs': 'threshold_abs',
@@ -1904,8 +2006,30 @@ Notes:
 
         atoms = self._read_atoms(cif_file)
         spacing = config['spacing']
+        dgrid_method = str(config.get('dgrid_method', 'rust_exact'))
+        dgrid_block_size = int(config.get('dgrid_block_size', 50000))
+        dgrid_n_neighbors = int(config.get('dgrid_n_neighbors', 10))
+        dgrid_coarse_factor = int(config.get('dgrid_coarse_factor', 2))
 
-        dgrid = compute_dgrid_rust(atoms, spacing)
+        if dgrid_method == 'python_aabb':
+            dgrid = mgr.dgrid_from_atoms_cpu(
+                atoms,
+                spacing=spacing,
+                block_size=dgrid_block_size,
+                n_neighbors=dgrid_n_neighbors,
+            ).astype(np.float32)
+        else:
+            rust_method = {
+                'rust_aabb': 'rust_aabb',
+                'rust_aabb_interp': 'rust_aabb_interp',
+            }.get(dgrid_method, 'exact')
+            dgrid = compute_dgrid_rust(
+                atoms,
+                spacing,
+                method=rust_method,
+                n_neighbors=dgrid_n_neighbors,
+                coarse_factor=dgrid_coarse_factor,
+            )
 
         segmentation_kwargs = dict(
             dgrid=dgrid,

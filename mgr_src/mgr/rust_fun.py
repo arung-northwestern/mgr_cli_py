@@ -64,6 +64,69 @@ def dgrid_from_atoms_rust(ase_atoms, spacing, radii=None):
     return dgrid
 
 
+
+def dgrid_from_atoms_aabb_rust(ase_atoms, spacing, radii=None, n_neighbors=10):
+    """Compute a distance grid using the Rust R-tree (AABB) backend.
+
+    Uses an R-tree spatial index over periodically replicated atoms for
+    approximate nearest-neighbor distance queries.  Faster than the exact
+    brute-force method for large systems, but only checks ``n_neighbors``
+    closest replicated atoms per grid point.
+
+    :param ase_atoms: ASE Atoms object containing the atomic structure
+    :param spacing: Grid spacing in Angstroms
+    :param radii: Van der Waals radii for each atom. If None, uses ASE's vdw_radii
+    :param n_neighbors: Number of nearest replicated atoms to query per grid point
+    :return: 3D distance grid (float32)
+    """
+    import mgrcli_rust
+
+    logger.info(f"Using {mgrcli_rust.rayon_num_threads()} threads for AABB distance grid")
+    from ase.geometry import cellpar_to_cell
+    from ase.data import vdw_radii
+
+    if radii is None:
+        radii = vdw_radii[ase_atoms.get_atomic_numbers()]
+    fpoints = ase_atoms.get_scaled_positions() - 0.5
+    cell = cellpar_to_cell(ase_atoms.cell.cellpar())
+    nx, ny, nz = (ase_atoms.cell.cellpar()[:3] / spacing).astype(int) + 1
+    dgrid = mgrcli_rust.dgrid_from_atoms_aabb(
+        fpoints, cell, int(nx), int(ny), int(nz),
+        radii=radii, n_neighbors=n_neighbors,
+    )
+    return dgrid
+
+
+def dgrid_from_atoms_aabb_interp_rust(
+    ase_atoms, spacing, coarse_factor=2, radii=None, n_neighbors=10
+):
+    """Compute smoothed distance grid with coarse Rust R-tree + interpolation."""
+    import mgrcli_rust
+
+    logger.info(
+        f"Using {mgrcli_rust.rayon_num_threads()} threads for interpolated AABB distance grid"
+    )
+    from ase.geometry import cellpar_to_cell
+    from ase.data import vdw_radii
+
+    if radii is None:
+        radii = vdw_radii[ase_atoms.get_atomic_numbers()]
+    fpoints = ase_atoms.get_scaled_positions() - 0.5
+    cell = cellpar_to_cell(ase_atoms.cell.cellpar())
+    nx, ny, nz = (ase_atoms.cell.cellpar()[:3] / spacing).astype(int) + 1
+    dgrid = mgrcli_rust.dgrid_from_atoms_aabb_interp(
+        fpoints,
+        cell,
+        int(nx),
+        int(ny),
+        int(nz),
+        int(coarse_factor),
+        radii,
+        int(n_neighbors),
+    )
+    return dgrid
+
+
 def egrid_from_atoms_rust(
     ase_atoms, spacing, forcefield_mixed=None, cutoff=12.5, probe_symbol="He", return_ncells=False
 ):

@@ -12,6 +12,8 @@ use std::sync::Arc;
 use std::collections::{HashSet};
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
+use rstar::primitives::GeomWithData;
+use rstar::RTree;
 
 mod aromatic;
 mod bonds;
@@ -145,6 +147,293 @@ fn dgrid_from_atoms(
         .expect("Shape mismatch while reshaping the output distance grid");
 
     // Convert to a NumPy array owned by Python and return.
+    Ok(PyArray3::from_owned_array(py, array).to_owned())
+}
+
+#[pyfunction]
+#[pyo3(signature = (fpoints, cell, nx, ny, nz, radii=None, n_neighbors=10))]
+#[pyo3(text_signature = "(fpoints, cell, nx, ny, nz, radii=None, n_neighbors=10)")]
+fn dgrid_from_atoms_aabb(
+    py: Python<'_>,
+    fpoints: PyReadonlyArray2<'_, f64>,
+    cell: PyReadonlyArray2<'_, f64>,
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    radii: Option<PyReadonlyArray1<'_, f64>>,
+    n_neighbors: usize,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let fpoints = fpoints.as_array();
+    let cell = cell.as_array();
+
+    let radii = radii
+        .map(|r| r.as_array().to_owned())
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("radii must be provided"))?;
+
+    if radii.len() != fpoints.len_of(ndarray::Axis(0)) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "radii length must match number of atoms",
+        ));
+    }
+
+    // Pre-compute cell components for fast access.
+    let c00 = cell[[0, 0]];
+    let c01 = cell[[0, 1]];
+    let c02 = cell[[0, 2]];
+    let c10 = cell[[1, 0]];
+    let c11 = cell[[1, 1]];
+    let c12 = cell[[1, 2]];
+    let c20 = cell[[2, 0]];
+    let c21 = cell[[2, 1]];
+    let c22 = cell[[2, 2]];
+
+    // Precompute the 27 translation vectors to handle PBC via replication.
+    let mut translations = Vec::with_capacity(27);
+    for tx in -1..=1 {
+        for ty in -1..=1 {
+            for tz in -1..=1 {
+                let t0 = c00 * (tx as f64) + c01 * (ty as f64) + c02 * (tz as f64);
+                let t1 = c10 * (tx as f64) + c11 * (ty as f64) + c12 * (tz as f64);
+                let t2 = c20 * (tx as f64) + c21 * (ty as f64) + c22 * (tz as f64);
+                translations.push([t0, t1, t2]);
+            }
+        }
+    }
+
+    // Build an R-tree of replicated atoms (data = original atom index).
+    let mut points: Vec<GeomWithData<[f64; 3], usize>> =
+        Vec::with_capacity(fpoints.len_of(ndarray::Axis(0)) * translations.len());
+
+    for (atom_idx, atom_frac) in fpoints.outer_iter().enumerate() {
+        let cart_x = c00 * atom_frac[0] + c01 * atom_frac[1] + c02 * atom_frac[2];
+        let cart_y = c10 * atom_frac[0] + c11 * atom_frac[1] + c12 * atom_frac[2];
+        let cart_z = c20 * atom_frac[0] + c21 * atom_frac[1] + c22 * atom_frac[2];
+
+        for t in &translations {
+            points.push(GeomWithData::new(
+                [cart_x + t[0], cart_y + t[1], cart_z + t[2]],
+                atom_idx,
+            ));
+        }
+    }
+
+    let tree = RTree::bulk_load(points);
+
+    let total_points = nx * ny * nz;
+    let buffer: Vec<f32> = (0..total_points)
+        .into_par_iter()
+        .map(|idx| {
+            let i = idx / (ny * nz);
+            let j = (idx / nz) % ny;
+            let k = idx % nz;
+
+            // Fractional coordinates on the uniform grid (inclusive end-points like linspace).
+            let x_frac = -0.5 + (i as f64) / ((nx - 1) as f64);
+            let y_frac = -0.5 + (j as f64) / ((ny - 1) as f64);
+            let z_frac = -0.5 + (k as f64) / ((nz - 1) as f64);
+
+            // Cartesian coordinate of the grid point.
+            let cart_x = c00 * x_frac + c01 * y_frac + c02 * z_frac;
+            let cart_y = c10 * x_frac + c11 * y_frac + c12 * z_frac;
+            let cart_z = c20 * x_frac + c21 * y_frac + c22 * z_frac;
+            let query = [cart_x, cart_y, cart_z];
+
+            let mut min_dist = f64::MAX;
+
+            for neighbor in tree.nearest_neighbor_iter(&query).take(n_neighbors) {
+                let atom_idx = neighbor.data;
+                let pos = neighbor.geom();
+                let dx = pos[0] - query[0];
+                let dy = pos[1] - query[1];
+                let dz = pos[2] - query[2];
+                let dist = (dx * dx + dy * dy + dz * dz).sqrt() - radii[atom_idx];
+                if dist < min_dist {
+                    min_dist = dist;
+                }
+            }
+
+            min_dist as f32
+        })
+        .collect();
+
+    let array = Array3::from_shape_vec((nx, ny, nz), buffer)
+        .expect("Shape mismatch while reshaping the output distance grid");
+
+    Ok(PyArray3::from_owned_array(py, array).to_owned())
+}
+
+#[pyfunction]
+#[pyo3(signature = (fpoints, cell, nx, ny, nz, coarse_factor=2, radii=None, n_neighbors=10))]
+#[pyo3(text_signature = "(fpoints, cell, nx, ny, nz, coarse_factor=2, radii=None, n_neighbors=10)")]
+fn dgrid_from_atoms_aabb_interp(
+    py: Python<'_>,
+    fpoints: PyReadonlyArray2<'_, f64>,
+    cell: PyReadonlyArray2<'_, f64>,
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    coarse_factor: usize,
+    radii: Option<PyReadonlyArray1<'_, f64>>,
+    n_neighbors: usize,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let fpoints = fpoints.as_array();
+    let cell = cell.as_array();
+
+    let radii = radii
+        .map(|r| r.as_array().to_owned())
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("radii must be provided"))?;
+
+    if radii.len() != fpoints.len_of(ndarray::Axis(0)) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "radii length must match number of atoms",
+        ));
+    }
+
+    // Pre-compute cell components for fast access.
+    let c00 = cell[[0, 0]];
+    let c01 = cell[[0, 1]];
+    let c02 = cell[[0, 2]];
+    let c10 = cell[[1, 0]];
+    let c11 = cell[[1, 1]];
+    let c12 = cell[[1, 2]];
+    let c20 = cell[[2, 0]];
+    let c21 = cell[[2, 1]];
+    let c22 = cell[[2, 2]];
+
+    // Precompute the 27 translation vectors to handle PBC via replication.
+    let mut translations = Vec::with_capacity(27);
+    for tx in -1..=1 {
+        for ty in -1..=1 {
+            for tz in -1..=1 {
+                translations.push([
+                    c00 * (tx as f64) + c01 * (ty as f64) + c02 * (tz as f64),
+                    c10 * (tx as f64) + c11 * (ty as f64) + c12 * (tz as f64),
+                    c20 * (tx as f64) + c21 * (ty as f64) + c22 * (tz as f64),
+                ]);
+            }
+        }
+    }
+
+    // Build an R-tree of replicated atoms (data = original atom index).
+    let mut points: Vec<GeomWithData<[f64; 3], usize>> =
+        Vec::with_capacity(fpoints.len_of(ndarray::Axis(0)) * translations.len());
+
+    for (atom_idx, atom_frac) in fpoints.outer_iter().enumerate() {
+        let cart = [
+            c00 * atom_frac[0] + c01 * atom_frac[1] + c02 * atom_frac[2],
+            c10 * atom_frac[0] + c11 * atom_frac[1] + c12 * atom_frac[2],
+            c20 * atom_frac[0] + c21 * atom_frac[1] + c22 * atom_frac[2],
+        ];
+
+        for t in &translations {
+            points.push(GeomWithData::new(
+                [cart[0] + t[0], cart[1] + t[1], cart[2] + t[2]],
+                atom_idx,
+            ));
+        }
+    }
+
+    let tree = RTree::bulk_load(points);
+
+    // Coarse grid dims (inclusive endpoints); ensure at least 2 points per dim.
+    let cf = coarse_factor.max(1);
+    let cx = ((nx.saturating_sub(1)) / cf) + 1;
+    let cy = ((ny.saturating_sub(1)) / cf) + 1;
+    let cz = ((nz.saturating_sub(1)) / cf) + 1;
+    let cx = cx.max(2);
+    let cy = cy.max(2);
+    let cz = cz.max(2);
+
+    // Compute coarse grid distances.
+    let coarse_total = cx * cy * cz;
+    let coarse_buffer: Vec<f32> = (0..coarse_total)
+        .into_par_iter()
+        .map(|idx| {
+            let i = idx / (cy * cz);
+            let j = (idx / cz) % cy;
+            let k = idx % cz;
+
+            // Fractional coordinates on coarse grid.
+            let x_frac = -0.5 + (i as f64) / ((cx - 1) as f64);
+            let y_frac = -0.5 + (j as f64) / ((cy - 1) as f64);
+            let z_frac = -0.5 + (k as f64) / ((cz - 1) as f64);
+
+            let cart_x = c00 * x_frac + c01 * y_frac + c02 * z_frac;
+            let cart_y = c10 * x_frac + c11 * y_frac + c12 * z_frac;
+            let cart_z = c20 * x_frac + c21 * y_frac + c22 * z_frac;
+            let query = [cart_x, cart_y, cart_z];
+
+            let mut min_dist = f64::MAX;
+
+            for neighbor in tree.nearest_neighbor_iter(&query).take(n_neighbors) {
+                let atom_idx = neighbor.data;
+                let pos = neighbor.geom();
+                let dx = pos[0] - query[0];
+                let dy = pos[1] - query[1];
+                let dz = pos[2] - query[2];
+                let dist = (dx * dx + dy * dy + dz * dz).sqrt() - radii[atom_idx];
+                if dist < min_dist {
+                    min_dist = dist;
+                }
+            }
+
+            min_dist as f32
+        })
+        .collect();
+
+    let coarse = Array3::from_shape_vec((cx, cy, cz), coarse_buffer)
+        .expect("Shape mismatch in coarse grid");
+
+    // Trilinear interpolation to fine grid.
+    let total_points = nx * ny * nz;
+    let fine_buffer: Vec<f32> = (0..total_points)
+        .into_par_iter()
+        .map(|idx| {
+            let i = idx / (ny * nz);
+            let j = (idx / nz) % ny;
+            let k = idx % nz;
+
+            let fx = (i as f64) * ((cx - 1) as f64) / ((nx - 1) as f64);
+            let fy = (j as f64) * ((cy - 1) as f64) / ((ny - 1) as f64);
+            let fz = (k as f64) * ((cz - 1) as f64) / ((nz - 1) as f64);
+
+            let x0 = fx.floor() as usize;
+            let y0 = fy.floor() as usize;
+            let z0 = fz.floor() as usize;
+            let x1 = (x0 + 1).min(cx - 1);
+            let y1 = (y0 + 1).min(cy - 1);
+            let z1 = (z0 + 1).min(cz - 1);
+
+            let tx = (fx - x0 as f64) as f32;
+            let ty = (fy - y0 as f64) as f32;
+            let tz = (fz - z0 as f64) as f32;
+
+            let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+
+            let c000 = coarse[[x0, y0, z0]];
+            let c100 = coarse[[x1, y0, z0]];
+            let c010 = coarse[[x0, y1, z0]];
+            let c110 = coarse[[x1, y1, z0]];
+            let c001 = coarse[[x0, y0, z1]];
+            let c101 = coarse[[x1, y0, z1]];
+            let c011 = coarse[[x0, y1, z1]];
+            let c111 = coarse[[x1, y1, z1]];
+
+            let c00 = lerp(c000, c100, tx);
+            let c10 = lerp(c010, c110, tx);
+            let c01 = lerp(c001, c101, tx);
+            let c11 = lerp(c011, c111, tx);
+
+            let c0 = lerp(c00, c10, ty);
+            let c1 = lerp(c01, c11, ty);
+
+            lerp(c0, c1, tz)
+        })
+        .collect();
+
+    let array = Array3::from_shape_vec((nx, ny, nz), fine_buffer)
+        .expect("Shape mismatch while reshaping the output distance grid");
+
     Ok(PyArray3::from_owned_array(py, array).to_owned())
 }
 
@@ -5647,6 +5936,8 @@ fn mgrcli_rust(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     pyo3_log::init();
 
     m.add_function(wrap_pyfunction!(dgrid_from_atoms, m)?)?;
+    m.add_function(wrap_pyfunction!(dgrid_from_atoms_aabb, m)?)?;
+    m.add_function(wrap_pyfunction!(dgrid_from_atoms_aabb_interp, m)?)?;
     m.add_function(wrap_pyfunction!(egrid_from_atoms, m)?)?;
     m.add_function(wrap_pyfunction!(window_connections, m)?)?;
     m.add_function(wrap_pyfunction!(periodic_gaussian_filter, m)?)?;
@@ -5679,7 +5970,7 @@ fn mgrcli_rust(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bonds::covalent_bonds, m)?)?;
     m.add_function(wrap_pyfunction!(cif::read_cif, m)?)?;
     m.add_function(wrap_pyfunction!(aromatic::expand_aromatic_cycle_embeddings, m)?)?;
-    m.add("__all__", ["dgrid_from_atoms", "egrid_from_atoms", "window_connections", "periodic_gaussian_filter", "seeded_watershed_bucket", "seeded_watershed_det", "seeded_watershed_det_parallel", "seeded_watershed", "seeded_watershed_masked", "compute_pore_sizes_uniform","compute_pore_sizes_for_psd_pocketwise",  "detect_maxima_h_morph", "detect_maxima_h_morph_opening", "move_maxima_to_peaks", "detect_maxima_h_morph2", "detect_maxima_h_morph_simple", "detect_maxima_h_morph_no_spacing", "detect_maxima_adaptive_geometry", "detect_maxima_selective_smoothing", "detect_maxima_selective_smoothing_parallel", "detect_maxima_selective_smoothing_parallel2", "detect_maxima_percolation_guided", "detect_maxima_voronoi_based", "detect_maxima_multiscale_log", "detect_maxima_adaptive_h", "find_pore_limiting_radius", "rayon_num_threads", "covalent_bonds", "read_cif", "expand_aromatic_cycle_embeddings"])?;
+    m.add("__all__", ["dgrid_from_atoms", "dgrid_from_atoms_aabb", "dgrid_from_atoms_aabb_interp", "egrid_from_atoms", "window_connections", "periodic_gaussian_filter", "seeded_watershed_bucket", "seeded_watershed_det", "seeded_watershed_det_parallel", "seeded_watershed", "seeded_watershed_masked", "compute_pore_sizes_uniform","compute_pore_sizes_for_psd_pocketwise",  "detect_maxima_h_morph", "detect_maxima_h_morph_opening", "move_maxima_to_peaks", "detect_maxima_h_morph2", "detect_maxima_h_morph_simple", "detect_maxima_h_morph_no_spacing", "detect_maxima_adaptive_geometry", "detect_maxima_selective_smoothing", "detect_maxima_selective_smoothing_parallel", "detect_maxima_selective_smoothing_parallel2", "detect_maxima_percolation_guided", "detect_maxima_voronoi_based", "detect_maxima_multiscale_log", "detect_maxima_adaptive_h", "find_pore_limiting_radius", "rayon_num_threads", "covalent_bonds", "read_cif", "expand_aromatic_cycle_embeddings"])?;
 
     // By returning Ok(()), the module initialization is successful.
     Ok(())
@@ -6008,6 +6299,8 @@ fn mcli_rust(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     pyo3_log::init();
 
     m.add_function(wrap_pyfunction!(dgrid_from_atoms, m)?)?;
+    m.add_function(wrap_pyfunction!(dgrid_from_atoms_aabb, m)?)?;
+    m.add_function(wrap_pyfunction!(dgrid_from_atoms_aabb_interp, m)?)?;
     m.add_function(wrap_pyfunction!(egrid_from_atoms, m)?)?;
     m.add_function(wrap_pyfunction!(window_connections, m)?)?;
     m.add_function(wrap_pyfunction!(periodic_gaussian_filter, m)?)?;
@@ -6039,7 +6332,7 @@ fn mcli_rust(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(find_pore_limiting_radius, m)?)?;
     // m.add_function(wrap_pyfunction!(find_end_channel_pairs, m)?);
     m.add("__all__", vec![
-        "dgrid_from_atoms", "egrid_from_atoms", "window_connections", "periodic_gaussian_filter",
+        "dgrid_from_atoms", "dgrid_from_atoms_aabb", "dgrid_from_atoms_aabb_interp", "egrid_from_atoms", "window_connections", "periodic_gaussian_filter",
         "seeded_watershed_bucket", "seeded_watershed_det", "seeded_watershed_det_parallel", "seeded_watershed", "seeded_watershed_masked",
         "compute_pore_sizes_uniform", "compute_pore_sizes_for_psd_pocketwise",
         "detect_maxima_h_morph", "detect_maxima_h_morph_opening", "move_maxima_to_peaks",
