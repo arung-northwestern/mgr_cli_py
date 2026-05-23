@@ -419,8 +419,14 @@ def update_with_covalent_bonds(ase_atoms, nlist=None):
     :param nlist: optional list of (i, j) neighbor pairs. If None, uses aabb_neighbors_on_atoms.
     :return: ASE Atoms object with 'covalent_bonds' and 'covalent_bond_orders' in info.
     """
+    import logging
+    import time
 
     import numpy as np
+
+    _log = logging.getLogger("mgr.analyze")
+    _t0 = time.perf_counter()
+    _log.info("Covalent bonds: starting (%d atoms)", len(ase_atoms))
     from ase import Atoms
 
     # Build neighbor list if not provided
@@ -434,6 +440,7 @@ def update_with_covalent_bonds(ase_atoms, nlist=None):
         ase_atoms_updated = ase_atoms.copy()
         ase_atoms_updated.info['covalent_bonds'] = []
         ase_atoms_updated.info['covalent_bond_orders'] = []
+        _log.info("Covalent bonds: done in %.3fs (0 bonds)", time.perf_counter() - _t0)
         return ase_atoms_updated
 
     # Convert nlist to separate i, j arrays
@@ -487,6 +494,13 @@ def update_with_covalent_bonds(ase_atoms, nlist=None):
     ase_atoms_updated.info['covalent_bonds'] = bonds
     ase_atoms_updated.info['covalent_bond_orders'] = list(bond_orders)
 
+    _log.info(
+        "Covalent bonds: done in %.3fs (%d pairs, %d bonds, %d images)",
+        time.perf_counter() - _t0,
+        len(nlist),
+        len(bonds),
+        n_images,
+    )
     return ase_atoms_updated
 
 
@@ -616,8 +630,20 @@ def _aromatic_env_float(name: str, default: str) -> float:
     return float(os.environ.get(name, default))
 
 
+def _aromatic_env_int(name: str, default: str) -> int:
+    import os
+
+    return int(os.environ.get(name, default))
+
+
 AROMATIC_BOND_ORDER_MIN = _aromatic_env_float("MGR_AROMATIC_ORDER_MIN", "1.5")
 AROMATIC_BOND_ORDER_TOL = _aromatic_env_float("MGR_AROMATIC_ORDER_TOL", "0.2")
+# Robustness for slightly distorted/unrelaxed CIFs:
+# allow up to one weak edge in a candidate cycle when the overall bond-order profile
+# still looks aromatic.
+AROMATIC_MAX_WEAK_EDGES = _aromatic_env_int("MGR_AROMATIC_MAX_WEAK_EDGES", "1")
+AROMATIC_CYCLE_MEAN_MIN = _aromatic_env_float("MGR_AROMATIC_CYCLE_MEAN_MIN", "1.35")
+AROMATIC_EDGE_ORDER_FLOOR = _aromatic_env_float("MGR_AROMATIC_EDGE_ORDER_FLOOR", "0.9")
 
 
 def _use_rust_aromatic_expansion() -> bool:
@@ -647,11 +673,31 @@ def _cycle_is_aromatic(sgraph, cycle: list) -> bool:
     n = len(cycle)
     if n < 3:
         return False
+
+    aromatic_edges = 0
+    bond_orders: list[float] = []
     for i in range(n):
         u, v = cycle[i], cycle[(i + 1) % n]
-        if not _edge_is_aromatic(_edge_data(sgraph, u, v)):
-            return False
-    return True
+        edge = _edge_data(sgraph, u, v)
+        try:
+            bo = float(edge.get("bond_order", 1.0))
+        except (TypeError, ValueError):
+            bo = 1.0
+        bond_orders.append(bo)
+        if _edge_is_aromatic(edge):
+            aromatic_edges += 1
+
+    if aromatic_edges == n:
+        return True
+
+    weak_edges = n - aromatic_edges
+    if weak_edges > AROMATIC_MAX_WEAK_EDGES:
+        return False
+    if not bond_orders:
+        return False
+    if min(bond_orders) < AROMATIC_EDGE_ORDER_FLOOR:
+        return False
+    return (sum(bond_orders) / float(n)) >= AROMATIC_CYCLE_MEAN_MIN
 
 
 def _aromatic_cycles_from_basis(sgraph, default_ring_sizes=None) -> list[list[int]]:
@@ -742,24 +788,62 @@ def find_aromatic_cycles_in_sgraph(
 
     Bond-order tolerance helps unrelaxed CIFs (MGR_AROMATIC_ORDER_MIN/TOL).
     """
+    import logging
+    import time
+
+    _log = logging.getLogger("mgr.analyze")
+    _t0 = time.perf_counter()
+
     unique_cycles = _aromatic_cycles_from_basis(sgraph, default_ring_sizes)
+    _log.info(
+        "Aromatic cycles: basis+filter %.3fs (%d unique)",
+        time.perf_counter() - _t0,
+        len(unique_cycles),
+    )
     if not unique_cycles:
         return []
 
+    _t1 = time.perf_counter()
     _idx = find_chemically_unique_cycles(unique_cycles, sgraph)
     chemically_unique_cycles = [unique_cycles[i] for i in _idx]
+    _log.info(
+        "Aromatic cycles: chem-unique %.3fs (%d templates)",
+        time.perf_counter() - _t1,
+        len(chemically_unique_cycles),
+    )
 
     if not expand_isomorphisms or len(chemically_unique_cycles) == len(unique_cycles):
+        _log.info(
+            "Aromatic cycles: total %.3fs (%d rings, expansion skipped)",
+            time.perf_counter() - _t0,
+            len(unique_cycles),
+        )
         return [list(c) for c in unique_cycles]
 
+    _t2 = time.perf_counter()
     if use_rust is None:
         use_rust = _use_rust_aromatic_expansion()
+    backend = "python"
     if use_rust:
         try:
-            return _expand_aromatic_embeddings_rust(sgraph, chemically_unique_cycles)
-        except Exception:
-            pass
-    return _expand_aromatic_embeddings_python(sgraph, chemically_unique_cycles)
+            out = _expand_aromatic_embeddings_rust(sgraph, chemically_unique_cycles)
+            backend = "rust"
+        except Exception as exc:
+            _log.warning(
+                "Aromatic cycles: Rust expand unavailable (%s), using Python",
+                exc,
+            )
+            out = _expand_aromatic_embeddings_python(sgraph, chemically_unique_cycles)
+    else:
+        out = _expand_aromatic_embeddings_python(sgraph, chemically_unique_cycles)
+    _log.info(
+        "Aromatic cycles: expand (%s) %.3fs (%d rings); total %.3fs",
+        backend,
+        time.perf_counter() - _t2,
+        len(out),
+        time.perf_counter() - _t0,
+    )
+    return out
 
 
 def _aromatic_cache_key(ase_atoms) -> str:
@@ -787,6 +871,12 @@ def compute_aromatic_cycles(
         and ase_atoms.info.get("aromatic_cycles_key") == key
         and ase_atoms.info.get("aromatic_cycles") is not None
     ):
+        import logging
+
+        logging.getLogger("mgr.analyze").info(
+            "Aromatic cycles: cache hit (%d rings)",
+            len(ase_atoms.info["aromatic_cycles"]),
+        )
         return ase_atoms.info["aromatic_cycles"]
 
     cycles = find_aromatic_cycles_in_sgraph(
