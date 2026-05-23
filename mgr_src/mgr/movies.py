@@ -4711,15 +4711,30 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     controls.update();
 
     // Override default camera to 1.5 * (la, lb, lc) from scene center along (1,1,1)
-    // Also store cell lengths for dynamic explode slider max.
+    // Also store cell lengths and unit vectors for dynamic explode slider.
     let _cellLengths = { la: 20, lb: 20, lc: 20 };
+    let _cellVecs = [
+      new THREE.Vector3(1, 0, 0),  // a-hat (Cartesian fallback)
+      new THREE.Vector3(0, 1, 0),  // b-hat
+      new THREE.Vector3(0, 0, 1),  // c-hat
+    ];
     let _camOverridePos = null;
     if (cellObj && cellObj.geometry && cellObj.geometry.attributes && cellObj.geometry.attributes.position) {
       const cpos = cellObj.geometry.attributes.position.array;
+      // Cell wireframe edges encode the lattice vectors directly:
+      //   cpos[0..2]  = origin, cpos[3..5]  = a-vector
+      //   cpos[6..8]  = origin, cpos[9..11]  = b-vector
+      //   cpos[12..14] = origin, cpos[15..17] = c-vector
       const la = Math.sqrt(cpos[3]*cpos[3] + cpos[4]*cpos[4] + cpos[5]*cpos[5]);
       const lb = Math.sqrt(cpos[9]*cpos[9] + cpos[10]*cpos[10] + cpos[11]*cpos[11]);
       const lc = Math.sqrt(cpos[15]*cpos[15] + cpos[16]*cpos[16] + cpos[17]*cpos[17]);
       _cellLengths = { la: la, lb: lb, lc: lc };
+      // Store unit cell vectors (normalized) for explode offsets along crystallographic directions.
+      _cellVecs = [
+        new THREE.Vector3(cpos[3], cpos[4], cpos[5]).normalize(),
+        new THREE.Vector3(cpos[9], cpos[10], cpos[11]).normalize(),
+        new THREE.Vector3(cpos[15], cpos[16], cpos[17]).normalize(),
+      ];
       _camOverridePos = new THREE.Vector3(1.5 * la, 1.5 * lb, 1.5 * lc);
       [perspectiveCam, orthoCam].forEach(function(cam) {
         cam.position.copy(_camOverridePos);
@@ -4728,9 +4743,9 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       controls.target.copy(sceneCenter);
       controls.update();
       updateOrthoFrustum();
-      // Dynamic slider max: largest cell dimension / 8 + cushion
+      // Dynamic slider max: largest cell dimension / 6 + 1.0 cushion for extra separation
       const maxLen = Math.max(la, lb, lc);
-      explodeSlider.max = (maxLen / 8.0 + 0.5).toFixed(2);
+      explodeSlider.max = (maxLen / 6.0 + 1.0).toFixed(2);
     }
 
     // Exploded view: multi-directional separation
@@ -5266,28 +5281,32 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     function applyExplodeOffsets() {
       const dist = parseFloat(explodeSlider.value);
       const plane = explodePlane ? explodePlane.value : "ab";
-      // Determine which 3D axes map to the 2D explode X/Y based on plane selection.
-      // AB plane: a→X, b→Y, c unused (original default)
-      // BC plane: b→X, c→Y, a unused
-      // CA plane: c→X, a→Y, b unused
-      const axisMap = {
-        "ab": { x: 0, y: 1 },  // a→X, b→Y
-        "bc": { x: 1, y: 2 },  // b→X, c→Y
-        "ca": { x: 2, y: 0 },  // c→X, a→Y
+      // Map plane selection to cell-vector indices: which two lattice vectors to use.
+      // AB plane: a→primary (left/right), b→secondary (up/down)
+      // BC plane: b→primary, c→secondary
+      // CA plane: c→primary, a→secondary
+      // Offsets are along crystallographic cell-vector directions, not Cartesian axes,
+      // so non-orthogonal cells explode correctly along their own lattice vectors.
+      const planeMap = {
+        "ab": { primary: 0, secondary: 1 },  // a, b
+        "bc": { primary: 1, secondary: 2 },  // b, c
+        "ca": { primary: 2, secondary: 0 },  // c, a
       };
-      const axes = axisMap[plane] || axisMap["ab"];
+      const idx = planeMap[plane] || planeMap["ab"];
+      const vecA = _cellVecs[idx.primary];
+      const vecB = _cellVecs[idx.secondary];
       const spacing = dist * 8.0;
       _explodeGroups.forEach(function(group) {
-        const offsets = [0, 0, 0];
-        offsets[axes.x] = group.x * spacing;
-        offsets[axes.y] = group.y * spacing;
+        const offset = new THREE.Vector3(0, 0, 0);
+        offset.addScaledVector(vecA, group.x * spacing);
+        offset.addScaledVector(vecB, group.y * spacing);
         group.ids.forEach(function(tid) {
           const obj = objectsById[tid];
           if (!obj) return;
           if (_explodeOrig[tid] === undefined) {
             _explodeOrig[tid] = obj.position.clone();
           }
-          obj.position.copy(_explodeOrig[tid]).add(new THREE.Vector3(offsets[0], offsets[1], offsets[2]));
+          obj.position.copy(_explodeOrig[tid]).add(offset);
         });
       });
       // Show/hide the cell copies when exploded — each follows actual trace visibility
