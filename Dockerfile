@@ -1,4 +1,6 @@
 FROM python:3.11-slim AS builder
+# BUILD_DATE: 2026-05-23 — bumped for CIF Wyckoff dedupe + orbit preview
+# Changelog: CIF dedupe now handles duplicate Wyckoff positions via orbit-analysis
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -23,7 +25,7 @@ COPY . /app
 
 RUN pip install --no-cache-dir uv \
     && uv pip install --system maturin \
-    && maturin build --release
+    && maturin build --release --manifest-path mgr_src/mgrcli_rust/Cargo.toml
 
 FROM python:3.11-slim
 
@@ -47,7 +49,7 @@ COPY requirements.docker.lock /app/requirements.docker.lock
 RUN pip install --no-cache-dir uv \
     && uv pip install --system -r /app/requirements.docker.lock
 
-COPY --from=builder /app/target/wheels/*.whl /app/target/wheels/
+COPY --from=builder /app/mgr_src/mgrcli_rust/target/wheels/*.whl /app/target/wheels/
 # Only copy runtime source and data (see docs/docker_exclude_candidates.md for full list of exclusions)
 COPY python_cli /app/python_cli
 COPY mgr_src /app/mgr_src

@@ -30,7 +30,6 @@ PROD_URL="https://huggingface.co/spaces/arung-northwestern/mofography-web-demo"
 PRIVATE_URL="https://huggingface.co/spaces/arung-northwestern/mofography-web-demo-private-testing"
 
 HF_SPACE_URL="${HF_SPACE_URL:-${PRIVATE_URL}}"
-HF_CLONE_DIR="${HF_CLONE_DIR:-/tmp/mofography-web-demo-private-testing-hf-clone}"
 BUNDLE="${HF_BUNDLE_DIR:-/tmp/mofography-hf-bundle}"
 
 GIT_PULL=0
@@ -94,7 +93,15 @@ if is_production_url "${HF_SPACE_URL}"; then
     exit 1
   fi
   echo "WARNING: Production Space target — ${HF_SPACE_URL}" >&2
-  HF_CLONE_DIR="${HF_CLONE_DIR:-/tmp/mofography-web-demo-hf-clone}"
+fi
+
+# Resolve clone dir after final target selection.
+if [[ -z "${HF_CLONE_DIR:-}" ]]; then
+  if is_production_url "${HF_SPACE_URL}"; then
+    HF_CLONE_DIR="/tmp/mofography-web-demo-hf-clone"
+  else
+    HF_CLONE_DIR="/tmp/mofography-web-demo-private-testing-hf-clone"
+  fi
 fi
 
 echo "HF deploy target: ${HF_SPACE_URL}"
@@ -131,6 +138,23 @@ echo "OK: ${INTERACTIVE_APP} compiles"
 
 echo "Building Space bundle in: ${BUNDLE}"
 "${REPO_ROOT}/scripts/deploy_to_hf_space.sh" "${BUNDLE}"
+
+# Guardrail: ensure Space build uses the symmetry-aware Rust crate, not repo-root fallback.
+DOCKERFILE_IN_BUNDLE="${BUNDLE}/Dockerfile"
+if [[ ! -f "${DOCKERFILE_IN_BUNDLE}" ]]; then
+  echo "ERROR: Missing Dockerfile in bundle: ${DOCKERFILE_IN_BUNDLE}" >&2
+  exit 1
+fi
+if ! grep -Fq "maturin build --release --manifest-path mgr_src/mgrcli_rust/Cargo.toml" "${DOCKERFILE_IN_BUNDLE}"; then
+  echo "ERROR: Bundle Dockerfile is not pinned to mgr_src/mgrcli_rust manifest path." >&2
+  echo "Refusing push to avoid building the wrong Rust CIF parser crate." >&2
+  exit 1
+fi
+if ! grep -Fq "COPY --from=builder /app/mgr_src/mgrcli_rust/target/wheels/*.whl" "${DOCKERFILE_IN_BUNDLE}"; then
+  echo "ERROR: Bundle Dockerfile wheel copy path does not target mgr_src/mgrcli_rust." >&2
+  echo "Refusing push to avoid stale/wrong wheel artifacts." >&2
+  exit 1
+fi
 
 # Never ship local HTS artifacts, test junk, or binary logos (Hub rejects binaries without Xet)
 rm -f "${BUNDLE}/ZIF-8-RASPA.cif" "${BUNDLE}"/streamlit_*.png "${BUNDLE}/test_streamlit_app.py" 2>/dev/null || true
