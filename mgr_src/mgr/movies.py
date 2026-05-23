@@ -647,13 +647,13 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
     cmap = {rid: cscale[i % len(cscale)] for i, rid in enumerate(uniq_regions)}
     colors = [list(np.asarray(cmap.get(int(r), [180, 180, 180]), dtype=float) / 255.0) for r in region_labels]
 
-    # Marker scale (half of former 6 + 5 * norm): 3 + 2.5 * norm from cage radii
+    # Marker scale: 3 + 2.5 * norm from cage radii (matches pbc maxima sizing)
     vals = np.asarray(cage_radii, dtype=float)
     vmin = float(vals.min()) if len(vals) else 0.0
     vmax = float(vals.max()) if len(vals) else 1.0
     denom = max(vmax - vmin, 1e-12)
     norm = (vals - vmin) / denom
-    sizes = (6.0 + 5.0 * norm).astype(float).tolist()
+    sizes = (3.0 + 2.5 * norm).astype(float).tolist()
     maxima_info = np.asarray(seg.get("maxima_info", []), dtype=int)
     maxima_pbc_dict_raw = seg.get("maxima_pbc_dict", {}) or {}
 
@@ -3390,6 +3390,11 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         <button id="applyViewDir" type="button" style="font-size:9px;padding:1px 4px;">Set</button>
       </label>
       <label>Exploded: <input id="explodeSlider" type="range" min="0" max="6" step="0.05" value="0" style="width:140px;vertical-align:middle;" /></label>
+      <label style="margin-left:2px;">Plane: <select id="explodePlane" style="font-size:10px;vertical-align:middle;">
+        <option value="ab" selected>AB</option>
+        <option value="bc">BC</option>
+        <option value="ca">CA</option>
+      </select></label>
       <label>Bg: <input id="bgPicker" type="color" value="#111111" style="width:40px;vertical-align:middle;border:none;height:16px;" /></label>
       <div style="margin-top:2px;display:flex;gap:2px;">
         <button id="bgGradientNone" title="Solid" style="font-size:8px;padding:1px 3px;">■</button>
@@ -3628,6 +3633,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     const viewDirZInput = document.getElementById("viewDirZ");
     const applyViewDirBtn = document.getElementById("applyViewDir");
     const explodeSlider = document.getElementById("explodeSlider");
+    const explodePlane = document.getElementById("explodePlane");
     const bgPicker = document.getElementById("bgPicker");
     const pngResSelect = document.getElementById("pngRes");
     const recResSelect = document.getElementById("recRes");
@@ -4705,12 +4711,15 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     controls.update();
 
     // Override default camera to 1.5 * (la, lb, lc) from scene center along (1,1,1)
+    // Also store cell lengths for dynamic explode slider max.
+    let _cellLengths = { la: 20, lb: 20, lc: 20 };
     let _camOverridePos = null;
     if (cellObj && cellObj.geometry && cellObj.geometry.attributes && cellObj.geometry.attributes.position) {
       const cpos = cellObj.geometry.attributes.position.array;
       const la = Math.sqrt(cpos[3]*cpos[3] + cpos[4]*cpos[4] + cpos[5]*cpos[5]);
       const lb = Math.sqrt(cpos[9]*cpos[9] + cpos[10]*cpos[10] + cpos[11]*cpos[11]);
       const lc = Math.sqrt(cpos[15]*cpos[15] + cpos[16]*cpos[16] + cpos[17]*cpos[17]);
+      _cellLengths = { la: la, lb: lb, lc: lc };
       _camOverridePos = new THREE.Vector3(1.5 * la, 1.5 * lb, 1.5 * lc);
       [perspectiveCam, orthoCam].forEach(function(cam) {
         cam.position.copy(_camOverridePos);
@@ -4719,6 +4728,9 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       controls.target.copy(sceneCenter);
       controls.update();
       updateOrthoFrustum();
+      // Dynamic slider max: largest cell dimension / 8 + cushion
+      const maxLen = Math.max(la, lb, lc);
+      explodeSlider.max = (maxLen / 8.0 + 0.5).toFixed(2);
     }
 
     // Exploded view: multi-directional separation
@@ -5253,17 +5265,29 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
 
     function applyExplodeOffsets() {
       const dist = parseFloat(explodeSlider.value);
+      const plane = explodePlane ? explodePlane.value : "ab";
+      // Determine which 3D axes map to the 2D explode X/Y based on plane selection.
+      // AB plane: a→X, b→Y, c unused (original default)
+      // BC plane: b→X, c→Y, a unused
+      // CA plane: c→X, a→Y, b unused
+      const axisMap = {
+        "ab": { x: 0, y: 1 },  // a→X, b→Y
+        "bc": { x: 1, y: 2 },  // b→X, c→Y
+        "ca": { x: 2, y: 0 },  // c→X, a→Y
+      };
+      const axes = axisMap[plane] || axisMap["ab"];
       const spacing = dist * 8.0;
       _explodeGroups.forEach(function(group) {
-        const offsetX = group.x * spacing;
-        const offsetY = group.y * spacing;
+        const offsets = [0, 0, 0];
+        offsets[axes.x] = group.x * spacing;
+        offsets[axes.y] = group.y * spacing;
         group.ids.forEach(function(tid) {
           const obj = objectsById[tid];
           if (!obj) return;
           if (_explodeOrig[tid] === undefined) {
             _explodeOrig[tid] = obj.position.clone();
           }
-          obj.position.copy(_explodeOrig[tid]).add(new THREE.Vector3(offsetX, offsetY, 0));
+          obj.position.copy(_explodeOrig[tid]).add(new THREE.Vector3(offsets[0], offsets[1], offsets[2]));
         });
       });
       // Show/hide the cell copies when exploded — each follows actual trace visibility
@@ -5273,6 +5297,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     }
 
     explodeSlider.addEventListener("input", applyExplodeOffsets);
+    if (explodePlane) explodePlane.addEventListener("change", applyExplodeOffsets);
 
     bgPicker.addEventListener("input", () => {
       updateSceneBackground();
