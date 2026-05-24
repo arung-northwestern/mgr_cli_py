@@ -3479,20 +3479,7 @@ def main() -> None:
                             else:
                                 plot_traces.append(maxima_trace)
 
-                        if analysis["pld_locations"].size:
-                            pld_traces = mgr.plot_pld_locations(
-                                analysis["dgrid"],
-                                analysis["pld_locations"],
-                                atoms,
-                                show_spheres=False,
-                                sphere_opacity=0.85,
-                                marker_size=10,
-                                marker_color="limegreen",
-                            )
-                            if isinstance(pld_traces, tuple):
-                                plot_traces.extend(pld_traces)
-                            else:
-                                plot_traces.append(pld_traces)
+                        # Old approximate PLD location markers removed — percolation windows (orange diamonds) are more accurate
 
                         plot_traces.extend(cluster_traces)
 
