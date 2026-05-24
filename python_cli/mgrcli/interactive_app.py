@@ -427,6 +427,64 @@ def _spaces_allow_compute_now() -> bool:
     st.session_state["spaces_last_compute_at"] = now
     return True
 
+def _should_queue_subsidiary() -> bool:
+    """Whether to queue subsidiary tab computes on Spaces."""
+    if not _is_spaces_deployment():
+        return False
+    main_elapsed = st.session_state.get("_compute_log", {}).get("elapsed", 0)
+    return float(main_elapsed) > 30.0
+
+
+def _run_or_queue_subsidiary(
+    job_name: str,
+    compute_fn,
+    result_slot,
+    cache_dict: dict,
+    cache_key: str,
+):
+    """
+    Run a subsidiary compute synchronously or via the Spaces queue.
+
+    On Spaces when main compute took >30s, submits to the queue.
+    Otherwise runs synchronously with st.spinner().
+    Stores result in cache_dict[cache_key] when done.
+    """
+    if not _should_queue_subsidiary():
+        # Synchronous path (local or fast materials)
+        with st.spinner(f"Computing {job_name}..."):
+            cache_dict[cache_key] = compute_fn()
+        return
+
+    # Queued path
+    _start_queue_worker()
+    import uuid
+    job_id = str(uuid.uuid4())
+    session_key = f"_sub_job_{job_name}"
+
+    def _queued_fn():
+        result = compute_fn()
+        cache_dict[cache_key] = result
+        return result
+
+    with _JOB_LOCK:
+        _JOB_REGISTRY[job_id] = {
+            "status": "queued",
+            "name": job_name,
+            "session_key": session_key,
+            "progress": None,
+        }
+
+    _JOB_QUEUE.put((1, job_id, _queued_fn, (), {}))
+    st.session_state[session_key] = job_id
+
+    _render_spaces_queue_banner(
+        result_slot,
+        job_id=job_id,
+        status="queued",
+        show_global_busy=False,
+    )
+    st.info(f"⏳ {job_name} submitted to queue — please wait...")
+
 
 def _viz_settings_title_suffix(
     *,
@@ -3256,11 +3314,13 @@ def main() -> None:
             st.markdown(f"## Material: **{material_name}**")
             pld_cache = st.session_state.setdefault("pld_cache", {})
             effective_key = analysis_key or results_key
+            pld_status_slot = st.empty()
             compute_pld = st.button("Compute PLD & percolation metrics", key="compute_pld")
             if compute_pld:
-                with st.spinner("Computing PLD and percolation history..."):
-                    try:
-                        pld_cache[effective_key] = _compute_pld_analysis(
+                try:
+                    _run_or_queue_subsidiary(
+                        job_name="PLD & Percolation",
+                        compute_fn=lambda: _compute_pld_analysis(
                             results_data,
                             atoms,
                             spacing=float(metadata.get("spacing", spacing)),
@@ -3272,9 +3332,13 @@ def main() -> None:
                             watershed_backend=str(
                                 metadata.get("watershed_backend", "rust_bucket")
                             ),
-                        )
-                    except Exception as exc:
-                        st.error(f"Percolation analysis failed: {exc}")
+                        ),
+                        result_slot=pld_status_slot,
+                        cache_dict=pld_cache,
+                        cache_key=effective_key,
+                    )
+                except Exception as exc:
+                    st.error(f"Percolation analysis failed: {exc}")
 
             analysis = pld_cache.get(effective_key)
             if not analysis:
