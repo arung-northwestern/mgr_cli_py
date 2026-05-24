@@ -14,7 +14,7 @@ import json
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, redirect_stderr, redirect_stdout
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from pathlib import Path
 from threading import Lock, Thread
@@ -451,7 +451,7 @@ def _read_counter_snapshot() -> dict:
 
 def _counter_metrics(state: dict) -> tuple:
     """Compute (day, month, year, total) from counter state."""
-    today = datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     month_prefix = today[:7]  # YYYY-MM
     year_prefix = today[:4]   # YYYY
     by_day = state.get("by_day", {})
@@ -472,14 +472,14 @@ def _increment_success_counter() -> tuple:
         # Read
         state = _read_counter_snapshot()
         # Increment
-        today = datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         state["total"] = state.get("total", 0) + 1
         state.setdefault("by_day", {})
         state["by_day"][today] = state["by_day"].get(today, 0) + 1
-        state["updated_at_utc"] = datetime.now(datetime.UTC).isoformat() + "Z"
+        state["updated_at_utc"] = datetime.now(timezone.utc).isoformat() + "Z"
         state["space_id"] = _space_id()
         # Cleanup old keys
-        cutoff = (datetime.now(datetime.UTC) - timedelta(days=365)).strftime("%Y-%m-%d")
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
         state["by_day"] = {k: v for k, v in state["by_day"].items() if k >= cutoff}
         # Atomic write
         tmp = path.with_suffix(".tmp")
