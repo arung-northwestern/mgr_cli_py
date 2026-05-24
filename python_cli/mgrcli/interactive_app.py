@@ -1075,10 +1075,10 @@ def _compute_pld_analysis(
     threshold_abs: float,
     min_distance: float,
     extra_padding: float,
-    force_cpu_dgrid: bool = True,
+    force_cpu_dgrid: bool = False,
     watershed_backend: str = "rust_det",
 ) -> Dict[str, Any]:
-    # For percolation, use CPU dgrid + fresh segmentation to match reference behavior.
+    # Use cached results from main compute; force_cpu_dgrid recreates grid from scratch.
     if force_cpu_dgrid:
         dgrid = mgr.dgrid_from_atoms_cpu(mat_atoms, spacing=spacing).astype(np.float32)
         analysis_results = mgr.do_periodic_segmentation_rust(
@@ -1504,7 +1504,7 @@ def _hts_one_material(
                             threshold_abs,
                             min_distance,
                             extra_padding,
-                            force_cpu_dgrid=True,
+                            force_cpu_dgrid=False,
                             watershed_backend=watershed_backend_w,
                         )
                         mod = dict(results)
@@ -1577,7 +1577,7 @@ def _hts_one_material(
                     threshold_abs,
                     min_distance,
                     extra_padding,
-                    force_cpu_dgrid=True,
+                    force_cpu_dgrid=False,
                     watershed_backend=watershed_backend_w,
                 )
                 modified_results = dict(results)
