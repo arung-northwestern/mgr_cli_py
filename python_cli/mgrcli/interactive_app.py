@@ -2906,7 +2906,7 @@ def main() -> None:
     else:
         # Before compute: only show the visualization placeholder, no subsidiary tabs
         visualization_tab = st.container()
-        percolation_tab = psd_tab = sa_vol_tab = contextlib.nullcontext()
+        percolation_tab = psd_tab = sa_vol_tab = nullcontext()
 
     with visualization_tab:
         if results_data is None:
