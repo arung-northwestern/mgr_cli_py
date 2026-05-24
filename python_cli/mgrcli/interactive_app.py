@@ -422,11 +422,15 @@ def _space_id() -> str:
     return os.environ.get("SPACE_ID") or os.environ.get("HF_SPACE_ID") or "local"
 
 def _counter_path() -> Path:
-    """Return path to counter.json. Spaces uses /data, local uses ~/.mgr/."""
+    """Return path to counter.json. Spaces uses /data/<space_id>/, local uses ~/.mgr/."""
     if _is_spaces_deployment():
         data_dir = Path("/data")
         if data_dir.is_dir() and os.access(str(data_dir), os.W_OK):
-            return data_dir / "counter.json"
+            # Use space_id subdirectory so both Spaces can share one bucket
+            sid = _space_id().split("/")[-1]  # e.g. "mofography-web-demo-private-testing"
+            counter_dir = data_dir / sid
+            counter_dir.mkdir(parents=True, exist_ok=True)
+            return counter_dir / "counter.json"
     # Local or fallback
     local_dir = Path.home() / ".mgr"
     local_dir.mkdir(parents=True, exist_ok=True)
