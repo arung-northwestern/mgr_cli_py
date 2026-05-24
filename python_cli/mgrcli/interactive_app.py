@@ -8,9 +8,14 @@ import tempfile
 import time
 import hashlib
 import html
+import fcntl
+import json
+
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, redirect_stderr, redirect_stdout
+from datetime import datetime, timedelta
+
 from pathlib import Path
 from threading import Lock, Thread
 import queue
@@ -410,6 +415,95 @@ def _is_spaces_deployment() -> bool:
         return deployment == "spaces"
     # Fallback for native Spaces envs even when MGR_DEPLOYMENT is not set.
     return bool(os.environ.get("SPACE_ID") or os.environ.get("HF_SPACE_ID"))
+
+
+def _space_id() -> str:
+    """Return the HF Space ID or 'local'."""
+    return os.environ.get("SPACE_ID") or os.environ.get("HF_SPACE_ID") or "local"
+
+def _counter_path() -> Path:
+    """Return path to counter.json. Spaces uses /data, local uses ~/.mgr/."""
+    if _is_spaces_deployment():
+        data_dir = Path("/data")
+        if data_dir.is_dir() and os.access(str(data_dir), os.W_OK):
+            return data_dir / "counter.json"
+    # Local or fallback
+    local_dir = Path.home() / ".mgr"
+    local_dir.mkdir(parents=True, exist_ok=True)
+    return local_dir / "counter.json"
+
+def _is_counter_ephemeral() -> bool:
+    """True if counter won't survive restart."""
+    if not _is_spaces_deployment():
+        return False  # Local ~/.mgr is persistent
+    return not (Path("/data").is_dir() and os.access(str(Path("/data")), os.W_OK))
+
+def _read_counter_snapshot() -> dict:
+    """Safe JSON load of counter file."""
+    try:
+        p = _counter_path()
+        if p.exists():
+            with open(p) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {"version": 1, "space_id": _space_id(), "total": 0, "by_day": {}, "updated_at_utc": ""}
+
+def _counter_metrics(state: dict) -> tuple:
+    """Compute (day, month, year, total) from counter state."""
+    today = datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+    month_prefix = today[:7]  # YYYY-MM
+    year_prefix = today[:4]   # YYYY
+    by_day = state.get("by_day", {})
+    day = by_day.get(today, 0)
+    month = sum(v for k, v in by_day.items() if k.startswith(month_prefix))
+    year = sum(v for k, v in by_day.items() if k.startswith(year_prefix))
+    total = state.get("total", 0)
+    return (day, month, year, total)
+
+def _increment_success_counter() -> tuple:
+    """Atomic increment. Returns (day, month, year, total)."""
+    path = _counter_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(".lock")
+    lock_fd = open(str(lock_path), "w")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        # Read
+        state = _read_counter_snapshot()
+        # Increment
+        today = datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+        state["total"] = state.get("total", 0) + 1
+        state.setdefault("by_day", {})
+        state["by_day"][today] = state["by_day"].get(today, 0) + 1
+        state["updated_at_utc"] = datetime.now(datetime.UTC).isoformat() + "Z"
+        state["space_id"] = _space_id()
+        # Cleanup old keys
+        cutoff = (datetime.now(datetime.UTC) - timedelta(days=365)).strftime("%Y-%m-%d")
+        state["by_day"] = {k: v for k, v in state["by_day"].items() if k >= cutoff}
+        # Atomic write
+        tmp = path.with_suffix(".tmp")
+        with open(str(tmp), "w") as f:
+            json.dump(state, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(str(tmp), str(path))
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+    return _counter_metrics(state)
+
+def _render_counter_metrics():
+    """Render counter line near compute button."""
+    state = _read_counter_snapshot()
+    day, month, year, total = _counter_metrics(state)
+    label = f"Computes run — Day: {day} · Month: {month} · Year: {year} · Total: {total}"
+    if _is_counter_ephemeral():
+        st.caption(label + " ⚠ ephemeral")
+    else:
+        st.caption(label)
+
+
 
 
 def _spaces_allow_compute_now() -> bool:
@@ -2520,6 +2614,8 @@ def main() -> None:
         else:
             _render_spaces_queue_banner(compute_status_slot, show_global_busy=True)
 
+    _render_counter_metrics()
+
     if compute_clicked:
         if not _spaces_allow_compute_now():
             return
@@ -2691,6 +2787,11 @@ def main() -> None:
             del st.session_state["_compute_job_id"]
             with _JOB_LOCK:
                 _JOB_REGISTRY.pop(job_id, None)
+            try:
+                _increment_success_counter()
+            except Exception:
+                pass
+
             st.rerun()
         elif status == "error":
             st.error(f"Compute failed: {entry.get('error', 'Unknown error')}")
@@ -2821,6 +2922,10 @@ def main() -> None:
                 "watershed_backend": str(watershed_backend),
             }
             st.session_state["analysis_key"] = results_key
+            try:
+                _increment_success_counter()
+            except Exception:
+                pass
             _RESULT_CACHE[results_key] = results
             pld_cache = st.session_state.setdefault("pld_cache", {})
             pld_cache.pop(results_key, None)
