@@ -2622,6 +2622,7 @@ def main() -> None:
     # Counter rendered in sidebar near version badge (see below)
 
     if compute_clicked:
+        st.session_state.pop("_counter_incremented", None)  # reset for new compute
         if not _spaces_allow_compute_now():
             return
         # Check result cache first
@@ -2792,10 +2793,12 @@ def main() -> None:
             del st.session_state["_compute_job_id"]
             with _JOB_LOCK:
                 _JOB_REGISTRY.pop(job_id, None)
-            try:
-                _increment_success_counter()
-            except Exception:
-                pass
+            if not st.session_state.get("_counter_incremented"):
+                try:
+                    _increment_success_counter()
+                    st.session_state["_counter_incremented"] = True
+                except Exception:
+                    pass
 
             st.rerun()
         elif status == "error":
@@ -2927,10 +2930,12 @@ def main() -> None:
                 "watershed_backend": str(watershed_backend),
             }
             st.session_state["analysis_key"] = results_key
-            try:
-                _increment_success_counter()
-            except Exception:
-                pass
+            if not st.session_state.get("_counter_incremented"):
+                try:
+                    _increment_success_counter()
+                    st.session_state["_counter_incremented"] = True
+                except Exception:
+                    pass
             _RESULT_CACHE[results_key] = results
             pld_cache = st.session_state.setdefault("pld_cache", {})
             pld_cache.pop(results_key, None)
