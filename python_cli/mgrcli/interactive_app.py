@@ -493,16 +493,6 @@ def _increment_success_counter() -> tuple:
         lock_fd.close()
     return _counter_metrics(state)
 
-def _render_counter_metrics():
-    """Render counter line near compute button."""
-    state = _read_counter_snapshot()
-    day, month, year, total = _counter_metrics(state)
-    label = f"Computes run — Day: {day} · Month: {month} · Year: {year} · Total: {total}"
-    if _is_counter_ephemeral():
-        st.caption(label + " ⚠ ephemeral")
-    else:
-        st.caption(label)
-
 
 
 
@@ -1910,6 +1900,21 @@ def main() -> None:
         ),
         unsafe_allow_html=True,
     )
+    # Counter metrics
+    _counter_state = _read_counter_snapshot()
+    _cd, _cm, _cy, _ct = _counter_metrics(_counter_state)
+    _counter_label = f"Computes: {_ct} (today: {_cd})"
+    _counter_style = (
+        "font-family:Menlo,Consolas,monospace;font-size:0.78rem;"
+        "color:#8899aa;background:rgba(136,153,170,0.10);padding:0.12rem 0.35rem;border-radius:0.35rem;"
+    )
+    if _is_counter_ephemeral():
+        _counter_label += " ⚠"
+    st.markdown(
+        f"<div style='line-height:1.2;margin-top:4px;'>"
+        f"<span style='{_counter_style}'>{_counter_label}</span></div>",
+        unsafe_allow_html=True,
+    )
     st.markdown(
         "<div style='line-height:1.35;'>"
         "<div style='font-size:0.92rem;opacity:0.9;'>Pore Graph Analysis &amp; Visualization of Nanoporous Materials</div>"
@@ -2614,7 +2619,7 @@ def main() -> None:
         else:
             _render_spaces_queue_banner(compute_status_slot, show_global_busy=True)
 
-    _render_counter_metrics()
+    # Counter rendered in sidebar near version badge (see below)
 
     if compute_clicked:
         if not _spaces_allow_compute_now():
