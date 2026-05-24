@@ -2425,15 +2425,7 @@ def main() -> None:
         )
 
         js_threshold = 0.2
-        if detect_pocket_types:
-            js_threshold = st.number_input(
-                "Jensen-Shannon Threshold",
-                min_value=0.01,
-                max_value=1.0,
-                value=0.2,
-                step=0.01,
-                help="Threshold for agglomerative clustering based on Jensen-Shannon distance between cavity size distributions"
-            )
+        # Peak-first clustering uses tau_peak from bin width; JS threshold only used for geometry fallback
 
 
 
@@ -2753,7 +2745,8 @@ def main() -> None:
 
                         num_clusters = len(np.unique(regions_cluster)) - 1
                         _psd_label = "pocketwise probe-occupiable PSDs" if pocket_psds is not None else "centroid-distance histograms"
-                        st.info(f"Found {num_clusters} different pocket types using JS threshold: {js_threshold} (PSD source: {_psd_label})")
+                        _method_label = "peak-first clustering" if pocket_psds is not None else f"JS threshold: {js_threshold}"
+                        st.info(f"Found {num_clusters} different pocket types using {_method_label} (PSD source: {_psd_label})")
                     else:
                         results["pocket_types_detected"] = False
                 except Exception as e:
@@ -4259,10 +4252,8 @@ def _render_hts_mode() -> None:
             hts_do_pore_dia = st.checkbox("Compute pore diameter and percolation", value=False, key="hts_pore_dia")
             hts_save_pore_dia_csv = st.checkbox("Save pore diameter CSV", value=False, key="hts_save_pore_dia")
             hts_detect_pocket_types = st.checkbox("Detect pocket types", value=False, key="hts_detect_pocket_types")
-            if hts_detect_pocket_types or hts_plot_pocket_types:
-                hts_js_threshold = st.slider("Jensen–Shannon threshold for pocket clustering", 0.05, 0.5, 0.2, 0.01, key="hts_js_threshold")
-            else:
-                hts_js_threshold = 0.2
+            # Peak-first clustering auto-tunes from bin width; JS threshold only for geometry fallback
+            hts_js_threshold = 0.2
             hts_do_psd = st.checkbox("Compute PSD", value=False, key="hts_psd")
             hts_psd_domain = st.radio("PSD domain", ["Occupiable only", "Accessible only", "Both"], index=0, key="hts_psd_domain")
             if hts_psd_domain in ("Accessible only", "Both"):
