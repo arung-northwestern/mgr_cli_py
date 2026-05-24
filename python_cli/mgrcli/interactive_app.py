@@ -10,7 +10,7 @@ import hashlib
 import html
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
 from pathlib import Path
 from threading import Lock, Thread
 import queue
@@ -2874,34 +2874,39 @@ def main() -> None:
             show_rings=True,
         )
 
-    # Style tabs: larger font, visible borders so users don't miss them
-    st.markdown("""<style>
-        .stTabs [data-baseweb="tab-list"] { gap: 8px; }
-        .stTabs [data-baseweb="tab"] {
-            font-size: 16px;
-            font-weight: 600;
-            padding: 10px 20px;
-            border: 2px solid #444;
-            border-radius: 8px 8px 0 0;
-            background-color: #1a1a2e;
-            color: #ccc;
-            transition: all 0.2s;
-        }
-        .stTabs [data-baseweb="tab"]:hover {
-            background-color: #16213e;
-            border-color: #666;
-            color: #fff;
-        }
-        .stTabs [aria-selected="true"] {
-            background-color: #0f3460 !important;
-            border-color: #4fc3f7 !important;
-            color: #fff !important;
-        }
-    </style>""", unsafe_allow_html=True)
+    if results_data is not None:
+        # Style tabs: larger font, visible borders so users don't miss them
+        st.markdown("""<style>
+            .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+            .stTabs [data-baseweb="tab"] {
+                font-size: 16px;
+                font-weight: 600;
+                padding: 10px 20px;
+                border: 2px solid #444;
+                border-radius: 8px 8px 0 0;
+                background-color: #1a1a2e;
+                color: #ccc;
+                transition: all 0.2s;
+            }
+            .stTabs [data-baseweb="tab"]:hover {
+                background-color: #16213e;
+                border-color: #666;
+                color: #fff;
+            }
+            .stTabs [aria-selected="true"] {
+                background-color: #0f3460 !important;
+                border-color: #4fc3f7 !important;
+                color: #fff !important;
+            }
+        </style>""", unsafe_allow_html=True)
 
-    visualization_tab, percolation_tab, psd_tab, sa_vol_tab = st.tabs([
-        "Visualization", "PLD & Percolation", "Pore Size Distribution", "Surface Areas & Void Volumes",
-    ])
+        visualization_tab, percolation_tab, psd_tab, sa_vol_tab = st.tabs([
+            "Visualization", "PLD & Percolation", "Pore Size Distribution", "Surface Areas & Void Volumes",
+        ])
+    else:
+        # Before compute: only show the visualization placeholder, no subsidiary tabs
+        visualization_tab = st.container()
+        percolation_tab = psd_tab = sa_vol_tab = contextlib.nullcontext()
 
     with visualization_tab:
         if results_data is None:
@@ -3681,7 +3686,7 @@ def main() -> None:
                 psd_domain = st.radio(
                     "Domain",
                     options=["Occupiable only", "Accessible only", "Both"],
-                    index=0,
+                    index=2,
                     help="Occupiable (probe center): every pore region subject to the clearance rule. Accessible (probe center): only regions that percolate at σ, same clearance rule.",
                 )
                 probe_radius_psd = st.number_input(
