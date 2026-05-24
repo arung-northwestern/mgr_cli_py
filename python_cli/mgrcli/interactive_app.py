@@ -2816,6 +2816,31 @@ def main() -> None:
             show_rings=True,
         )
 
+    # Style tabs: larger font, visible borders so users don't miss them
+    st.markdown("""<style>
+        .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+        .stTabs [data-baseweb="tab"] {
+            font-size: 16px;
+            font-weight: 600;
+            padding: 10px 20px;
+            border: 2px solid #444;
+            border-radius: 8px 8px 0 0;
+            background-color: #1a1a2e;
+            color: #ccc;
+            transition: all 0.2s;
+        }
+        .stTabs [data-baseweb="tab"]:hover {
+            background-color: #16213e;
+            border-color: #666;
+            color: #fff;
+        }
+        .stTabs [aria-selected="true"] {
+            background-color: #0f3460 !important;
+            border-color: #4fc3f7 !important;
+            color: #fff !important;
+        }
+    </style>""", unsafe_allow_html=True)
+
     visualization_tab, percolation_tab, psd_tab, sa_vol_tab = st.tabs([
         "Visualization", "PLD & Percolation", "Pore Size Distribution", "Surface Areas & Void Volumes",
     ])
@@ -3577,6 +3602,17 @@ def main() -> None:
             regions_pbc = results_data.get("regions_pbc")
             has_connections = results_data.get("connections") is not None
 
+            st.info(
+                "📊 **PSD Methodology**\n"
+                "• **Distance grid:** geometric clearance to the nearest framework atom surface "
+                "(Euclidean distance transform on the pore side).\n"
+                "• **Probe-centered:** samples drawn only from void voxels where clearance ≥ probe radius σ.\n"
+                "• **Global PSD:** volume-sampled — peak height is proportional to the *volume of pockets* of that diameter.\n"
+                "• **Pocket-wise PSD:** fixed N points per pocket — overall height is proportional to the *number of pockets* of that diameter.\n"
+                "• **Occupiable:** PSD over all segmented pore regions under the clearance rule.\n"
+                "• **Accessible:** same rule, but only regions that percolate at σ."
+            )
+
             with st.form("psd_settings"):
                 psd_domain = st.radio(
                     "Domain",
@@ -3642,14 +3678,6 @@ def main() -> None:
                 )
 
                 compute_psd = st.form_submit_button("Compute PSDs")
-
-            st.info(
-                "**Distance grid:** geometric clearance to the cavity surface after assigning radii to framework atoms "
-                "(Euclidean distance transform on the pore side of that surface). "
-                "**Probe-centered** means we only draw histogram samples from void voxels where clearance **≥ probe radius σ**. "
-                "**Occupiable (probe center):** PSD over all segmented pore regions under that rule. "
-                "**Accessible (probe center):** same rule, but only regions that **percolate at σ**."
-            )
 
             need_occupiable = psd_domain in ("Occupiable only", "Both")
             need_accessible = psd_domain in ("Accessible only", "Both")
