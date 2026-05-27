@@ -235,6 +235,114 @@ def _configure_rayon_threads() -> int:
     n = SPACES_RAYON_THREADS if _is_spaces_deployment() else LOCAL_RAYON_THREADS_DEFAULT
     os.environ["RAYON_NUM_THREADS"] = str(n)
     return n
+
+
+def _recommended_pocket_psd_bins(
+    dgrid: Any,
+    *,
+    default_max_diameter: float = 50.0,
+    target_bin_width: float = 0.25,
+    min_bins: int = 200,
+) -> np.ndarray:
+    """Build diameter bins for pocketwise PSD / clustering.
+
+    dgrid stores pore *radii*. Convert to diameter and ensure a minimum
+    default range for stable comparisons across materials.
+    """
+    try:
+        dgrid_arr = np.asarray(dgrid, dtype=float)
+        dmax_radius = float(np.nanmax(dgrid_arr))
+        if not np.isfinite(dmax_radius) or dmax_radius <= 0:
+            raise ValueError("invalid dgrid max")
+        dmax_diameter = 2.0 * dmax_radius
+    except Exception:
+        dmax_diameter = float(default_max_diameter)
+
+    max_diameter = max(float(default_max_diameter), float(dmax_diameter))
+    # Keep friendly round upper bounds while preserving >= needed range.
+    max_diameter = float(np.ceil(max_diameter / 0.5) * 0.5)
+    bin_w = max(1e-6, float(target_bin_width))
+    n_bins = max(int(min_bins), int(np.ceil(max_diameter / bin_w)))
+    return np.linspace(0.0, max_diameter, n_bins + 1)
+
+
+def _pocket_type_needs_refinement(
+    *,
+    cluster_count: int,
+    pbc_group_count: int,
+    cluster_diags: List[Dict[str, Any]],
+) -> Tuple[bool, List[str]]:
+    """Heuristic trust gate for pocket-type clustering results."""
+    reasons: List[str] = []
+
+    if any(d.get("median_check") == "REVIEW" for d in cluster_diags):
+        reasons.append("median_check REVIEW present")
+
+    if any(d.get("absorbed_singletons") for d in cluster_diags):
+        reasons.append("coarse clustering used singleton absorb")
+
+    if pbc_group_count >= 40:
+        reasons.append(f"high complexity: {pbc_group_count} pbc groups")
+
+    if cluster_count >= 3 and pbc_group_count <= 12:
+        ranges = [
+            tuple(d.get("peak_range"))
+            for d in cluster_diags
+            if isinstance(d.get("peak_range"), (tuple, list)) and len(d.get("peak_range")) == 2
+        ]
+        ranges = sorted(ranges, key=lambda r: float(r[0]))
+        for i in range(len(ranges) - 1):
+            gap = float(ranges[i + 1][0]) - float(ranges[i][1])
+            if gap <= 1.0:
+                reasons.append(f"close adjacent cluster peaks (gap={gap:.2f} Å)")
+                break
+
+    return (len(reasons) > 0), reasons
+
+
+def _spaces_fine_spacing_feasible(
+    atoms: Any,
+    *,
+    fine_spacing: float = 0.25,
+) -> Tuple[bool, Dict[str, Any]]:
+    """Conservative feasibility estimate for optional 0.25 Å refinement on Spaces."""
+    lengths = tuple(float(x) for x in atoms.cell.cellpar()[:3])
+    est_bytes, n_grid, shape = estimate_rust_dgrid_memory_bytes(len(atoms), fine_spacing, lengths)
+    ops = int(n_grid) * int(len(atoms))
+    mem_cap = int(float(os.environ.get("MGR_SPACES_FINE_REFINE_MAX_GB", "1.5")) * (1024 ** 3))
+    ops_cap = int(os.environ.get("MGR_SPACES_FINE_REFINE_MAX_OPS", "2000000000"))
+    feasible = bool(
+        len(atoms) <= SPACES_MAX_ATOMS
+        and est_bytes <= mem_cap
+        and ops <= ops_cap
+    )
+    return feasible, {
+        "fine_spacing": float(fine_spacing),
+        "n_atoms": int(len(atoms)),
+        "grid_shape": shape,
+        "n_grid": int(n_grid),
+        "estimated_bytes": int(est_bytes),
+        "estimated_gb": float(est_bytes / (1024 ** 3)),
+        "ops": int(ops),
+        "mem_cap_bytes": int(mem_cap),
+        "ops_cap": int(ops_cap),
+    }
+
+
+def _estimate_refine_runtime_sec(
+    *,
+    coarse_seconds: float,
+    coarse_spacing: float,
+    fine_spacing: float,
+    method: str = "rust_aabb",
+) -> float:
+    """Rough runtime estimate for optional refinement pass."""
+    coarse_seconds = max(1.0, float(coarse_seconds))
+    coarse_spacing = max(1e-6, float(coarse_spacing))
+    fine_spacing = max(1e-6, float(fine_spacing))
+    grid_scale = (coarse_spacing / fine_spacing) ** 3
+    method_factor = 0.65 if method == "rust_aabb" else 1.0
+    return max(5.0, coarse_seconds * grid_scale * method_factor)
 _SPACES_COMPUTE_LOCK = Lock()
 
 # ---- Compute worker queue (serializes all jobs across sessions) ----
@@ -1526,52 +1634,27 @@ def _hts_one_material(
 
         if options.get("detect_pocket_types"):
             try:
-                if __package__ and "mgrcli" in __package__:
-                    from mgrcli.cli import get_pbc_groups
-                else:
-                    import sys
-                    _root = P(__file__).resolve().parents[2]
-                    if str(_root) not in sys.path:
-                        sys.path.insert(0, str(_root))
-                    from python_cli.mgrcli.cli import get_pbc_groups
-                from skimage.measure import regionprops
-                unique_regions = results.get("unique_regions")
-                maxima_info = results.get("maxima_info")
-                connections = results.get("connections")
-                maxima = results.get("maxima")
-                maxima_radii = results.get("maxima_radii")
-                pbc_groups_dict = get_pbc_groups(unique_regions, maxima_info)
-                pbc_groups = [v for k, v in pbc_groups_dict.items()]
-                connections_trimmed = [c for c in connections if np.any(np.isin(c[0], unique_regions))]
-                rag = mgr.rag_from_connections(connections_trimmed, maxima)
-                rag = mgr.add_pbc_to_rag(rag, pbc_groups)
-                rag = mgr.add_maxima_to_rag(rag, maxima, maxima_radii, dgrid_r.shape, atoms)
-                props = regionprops(results["regions"])
-                bins = np.linspace(0, 30, 50)
+                from mgr.pocket_typing import (
+                    assign_pocket_types_from_segmentation,
+                    pocket_typing_result_for_app,
+                )
 
-                # Compute pocketwise probe-occupiable PSDs via Rust backend
                 _probe_psd = float(options.get("probe_radius_psd", 1.2))
-                regions_pbc = results.get("regions_pbc", results["regions"])
-                try:
-                    pocket_psds = mgr.compute_psds_pocketwise_rust(
-                        dgrid_r, regions_pbc, atoms,
-                        num_samples_per_region=1000,
-                        bins=bins,
-                        return_fig=False,
-                        probe_center_min_radius=_probe_psd,
-                    )
-                except Exception:
-                    pocket_psds = None
-
-                rag = mgr.add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, atoms, dgrid_r.shape, pocket_psds=pocket_psds)
-                js_threshold = float(options.get("js_threshold", 0.2))
-                _psd_source = "pocket_psd" if pocket_psds is not None else "geometry"
-                rag = mgr.add_clustering_to_rag_geometry_js(rag, props, pbc_groups, atoms, dgrid_r.shape, use_pbc=True, js_threshold=js_threshold, psd_source=_psd_source)
-                results["regions_cluster"] = mgr.clustering_grid_from_regions(results["regions"], rag, cluster_key="cluster_geom_pbc")
-                results["pocket_types_detected"] = True
-                results["psd_source"] = _psd_source
-                if pocket_psds is not None:
-                    results["probe_radius_psd_used"] = _probe_psd
+                results["probe_radius_psd_used"] = _probe_psd
+                _pt_out = assign_pocket_types_from_segmentation(
+                    results,
+                    atoms,
+                    probe_radius_psd=_probe_psd,
+                )
+                _pt_dict = pocket_typing_result_for_app(_pt_out)
+                if _pt_dict.get("ok"):
+                    results["regions_cluster"] = _pt_dict["regions_cluster"]
+                    results["pocket_types_detected"] = True
+                    results["psd_source"] = _pt_dict.get("psd_source", "pocket_psd")
+                    results["pocket_typing_method"] = _pt_dict.get("pocket_typing_method")
+                    results["pocket_type_summary"] = _pt_dict.get("pocket_type_summary", [])
+                    results["pocket_rep_to_type"] = _pt_dict.get("pocket_rep_to_type", {})
+                    results["pocket_typing_audit"] = _pt_dict.get("pocket_typing_audit", {})
             except Exception:
                 pass
 
@@ -2242,11 +2325,11 @@ def main() -> None:
     col1, col2, col3 = st.columns(3)
     with col1:
         mask_thickness = st.number_input(
-            "Mask thickness (Å)",
-            value=0.5,
-            min_value=0.05,
-            help="Points closer than this to the framework are excluded.",
-        )
+                    "Mask thickness (Å)",
+                    value=0.05,
+                    min_value=0.05,
+                    help="Points closer than this to the framework are excluded.",
+                )
     with col2:
         h_value = st.number_input(
             "h (Å)",
@@ -2858,72 +2941,189 @@ def main() -> None:
                 st.warning(f"Could not derive final maxima/radii: {e}. RAG download may fail.")
 
             if detect_pocket_types:
-                from skimage.measure import regionprops
-                import plotly.express as px
+                from mgr.pocket_typing import (
+                    assign_pocket_types_from_segmentation,
+                    pocket_typing_result_for_app,
+                )
 
-                dgrid_r = results["dgrid"]
-                regions = results["regions"]
-                regions_pbc = results["regions_pbc"]
-                maxima_info = results["maxima_info"]
-                all_maxima = results["all_maxima"]
-                all_maxima_radii = dgrid_r[tuple(maxima_info[:, 1:4].T)]
-                connections = results["connections"]
-                unique_regions = results["unique_regions"]
-                mat_atoms_r = results["ase_atoms"]
+                def _cluster_pocket_types_from_results(_results_obj: Dict[str, Any]) -> Dict[str, Any]:
+                    mat_atoms_r = _results_obj.get("ase_atoms")
+                    if mat_atoms_r is None:
+                        return {"ok": False, "error": "ase_atoms missing from results."}
+                    _probe_psd = float(_results_obj.get("probe_radius_psd_used", 1.2))
+                    _pt = assign_pocket_types_from_segmentation(
+                        _results_obj,
+                        mat_atoms_r,
+                        probe_radius_psd=_probe_psd,
+                    )
+                    return pocket_typing_result_for_app(_pt)
 
-                pbc_groups_dict = get_pbc_groups(unique_regions, maxima_info)
-                pbc_groups = [v for k, v in pbc_groups_dict.items()]
-
-                maxima_r = all_maxima[:regions.max()]
-                maxima_radii_r = all_maxima_radii[:regions.max()]
-                connections_trimmed = [c for c in connections if np.any(np.isin(c[0], unique_regions))]
+                def _apply_pocket_cluster_output(_target: Dict[str, Any], _out: Dict[str, Any], *, refined: bool = False) -> None:
+                    _target["regions_cluster"] = _out["regions_cluster"]
+                    _target["pocket_types_detected"] = True
+                    _target["psd_source"] = _out.get("psd_source", "pocket_psd")
+                    _target["probe_radius_psd_used"] = _out.get("probe_psd", 1.2)
+                    _target["pocket_typing_method"] = _out.get("pocket_typing_method", "max_probe_radius")
+                    _target["pocket_type_summary"] = _out.get("pocket_type_summary", [])
+                    _target["pocket_rep_to_type"] = _out.get("pocket_rep_to_type", {})
+                    _target["pocket_typing_audit"] = _out.get("pocket_typing_audit", {})
+                    _target["pocket_type_cluster_diagnostics"] = _out.get("cluster_diags", [])
+                    _target["pocket_type_pbc_group_count"] = int(_out.get("pbc_group_count", 0))
+                    _target["pocket_type_refined"] = bool(refined)
 
                 try:
-                    if len(maxima_r) > 0:
-                        rag = mgr.rag_from_connections(connections_trimmed, maxima_r)
-                        rag = mgr.add_pbc_to_rag(rag, pbc_groups)
-                        rag = mgr.add_maxima_to_rag(rag, maxima_r, maxima_radii_r, dgrid_r.shape, mat_atoms_r)
+                    coarse_out = _cluster_pocket_types_from_results(results)
+                    if not coarse_out.get("ok"):
+                        raise RuntimeError(coarse_out.get("error", "Unknown pocket typing error"))
 
-                        props = regionprops(regions)
-                        bins = np.linspace(0, 30, 50)
+                    _apply_pocket_cluster_output(results, coarse_out, refined=False)
+                    _coarse_clusters = int(coarse_out.get("num_clusters", 0))
+                    _base_atoms = results.get("ase_atoms")
 
-                        # Compute pocketwise probe-occupiable PSDs via Rust backend
-                        _probe_psd = 1.2  # helium default
-                        try:
-                            from mgr.rust_fun import compute_psds_pocketwise_rust
-                            pocket_psds = mgr.compute_psds_pocketwise_rust(
-                                dgrid_r, regions_pbc, mat_atoms_r,
-                                num_samples_per_region=1000,
-                                bins=bins,
-                                return_fig=False,
-                                probe_center_min_radius=_probe_psd,
+                    _needs_refine = float(spacing) > 0.51
+                    _refine_reasons: List[str] = []
+                    if _needs_refine:
+                        _refine_reasons.append(
+                            f"grid spacing {float(spacing):.2f} Å > 0.5 Å (optional finer grid for peak-radius bands)"
+                        )
+                    if _refine_reasons:
+                        results["pocket_type_refine_reasons"] = list(_refine_reasons)
+
+                    if _needs_refine:
+                        _reason_txt = "; ".join(_refine_reasons)
+                        _coarse_elapsed = max(1.0, time.time() - progress.start_time)
+                        _fine_spacing = max(0.25, float(spacing) * 0.5)
+                        _eta_sec = _estimate_refine_runtime_sec(
+                            coarse_seconds=_coarse_elapsed,
+                            coarse_spacing=float(spacing),
+                            fine_spacing=float(_fine_spacing),
+                            method="rust_aabb",
+                        )
+                        results["pocket_type_refine_recommended"] = True
+                        results["pocket_type_refine_eta_sec"] = float(_eta_sec)
+
+                        if _is_spaces_deployment():
+                            _can_refine_spaces, _feas = _spaces_fine_spacing_feasible(_base_atoms, fine_spacing=_fine_spacing)
+                            _mem_gb = _feas.get("estimated_gb", 0.0)
+                            _ops = _feas.get("ops", 0)
+                            st.warning(
+                                "Pocket-type result may be resolution-sensitive at current spacing. "
+                                f"Reasons: {_reason_txt}."
                             )
-                        except Exception:
-                            pocket_psds = None
+                            if _can_refine_spaces:
+                                st.info(
+                                    f"Optional refine available on Spaces at {_fine_spacing:.2f} Å (Rust AABB). "
+                                    f"Estimated time: ~{int(round(_eta_sec))} s. "
+                                    f"Estimated dgrid memory: ~{_mem_gb:.2f} GiB, ops={_ops:,}."
+                                )
+                                _refine_btn_key = f"refine_pocket_types::{results_key}"
+                                if st.button(
+                                    "Refine pocket types now (0.25 Å, Rust AABB)",
+                                    key=_refine_btn_key,
+                                    use_container_width=True,
+                                ):
+                                    try:
+                                        refine_progress = _start_compute_thread(
+                                            _base_atoms,
+                                            spacing=_fine_spacing,
+                                            mask_thickness=mask_thickness,
+                                            h_value=h_value,
+                                            min_distance=min_distance,
+                                            threshold_abs=threshold_abs,
+                                            extra_padding=extra_padding,
+                                            watershed_backend=watershed_backend,
+                                            use_aabb_method=True,
+                                            block_size=block_size,
+                                            dgrid_method="rust_aabb",
+                                            min_box_thickness_enabled=min_box_thickness_enabled,
+                                            min_box_thickness=min_box_thickness,
+                                        )
+                                    except Exception as _aabb_err:
+                                        st.warning(
+                                            f"Rust AABB refinement setup failed ({_aabb_err}); falling back to rust_exact."
+                                        )
+                                        refine_progress = _start_compute_thread(
+                                            _base_atoms,
+                                            spacing=_fine_spacing,
+                                            mask_thickness=mask_thickness,
+                                            h_value=h_value,
+                                            min_distance=min_distance,
+                                            threshold_abs=threshold_abs,
+                                            extra_padding=extra_padding,
+                                            watershed_backend=watershed_backend,
+                                            use_aabb_method=False,
+                                            block_size=block_size,
+                                            dgrid_method="rust_exact",
+                                            min_box_thickness_enabled=min_box_thickness_enabled,
+                                            min_box_thickness=min_box_thickness,
+                                        )
 
-                        rag = mgr.add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, mat_atoms_r, dgrid_r.shape, pocket_psds=pocket_psds)
-                        _psd_source = "pocket_psd" if pocket_psds is not None else "geometry"
-                        rag = mgr.add_clustering_to_rag_geometry_js(rag, props, pbc_groups, mat_atoms_r, dgrid_r.shape, use_pbc=True, js_threshold=js_threshold, psd_source=_psd_source)
+                                    while not refine_progress.done:
+                                        _render_progress_ui(refine_progress)
+                                        time.sleep(0.6)
 
-                        regions_cluster = mgr.clustering_grid_from_regions(regions, rag, cluster_key="cluster_geom_pbc")
-                        results["regions_cluster"] = regions_cluster
-                        results["rag_clustered"] = rag
-                        results["pocket_types_detected"] = True
-                        results["js_threshold_used"] = js_threshold
-                        results["psd_source"] = _psd_source
-                        if pocket_psds is not None:
-                            results["probe_radius_psd_used"] = _probe_psd
+                                    if refine_progress.error:
+                                        raise RuntimeError(refine_progress.error)
 
-                        num_clusters = len(np.unique(regions_cluster)) - 1
-                        _psd_label = "pocketwise probe-occupiable PSDs" if pocket_psds is not None else "centroid-distance histograms"
-                        _method_label = "peak-first clustering" if pocket_psds is not None else f"JS threshold: {js_threshold}"
-                        st.info(f"Found {num_clusters} different pocket types using {_method_label} (PSD source: {_psd_label})")
-                    else:
-                        results["pocket_types_detected"] = False
+                                    refined_results = refine_progress.result or {}
+                                    if "dgrid" not in refined_results:
+                                        refined_results["dgrid"] = compute_dgrid_rust(
+                                            _base_atoms,
+                                            _fine_spacing,
+                                            method="rust_aabb",
+                                        )
+                                    refined_results["ase_atoms"] = refined_results.get("ase_atoms", _base_atoms)
+
+                                    fine_out = _cluster_pocket_types_from_results(refined_results)
+                                    if fine_out.get("ok"):
+                                        results.update(refined_results)
+                                        _apply_pocket_cluster_output(results, fine_out, refined=True)
+                                        results["pocket_type_refine_spacing"] = float(_fine_spacing)
+                                        st.success(
+                                            "Refined pocket typing completed at "
+                                            f"{_fine_spacing:.2f} Å. "
+                                            f"Pocket types: {int(fine_out.get('num_clusters', 0))}."
+                                        )
+                                    else:
+                                        st.warning(
+                                            "Refinement attempt failed; keeping coarse pocket types. "
+                                            f"Reason: {fine_out.get('error', 'unknown')}"
+                                        )
+                            else:
+                                _blockers = []
+                                if int(_feas.get("n_atoms", 0)) > SPACES_MAX_ATOMS:
+                                    _blockers.append(f"atoms>{SPACES_MAX_ATOMS}")
+                                if int(_feas.get("estimated_bytes", 0)) > int(_feas.get("mem_cap_bytes", 0)):
+                                    _blockers.append("dgrid memory over cap")
+                                if int(_feas.get("ops", 0)) > int(_feas.get("ops_cap", 0)):
+                                    _blockers.append("ops estimate over cap")
+                                _why = ", ".join(_blockers) if _blockers else "resource limits"
+                                st.warning(
+                                    "Material likely too large to refine safely on web app "
+                                    f"({_why}). Please run local version for 0.25 Å confirmation."
+                                )
+                        else:
+                            st.warning(
+                                "Pocket-type result appears low-confidence. "
+                                f"Reasons: {_reason_txt}. "
+                                f"For confirmation, set spacing to {_fine_spacing:.2f} Å, "
+                                "set dgrid method to rust_aabb, then click Compute and Visualize again."
+                            )
+                            st.info(
+                                f"Estimated extra runtime at {_fine_spacing:.2f} Å: ~{int(round(_eta_sec))} s "
+                                "(rough estimate based on current run)."
+                            )
+                    _final_clusters = int(np.max(results.get("regions_cluster", np.array([0]))))
+                    _method_label = results.get("pocket_typing_method", "max_probe_radius")
+                    if results.get("pocket_type_refined"):
+                        _method_label += " (refined grid)"
+                    st.info(
+                        f"Found {_final_clusters} pocket types "
+                        f"(method: {_method_label}, bands on max probe radius at void peak)."
+                    )
                 except Exception as e:
                     st.warning(f"Pocket type detection failed: {e}")
                     results["pocket_types_detected"] = False
-
             st.session_state["latest_results"] = results
             st.session_state["latest_metadata"] = {
                 "spacing": float(spacing),
@@ -3801,6 +4001,12 @@ def main() -> None:
                 "• **Accessible:** same rule, but only regions that percolate at σ."
             )
 
+            _bins_default = _recommended_pocket_psd_bins(results_data.get("dgrid"))
+            _default_pocket_num_bins = int(max(200, len(_bins_default) - 1))
+            _default_pocket_max_d = float(_bins_default[-1])
+            _default_uniform_max_d = float(max(50.0, _default_pocket_max_d))
+            _default_uniform_num_bins = int(max(200, np.ceil(_default_uniform_max_d / 0.25)))
+
             with st.form("psd_settings"):
                 psd_domain = st.radio(
                     "Domain",
@@ -3828,13 +4034,13 @@ def main() -> None:
                 )
                 uniform_num_bins = st.number_input(
                     "Number of bins",
-                    value=200,
+                    value=_default_uniform_num_bins,
                     min_value=10,
                     step=10,
                 )
                 uniform_max_diameter = st.number_input(
                     "Maximum pore diameter (Å)",
-                    value=50.0,
+                    value=_default_uniform_max_d,
                     min_value=5.0,
                     step=5.0,
                 )
@@ -3854,13 +4060,13 @@ def main() -> None:
                 )
                 pocket_num_bins = st.number_input(
                     "Number of bins (pocket-wise)",
-                    value=200,
+                    value=_default_pocket_num_bins,
                     min_value=10,
                     step=10,
                 )
                 pocket_max_diameter = st.number_input(
                     "Maximum pore diameter (Å) for pockets",
-                    value=50.0,
+                    value=_default_pocket_max_d,
                     min_value=5.0,
                     step=5.0,
                 )
@@ -4417,7 +4623,7 @@ def _render_hts_mode() -> None:
             hts_coarse_factor = st.number_input("Coarse factor (interp smoothing)", value=2, min_value=1, max_value=8, step=1, key="hts_cf")
 
         st.markdown("#### Segmentation options")
-        hts_mask = st.number_input("Mask thickness (Å)", value=0.5, min_value=0.05, key="hts_mask")
+        hts_mask = st.number_input("Mask thickness (Å)", value=0.05, min_value=0.05, key="hts_mask")
         hts_h = st.number_input("h (Å)", value=0.2, min_value=0.05, key="hts_h")
         hts_surface_value = st.number_input("Surface value (Å)", value=1.0, min_value=0.1, key="hts_surface_value")
         hts_min_dist, hts_threshold, hts_extra_pad = 1.5, 1.5, 5.0

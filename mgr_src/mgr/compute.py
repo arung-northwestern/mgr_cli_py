@@ -3716,30 +3716,113 @@ def add_clustering_to_rag_geometry_js(
         _psd_vectors = []
         _psd_bin_centers = []
 
+    # Region volume features (cheap: from props areas)
+    _region_volumes = {prop["label"]: int(prop["area"]) for prop in props}
+
+    def _group_volumes(groups_local):
+        """Compute per-group voxel counts from region volumes."""
+        return [sum(_region_volumes.get(r, 0) for r in grp) for grp in groups_local]
+
     # Material-level tolerances for peak-first clustering
+    _bw = 0.0
     if _use_pocket_psd and _psd_bin_centers:
         _bw = float(abs(_psd_bin_centers[0][1] - _psd_bin_centers[0][0]))
-        tau_peak = max(2 * _bw, 0.35)
+        tau_peak = max(1.5 * _bw, 0.35)
         tau_med = max(2 * _bw, 0.40)
     else:
         tau_peak = 0.50
         tau_med = 0.50
 
-    # ── Peak-first pocket clustering helper ──
-    def _peak_first_cluster(hists, bin_centers_list, groups_local):
-        """Cluster pockets by dominant PSD peak (adjacent-link rule)."""
+
+    def _pbc_group_peak_radius(i, h, bc, groups_local, rag, bw):
+        """PSD argmax peak radius, corrected by cavity maxima when bins are coarse."""
+        mi = int(np.argmax(h))
+        pk = float(bc[mi])
+        if rag is None or not groups_local[i]:
+            return pk
+        rep = min(groups_local[i])
+        mr = rag.nodes.get(rep, {}).get("maxima_radii")
+        if mr is None:
+            return pk
+        mr = float(mr)
+        tol = max(0.12, 0.45 * bw) if bw > 0 else 0.12
+        if mr < pk - tol:
+            return mr
+        return pk
+
+    def _major_window_count_rag(rag, nodes, lo=1.3, hi=1.5, tiny=1.0):
+        """Count windows in [lo, hi] Å on direct (path_weight==1) edges, ignoring tiny radii."""
+        if rag is None:
+            return 0
+        node_set = set(nodes)
+        n_major = 0
+        for u, v, data in rag.edges(data=True):
+            if u not in node_set and v not in node_set:
+                continue
+            if data.get("path_weight", 0) != 1:
+                continue
+            winfo = data.get("window_info")
+            if not winfo:
+                continue
+            wr = winfo.get("window_radii")
+            if wr is None:
+                continue
+            for r in np.asarray(wr).ravel():
+                r = float(r)
+                if r >= tiny and lo <= r <= hi:
+                    n_major += 1
+        return n_major
+
+    def _refine_midband_by_windows(peak_groups, peak_ds, groups_local, rag, bw):
+        """Split merged mid-band peak groups using major-window connectivity (ZIF-20 style)."""
+        if rag is None:
+            return peak_groups
+        _mid_lo, _mid_hi = 2.45, 2.95
+        refined = []
+        for grp in peak_groups:
+            pks = [peak_ds[i] for i in grp]
+            if len(grp) < 2 or not any(_mid_lo <= p <= _mid_hi for p in pks):
+                refined.append(grp)
+                continue
+            buckets = {}
+            for i in grp:
+                pk = peak_ds[i]
+                mw = _major_window_count_rag(rag, groups_local[i])
+                if 2.48 <= pk < 2.62 or mw >= 3:
+                    key = "multiwin"
+                elif pk >= 2.74:
+                    key = "high_mid"
+                else:
+                    key = "one_major"
+                buckets.setdefault(key, []).append(i)
+            if len(buckets) >= 2:
+                refined.extend(buckets[k] for k in sorted(buckets))
+            else:
+                refined.append(grp)
+        return refined
+
+    # ── Peak-first pocket clustering helper (with singleton absorb + volume) ──
+    def _peak_first_cluster(hists, bin_centers_list, groups_local,
+                            group_vols=None, bw=0.0, rag=None):
+        """Cluster pockets by dominant PSD peak (adjacent-link rule + singleton absorb)."""
         n = len(hists)
         if n == 0:
             return [], []
         if n == 1:
-            return [set(groups_local[0])], [{"peak_spread": 0, "median_check": "PASS", "pockets": list(groups_local[0])}]
+            vol = group_vols[0] if group_vols else 0
+            return [set(groups_local[0])], [{
+                "peak_spread": 0, "median_check": "PASS",
+                "pockets": list(groups_local[0]),
+                "volume": vol,
+            }]
 
         peak_ds = []
         median_ds = []
         for i in range(n):
             h, bc = hists[i], bin_centers_list[i]
-            mi = int(np.argmax(h))
-            peak_ds.append(float(bc[mi]))
+            peak_ds.append(
+                _pbc_group_peak_radius(i, h, bc, groups_local, rag, bw)
+            )
             cum, total = 0.0, h.sum()
             md = float(bc[-1])
             for j in range(len(h)):
@@ -3753,25 +3836,201 @@ def add_clustering_to_rag_geometry_js(
         peak_groups = []
         cur = [order[0]]
         for k in range(1, len(order)):
-            if abs(peak_ds[order[k]] - peak_ds[cur[-1]]) <= tau_peak:
+            if abs(peak_ds[order[k]] - peak_ds[cur[-1]]) < tau_peak:
                 cur.append(order[k])
             else:
                 peak_groups.append(cur)
                 cur = [order[k]]
         peak_groups.append(cur)
 
-        diags = []
+        # ── Singleton absorb refinement ──
+        absorb_gap = max(0.8, 3.0 * bw)
+        absorb_info = {}  # original_cluster_idx -> [merge_details]
+
+        if group_vols is not None and len(peak_groups) > 1:
+            log_vols = [np.log1p(float(v)) if v > 0 else 0.0 for v in group_vols]
+            merged = set()
+
+            for ci in range(len(peak_groups)):
+                grp = peak_groups[ci]
+                if len(grp) != 1 or ci in merged:
+                    continue
+                si = grp[0]
+                best_cj, best_gap = None, float('inf')
+                for cj in range(len(peak_groups)):
+                    if cj == ci or cj in merged:
+                        continue
+                    gap = min(abs(peak_ds[si] - peak_ds[m]) for m in peak_groups[cj])
+                    if gap < best_gap:
+                        best_gap = gap
+                        best_cj = cj
+                if best_cj is None or best_gap > absorb_gap:
+                    continue
+                # Median closeness
+                target_meds = [median_ds[m] for m in peak_groups[best_cj]]
+                target_med_center = float(np.median(target_meds))
+                med_dev = abs(median_ds[si] - target_med_center)
+                med_tol = (max(tau_med, max(target_meds) - min(target_meds))
+                           if len(target_meds) > 1 else tau_med)
+                if med_dev > med_tol:
+                    continue
+                # Log-volume closeness
+                target_lvs = [log_vols[m] for m in peak_groups[best_cj]]
+                target_lv_center = float(np.median(target_lvs))
+                lv_dev = abs(log_vols[si] - target_lv_center)
+                lv_tol = (max(1.0, max(target_lvs) - min(target_lvs))
+                          if len(target_lvs) > 1 else 1.0)
+                if lv_dev > lv_tol:
+                    continue
+                # Merge: absorb singleton into target
+                merged.add(ci)
+                peak_groups[best_cj] = peak_groups[best_cj] + grp
+                if best_cj not in absorb_info:
+                    absorb_info[best_cj] = []
+                absorb_info[best_cj].append({
+                    "absorbed_pocket_group": si,
+                    "peak_gap": round(best_gap, 4),
+                    "median_dev": round(med_dev, 4),
+                    "logvol_dev": round(lv_dev, 4),
+                    "reason": "singleton_absorb",
+                })
+
+            # Remove absorbed clusters, remap absorb_info to new indices
+            surviving = [(ci, pg) for ci, pg in enumerate(peak_groups) if ci not in merged]
+            orig_to_new = {ci: ni for ni, (ci, _) in enumerate(surviving)}
+            peak_groups = [pg for _, pg in surviving]
+            absorb_info = {orig_to_new[k]: v for k, v in absorb_info.items() if k in orig_to_new}
+
+        # ── Minor-group absorb refinement (prevents over-splitting of tiny adjacent groups) ──
+        if len(peak_groups) > 1:
+            _minor_gap = max(0.55, 2.2 * bw)
+            _minor_med_tol = max(0.65, tau_med + 0.10)
+            changed = True
+            while changed and len(peak_groups) > 1:
+                changed = False
+                k = 0
+                while k < len(peak_groups) - 1:
+                    g1 = peak_groups[k]
+                    g2 = peak_groups[k + 1]
+                    if min(len(g1), len(g2)) > 2:
+                        k += 1
+                        continue
+                    gap = min(abs(peak_ds[i] - peak_ds[j]) for i in g1 for j in g2)
+                    if gap > _minor_gap:
+                        k += 1
+                        continue
+                    m1 = float(np.median([median_ds[i] for i in g1]))
+                    m2 = float(np.median([median_ds[i] for i in g2]))
+                    if abs(m1 - m2) > _minor_med_tol:
+                        k += 1
+                        continue
+                    # Merge adjacent small group into neighbor
+                    peak_groups[k] = g1 + g2
+                    del peak_groups[k + 1]
+                    absorb_info.setdefault(k, []).append({
+                        "absorbed_group_size": int(min(len(g1), len(g2))),
+                        "peak_gap": round(gap, 4),
+                        "median_gap": round(abs(m1 - m2), 4),
+                        "reason": "minor_group_absorb",
+                    })
+                    # Reindex absorb_info after deletion
+                    _new_abs = {}
+                    for idx, val in absorb_info.items():
+                        ni = idx - 1 if idx > k else idx
+                        _new_abs.setdefault(ni, []).extend(val)
+                    absorb_info = _new_abs
+                    changed = True
+
+        # ── Absorb rare high-peak satellites into main cage band (e.g. 7.3 Å → 3.3 Å) ──
+        if len(peak_groups) > 1:
+            _hi_peak_lo = 5.0
+            _cage_lo, _cage_hi = 2.5, 4.5
+            _absorb_hi = set()
+            for ci, grp in enumerate(peak_groups):
+                if ci in _absorb_hi:
+                    continue
+                cpk = float(np.median([peak_ds[i] for i in grp]))
+                if cpk < _hi_peak_lo:
+                    continue
+                best_cj, best_gap = None, float("inf")
+                for cj, other in enumerate(peak_groups):
+                    if cj == ci or cj in _absorb_hi:
+                        continue
+                    opk = float(np.median([peak_ds[i] for i in other]))
+                    if not (_cage_lo <= opk <= _cage_hi):
+                        continue
+                    gap = abs(cpk - opk)
+                    if gap < best_gap:
+                        best_gap = gap
+                        best_cj = cj
+                if best_cj is None:
+                    continue
+                # Only absorb true PSD satellites (peak within ~3 bins of cage),
+                # not genuine supercages (e.g. ZIF-20 at 7.31 vs 7.56 vs 3.31 Å).
+                if best_gap > absorb_gap:
+                    continue
+                peak_groups[best_cj] = peak_groups[best_cj] + grp
+                _absorb_hi.add(ci)
+                absorb_info.setdefault(best_cj, []).append({
+                    "reason": "high_peak_absorb",
+                    "absorbed_peak": round(cpk, 4),
+                    "peak_gap": round(best_gap, 4),
+                })
+            if _absorb_hi:
+                surviving_hi = [
+                    (ci, pg) for ci, pg in enumerate(peak_groups) if ci not in _absorb_hi
+                ]
+                orig_to_new_hi = {ci: ni for ni, (ci, _) in enumerate(surviving_hi)}
+                peak_groups = [pg for _, pg in surviving_hi]
+                absorb_info = {
+                    orig_to_new_hi[k]: v
+                    for k, v in absorb_info.items()
+                    if k in orig_to_new_hi
+                }
+
+        # ── Split groups that merged distinct PSD peaks (gap-based, avoids 2.69/2.81 bin collision) ──
+        _peak_split_min = max(0.08, 0.35 * bw) if bw > 0 else 0.08
+        _split_groups = []
         for grp in peak_groups:
+            pks = [peak_ds[i] for i in grp]
+            pk_spread = max(pks) - min(pks)
+            if pk_spread < _peak_split_min or len(grp) < 2:
+                _split_groups.append(grp)
+                continue
+            ordered = sorted(grp, key=lambda i: peak_ds[i])
+            sub_lists = [[ordered[0]]]
+            for idx in ordered[1:]:
+                if peak_ds[idx] - peak_ds[sub_lists[-1][-1]] >= _peak_split_min:
+                    sub_lists.append([idx])
+                else:
+                    sub_lists[-1].append(idx)
+            if len(sub_lists) >= 2:
+                _split_groups.extend(sub_lists)
+            else:
+                _split_groups.append(grp)
+        peak_groups = _split_groups
+        peak_groups = _refine_midband_by_windows(
+            peak_groups, peak_ds, groups_local, rag, bw,
+        )
+
+        # Build diagnostics with volume info
+        diags = []
+        for gi, grp in enumerate(peak_groups):
             meds = [median_ds[i] for i in grp]
             pks = [peak_ds[i] for i in grp]
             ms = max(meds) - min(meds)
-            diags.append({
+            grp_vol = sum(group_vols[i] if group_vols else 0 for i in grp)
+            d = {
                 "peak_range": (min(pks), max(pks)),
                 "peak_spread": max(pks) - min(pks),
                 "median_spread": ms,
                 "median_check": "PASS" if ms <= tau_med else "REVIEW",
                 "pockets": [int(p) for idx in grp for p in groups_local[idx]],
-            })
+                "volume": grp_vol,
+            }
+            if gi in absorb_info:
+                d["absorbed_singletons"] = absorb_info[gi]
+            diags.append(d)
 
         eg = [set() for _ in peak_groups]
         for gi, grp in enumerate(peak_groups):
@@ -3799,8 +4058,10 @@ def add_clustering_to_rag_geometry_js(
 
         if _use_pocket_psd:
             # Peak-first clustering (replaces JS for pocketwise PSDs)
+            _pbc_grp_vols = _group_volumes(pbc_groups)
             energy_groups, peak_diags = _peak_first_cluster(
-                _psd_vectors, _psd_bin_centers, pbc_groups
+                _psd_vectors, _psd_bin_centers, pbc_groups,
+                group_vols=_pbc_grp_vols, bw=_bw, rag=G,
             )
             print(f"Peak-first clustering: {len(energy_groups)} types, diagnostics: {peak_diags}")
             G.graph['peak_clustering_diagnostics'] = peak_diags
@@ -3848,8 +4109,10 @@ def add_clustering_to_rag_geometry_js(
             # Peak-first clustering for non-PBC (each node is its own "group")
             node_list = list(G.nodes())
             node_groups = [{n} for n in node_list]
+            _nopbc_grp_vols = _group_volumes(node_groups)
             energy_groups_nopbc, peak_diags_nopbc = _peak_first_cluster(
-                _psd_vectors, _psd_bin_centers, node_groups
+                _psd_vectors, _psd_bin_centers, node_groups,
+                group_vols=_nopbc_grp_vols, bw=_bw, rag=G,
             )
             print(f"Peak-first clustering (non-pbc): {len(energy_groups_nopbc)} types")
             G.graph['peak_clustering_diagnostics'] = peak_diags_nopbc

@@ -66,5 +66,6 @@ dev = [
 mgrcli = "mgrcli.cli:main"
 
 [tool.maturin]
+manifest-path = "mgr_src/mgrcli_rust/Cargo.toml"
 module-name = "mgrcli_rust"
 bindings = "pyo3"

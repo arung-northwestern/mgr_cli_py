@@ -62,3 +62,13 @@ mcli_env/
 *.so
 python_cli/mgr_cli_py.cpython-*-linux-gnu.so
 .todos/
+
+# AI knowledge-graph output
+graphify-out/
+
+# Temporary analysis outputs
+tmp_pocket_analysis/
+figures/
+
+# uv lock file (not managed here)
+uv.lock
