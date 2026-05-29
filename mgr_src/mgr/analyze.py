@@ -407,7 +407,73 @@ def aabb_neighbors_on_atoms(ase_atoms, r_mult: float = 1.2):
         return _ase_neighbor_pairs_on_atoms(ase_atoms, r_mult=r_mult)
 
 
-def update_with_covalent_bonds(ase_atoms, nlist=None):
+def _bond_neighbor_method() -> str:
+    import os
+
+    method = os.environ.get("MGR_BOND_NEIGHBORS", "aabb").strip().lower()
+    if method in {"voronoi", "aabb"}:
+        return method
+    return "aabb"
+
+
+def _neighbor_pairs_for_bonds(ase_atoms):
+    method = _bond_neighbor_method()
+    if method == "voronoi":
+        voro = voronoi_on_atoms(ase_atoms)
+        return voro.nlist
+    return aabb_neighbors_on_atoms(ase_atoms)
+
+
+
+
+def _bond_timeout_seconds(timeout) -> float:
+    import os
+
+    if timeout is not None:
+        return max(0.0, float(timeout))
+    raw = os.environ.get("MGR_COVALENT_BONDS_TIMEOUT_SEC", "").strip()
+    if not raw:
+        return 0.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 0.0
+
+
+def _bond_skip_atom_threshold(skip_if_atoms_above) -> int:
+    import os
+
+    if skip_if_atoms_above is not None:
+        return max(0, int(skip_if_atoms_above))
+    raw = os.environ.get("MGR_COVALENT_BONDS_SKIP_ATOMS", "").strip()
+    if not raw:
+        return 0
+    try:
+        return max(0, int(float(raw)))
+    except ValueError:
+        return 0
+
+
+def _atoms_without_bonds(ase_atoms, *, reason: str):
+    import logging
+
+    out = ase_atoms.copy()
+    out.info["covalent_bonds"] = []
+    out.info["covalent_bond_orders"] = []
+    out.info["covalent_bonds_skipped"] = True
+    out.info["covalent_bonds_skip_reason"] = reason
+    logging.getLogger("mgr.analyze").warning(
+        "Covalent bonds skipped (%s) for %d atoms", reason, len(ase_atoms)
+    )
+    return out
+
+def update_with_covalent_bonds(
+    ase_atoms,
+    nlist=None,
+    *,
+    timeout=None,
+    skip_if_atoms_above=None,
+):
     """
     Compute covalent bonds using Rust (mgrcli_rust.covalent_bonds) — 100x+ faster than pymatgen.
     
@@ -416,22 +482,43 @@ def update_with_covalent_bonds(ase_atoms, nlist=None):
     The returned Atoms object includes these image atoms, and bond indices reference them.
     
     :param ase_atoms: ASE Atoms object
-    :param nlist: optional list of (i, j) neighbor pairs. If None, uses aabb_neighbors_on_atoms.
+    :param nlist: optional list of (i, j) neighbor pairs. If None, uses _neighbor_pairs_for_bonds.
     :return: ASE Atoms object with 'covalent_bonds' and 'covalent_bond_orders' in info.
     """
+    import concurrent.futures
+    import logging
+
+    skip_thr = _bond_skip_atom_threshold(skip_if_atoms_above)
+    if skip_thr > 0 and len(ase_atoms) > skip_thr:
+        return _atoms_without_bonds(ase_atoms, reason=f">{skip_thr} atoms")
+
+    tlim = _bond_timeout_seconds(timeout)
+    if tlim <= 0:
+        return _update_with_covalent_bonds_impl(ase_atoms, nlist=nlist)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_update_with_covalent_bonds_impl, ase_atoms, nlist=nlist)
+        try:
+            return fut.result(timeout=tlim)
+        except concurrent.futures.TimeoutError:
+            return _atoms_without_bonds(ase_atoms, reason=f"timeout after {tlim:.0f}s")
+
+
+def _update_with_covalent_bonds_impl(ase_atoms, nlist=None):
     import logging
     import time
 
     import numpy as np
 
+    from ase import Atoms
+
     _log = logging.getLogger("mgr.analyze")
     _t0 = time.perf_counter()
     _log.info("Covalent bonds: starting (%d atoms)", len(ase_atoms))
-    from ase import Atoms
 
     # Build neighbor list if not provided
     if nlist is None:
-        nlist = aabb_neighbors_on_atoms(ase_atoms)
+        nlist = _neighbor_pairs_for_bonds(ase_atoms)
         tol = 0.2
     else:
         tol = 0.1
@@ -802,6 +889,19 @@ def find_aromatic_cycles_in_sgraph(
     )
     if not unique_cycles:
         return []
+
+    # Fast path for large graphs: skip isomorphism expansion.
+    # GraphMatcher on a 50K-node graph with a 6-node template can take
+    # minutes and produce 100K+ matches — not useful for visualization.
+    _MAX_NODES_FOR_EXPANSION = 10_000
+    if sgraph.number_of_nodes() > _MAX_NODES_FOR_EXPANSION:
+        _log.info(
+            "Aromatic cycles: skipping expansion for large graph "
+            "(%d nodes, %d unique rings); total %.3fs",
+            sgraph.number_of_nodes(), len(unique_cycles),
+            time.perf_counter() - _t0,
+        )
+        return [list(c) for c in unique_cycles]
 
     _t1 = time.perf_counter()
     _idx = find_chemically_unique_cycles(unique_cycles, sgraph)

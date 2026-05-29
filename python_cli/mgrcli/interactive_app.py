@@ -1113,10 +1113,16 @@ def _start_compute_thread(
                 # Was previously done at CIF upload time; moved here so it
                 # runs inside the compute queue on Spaces deployments.
                 from mgr.analyze import compute_aromatic_cycles, update_with_covalent_bonds
-                progress.set_phase("Covalent bonds")
+                _n_atoms_local = len(w_atoms)
+                progress.set_phase(f"Covalent bonds ({_n_atoms_local:,} atoms)")
                 w_atoms = update_with_covalent_bonds(w_atoms)
                 progress.set_phase("Aromatic rings")
-                compute_aromatic_cycles(w_atoms)
+                try:
+                    compute_aromatic_cycles(w_atoms)
+                except Exception:
+                    # Aromatic cycle detection can be slow on very large graphs;
+                    # non-fatal - bonds are already computed.
+                    w_atoms.info.pop("aromatic_cycles", None)
 
                 if dgrid_method == "python_aabb":
                     from mgr.compute import dgrid_from_atoms

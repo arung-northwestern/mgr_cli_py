@@ -334,6 +334,79 @@ def voronoi_on_atoms(ase_atoms, points=None):
     voro.compute((box, points))
     return voro
 
+
+
+def _ase_neighbor_pairs_on_atoms(ase_atoms, r_mult: float = 1.2):
+    """Periodic neighbor candidacy via ASE (no freud)."""
+    import numpy as np
+    from ase.neighborlist import natural_cutoffs, neighbor_list
+
+    cutoffs = np.asarray(natural_cutoffs(ase_atoms, mult=r_mult), dtype=float)
+    i_idx, j_idx = neighbor_list("ij", ase_atoms, cutoffs, self_interaction=False)
+    seen: set[tuple[int, int]] = set()
+    out: list[tuple[int, int]] = []
+    for i, j in zip(i_idx, j_idx):
+        a, b = int(i), int(j)
+        key = (a, b) if a < b else (b, a)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _aabb_neighbors_freud(ase_atoms, r_mult: float = 1.2):
+    from freud.box import Box
+    from freud.locality import AABBQuery
+    from ase.data import covalent_radii
+    import numpy as np
+    import ase
+
+    points = ase_atoms.get_positions()
+    cell = ase.geometry.complete_cell(ase_atoms.get_cell()).T
+    box = Box.from_matrix(cell, dimensions=3)
+
+    radii = covalent_radii[ase_atoms.get_atomic_numbers()]
+    max_bond_dist = float(np.max(radii) * 2 * r_mult)
+    box_extents = box.Lx, box.Ly, box.Lz
+    max_allowed = float(min(box_extents)) * 0.49
+    if max_bond_dist > max_allowed:
+        max_bond_dist = max_allowed
+
+    aq = AABBQuery(box, points)
+    query_result = aq.query(points, dict(r_max=max_bond_dist, exclude_ii=True))
+    nl = query_result.toNeighborList()
+    return [(int(nl[i, 0]), int(nl[i, 1])) for i in range(len(nl))]
+
+
+def aabb_neighbors_on_atoms(ase_atoms, r_mult: float = 1.2):
+    """Periodic neighbor pairs for covalent-bond candidacy (freud AABB or ASE fallback)."""
+    try:
+        return _aabb_neighbors_freud(ase_atoms, r_mult=r_mult)
+    except ImportError:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "freud not installed; using ASE neighbor_list for covalent-bond neighbor candidacy"
+        )
+        return _ase_neighbor_pairs_on_atoms(ase_atoms, r_mult=r_mult)
+
+
+def _bond_neighbor_method() -> str:
+    import os
+
+    return os.environ.get("MGR_BOND_NEIGHBORS", "aabb").strip().lower()
+
+
+def _neighbor_pairs_for_bonds(ase_atoms, nlist=None):
+    if nlist is not None:
+        return list(nlist), 0.1
+    method = _bond_neighbor_method()
+    if method == "voronoi":
+        voro = voronoi_on_atoms(ase_atoms)
+        return voro.nlist, 0.2
+    return aabb_neighbors_on_atoms(ase_atoms), 0.2
+
 def update_with_covalent_bonds(ase_atoms, nlist=None):
     """
     Compute covalent bonds using Rust (mgrcli_rust.covalent_bonds) — 100x+ faster than pymatgen.
@@ -343,7 +416,7 @@ def update_with_covalent_bonds(ase_atoms, nlist=None):
     The returned Atoms object includes these image atoms, and bond indices reference them.
     
     :param ase_atoms: ASE Atoms object
-    :param nlist: optional list of (i, j) neighbor pairs. If None, uses voronoi_on_atoms.
+    :param nlist: optional list of (i, j) neighbor pairs. If None, uses freud AABBQuery (default) or voronoi_on_atoms (env MGR_BOND_NEIGHBORS=voronoi).
     :return: ASE Atoms object with 'covalent_bonds' and 'covalent_bond_orders' in info.
     """
 
@@ -352,9 +425,7 @@ def update_with_covalent_bonds(ase_atoms, nlist=None):
 
     # Build neighbor list if not provided
     if nlist is None:
-        voro = voronoi_on_atoms(ase_atoms)
-        nlist = voro.nlist
-        tol = 0.2
+        nlist, tol = _neighbor_pairs_for_bonds(ase_atoms, nlist=None)
     else:
         tol = 0.1
 
@@ -540,58 +611,76 @@ def find_cycles_in_sgraph(sgraph, default_ring_sizes=[5,6,7,8,9]):
 
 def find_aromatic_cycles_in_sgraph(sgraph, default_ring_sizes=[5,6,7,8,9]):
     """
-    > Find all cycles in the graph, then find all cycles that are composed of double bonds, then find
-    all unique cycles, then find all isomorphic cycles. 
-    
-    The function returns a list of lists, where each list contains the indices of the atoms in the
-    aromatic cycle. 
-    
-    Let's try it out on our example molecule:
-    
+    Find all aromatic cycles in the graph.
+
+    Returns a list of lists, where each inner list contains the indices of atoms
+    in an aromatic cycle (all edges are double bonds).
+
+    For large graphs (> _MAX_NODES_FOR_EXPANSION), the isomorphism expansion
+    step is skipped because GraphMatcher.subgraph_isomorphisms_iter() is
+    O(|V|^k) on a k-node template and hangs on MOF-scale structures.
+    The unique aromatic cycles (deduplicated by atom membership) are returned
+    directly — they already contain every distinct ring embedding.
+
     :param sgraph: The graph object that you want to find aromatic cycles in
     :param default_ring_sizes: The ring sizes to consider
     :return: A list of lists of nodes that are part of aromatic cycles.
     """
 
-    import networkx as nx 
-    import numpy as np 
-    
-    from icecream import ic 
+    import networkx as nx
+
+    # Threshold above which isomorphism expansion is skipped.
+    # GraphMatcher on a 50K-node graph with a 6-node template can take
+    # minutes and produce 100K+ matches — not useful for visualization.
+    _MAX_NODES_FOR_EXPANSION = 10_000
+
+    from icecream import ic
     ic.disable()
     small_cycles = [cycle for cycle in nx.cycles.cycle_basis(sgraph, 0) if len(cycle) in default_ring_sizes]
-    
-    
+
+
     bond_types = nx.get_edge_attributes(sgraph,'bond_type')
     cycles_edges = [list(zip(cycle,(cycle[1:]+cycle[:1]))) for cycle in small_cycles]
     cycle_bond_types = [[bond_types[tuple(sorted(edge))] for edge in cycle_edges] for cycle_edges in cycles_edges]
-    selected_cycles = [np.all(np.array(cycle_bonds) == 'double') for cycle_bonds in cycle_bond_types]
-    aromatic_cycles = np.array(small_cycles)[selected_cycles]
+    selected_cycles = [all(bt == 'double' for bt in cycle_bonds) for cycle_bonds in cycle_bond_types]
+    aromatic_cycles = [c for c, s in zip(small_cycles, selected_cycles) if s]
     ic(aromatic_cycles)
-    
-    cycle_graphs = [sgraph.subgraph(cycle) for cycle in aromatic_cycles]
-    unique_cycles = set(tuple(sorted(a)) for a in aromatic_cycles)
+
+    if not aromatic_cycles:
+        return []
+
+    unique_cycles = list(set(tuple(sorted(a)) for a in aromatic_cycles))
     unique_cycles = [list(u) for u in unique_cycles]
-    chemically_unique_cycles = np.array(unique_cycles)[find_chemically_unique_cycles(unique_cycles, sgraph)]
-    # unique_cycle_indices = find_unique_cycles(aromatic_cycles, sgraph) #np.unique([ps.write_smiles(cycle) for cycle in cycle_graphs], return_index=True)[1]
-    # unique_aromatic_cycles = np.array(cycle_graphs)[unique_cycle_indices]
+
+    # Fast path for large graphs: skip expensive isomorphism expansion.
+    # The unique_cycles already contain every distinct ring embedding found
+    # by cycle_basis; expansion would only find additional rotational/ordinal
+    # duplicates that are already covered.
+    if sgraph.number_of_nodes() > _MAX_NODES_FOR_EXPANSION:
+        import logging
+        logging.getLogger("mgr.analyze").info(
+            "Aromatic cycles: skipping isomorphism expansion for large graph "
+            "(%d nodes, %d unique rings)",
+            sgraph.number_of_nodes(), len(unique_cycles),
+        )
+        return [list(c) for c in unique_cycles]
+
+    # Small graphs: full isomorphism expansion for completeness
+    cycle_graphs = [sgraph.subgraph(cycle) for cycle in aromatic_cycles]
+    _unique_indices = find_chemically_unique_cycles(unique_cycles, sgraph)
+    chemically_unique_cycles = [unique_cycles[i] for i in _unique_indices]
     ic(chemically_unique_cycles)
-    # print(chemically_unique_cycles)
-    # print(len(chemically_unique_cycles))
-    # from itertools import combinations 
+
     import networkx.algorithms.isomorphism as isomo
-    isomorphic_aromatic_cycles = list([])
-    isomorphic_aromatic_cycles = []# list([])
-    
+    isomorphic_aromatic_cycles = []
+
     for cycle in chemically_unique_cycles:
         graph = sgraph.subgraph(cycle)
         iso1 = isomo.GraphMatcher(sgraph, graph, node_match=isomo.categorical_node_match('element',default='None'), edge_match=isomo.categorical_edge_match('bond_type',default='None'))
         isomorphic_aromatic_cycles = isomorphic_aromatic_cycles + [list(subgraph.keys()) for subgraph in iso1.subgraph_isomorphisms_iter()]
-        # ic(list(iso1.subgraph_isomorphisms_iter()))
-        # isomorphic_aromatic_cycles.append(list(iso1.subgraph_isomorphisms_iter()))#[subgraph.keys() for subgraph in iso1.subgraph_isomorphisms_iter()])
     isomorphic_aromatic_cycles = [list(b) for b in set(tuple(sorted(c)) for c in isomorphic_aromatic_cycles)]
-    
+
     return isomorphic_aromatic_cycles
-    # return unique_cycles
 
 def sgraph_from_atoms(ase_atoms,node_props_dict=None, edge_props_dict=None):
     """
@@ -696,39 +785,40 @@ def get_bond_types(bond_orders):
     import pandas as pd
     return  pd.cut(bond_orders, bins=[0,1, 2, 3], labels=['single', 'double', 'triple'])
 
-
 def find_chemically_unique_cycles(list_of_cycles, graph):
     """
-    > The function takes a list of cycles and a graph as input, and returns the indices of the unique
-    cycles in the list, after matching the 'element' of the nodes and the 'bond_order' of the edges
-    
-    The function is a bit long, so let's break it down. 
-    
-    First, we import the necessary libraries.
-    
-    :param list_of_cycles: a list of cycles, each cycle is a list of nodes
-    :param graph: the graph object
-    :return: The indices of the unique cycles in the list of cycles.
+    Return indices of chemically non-isomorphic cycles (element + bond_type).
+
+    Incremental representatives per ring size (avoids O(n^2) pairwise isomorphism).
     """
-    import networkx as nx 
     import networkx.algorithms.isomorphism as isomo
-    sub_graphs = [graph.subgraph(cycle) for cycle in list_of_cycles]
-    import numpy as np
-    import itertools
-    from icecream import ic 
-    ic.disable() 
-    # [(i.nodes(data='element'), j.nodes(data='element')) for (i,j) in list(itertools.combinations(sub_graphs, r=2))]
-    # from networkx.algorithms import isomorphism as isomo 
-    em = isomo.categorical_edge_match('bond_type', default='single')
-    nm = isomo.categorical_node_match('element',default='None')
-    iso_check = [isomo.GraphMatcher(*g,node_match=nm, edge_match=em).is_isomorphic() for g in itertools.combinations(sub_graphs, r= 2)]
-    ic(iso_check)
-    if len(iso_check) >0:
-        to_delete = np.array(list(itertools.combinations(range(len(sub_graphs)),2)))[iso_check][:,1]
-        return np.delete(list(range(len(sub_graphs))), to_delete.astype(int))
-    else:
-        raise Exception(" No cycles of given lengths found!")
-            
+    from collections import defaultdict
+
+    n = len(list_of_cycles)
+    if n <= 1:
+        return list(range(n))
+
+    em = isomo.categorical_edge_match("bond_type", default="single")
+    nm = isomo.categorical_node_match("element", default="None")
+
+    by_size: dict[int, list[int]] = defaultdict(list)
+    for idx, cycle in enumerate(list_of_cycles):
+        by_size[len(cycle)].append(idx)
+
+    keep: list[int] = []
+    for indices in by_size.values():
+        reps: list = []
+        for idx in indices:
+            sg = graph.subgraph(list_of_cycles[idx])
+            if any(
+                isomo.GraphMatcher(sg, rep_sg, node_match=nm, edge_match=em).is_isomorphic()
+                for _, rep_sg in reps
+            ):
+                continue
+            reps.append((idx, sg))
+            keep.append(idx)
+    return sorted(keep)
+
 def find_rings_in_ase_atoms(mat_atoms, cycle_lengths=[5, 6, 7, 8], make_unique=True):
     """
     The function `find_rings_in_ase_atoms` takes an ASE atoms object, identifies cycles in the
