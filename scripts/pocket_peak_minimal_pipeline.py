@@ -127,9 +127,9 @@ def extract_pocket_peaks(cif_path: Path) -> List[Dict[str, Any]]:
         dgrid, regions_pbc, atoms,
         num_samples_per_region=1000, bins=BINS, return_fig=False,
     )
-    rag = mgr.add_psd_to_rag_with_pbc(
-        rag, props, pbc_groups, BINS, atoms, dgrid.shape, pocket_psds=pocket_psds,
-    )
+    rag = mgr.add_csd_to_rag_with_pbc(rag, props, pbc_groups, BINS, atoms, dgrid.shape)
+    if pocket_psds is not None:
+        rag = mgr.add_pocket_psd_to_rag_with_pbc(rag, props, pbc_groups, pocket_psds)
 
     region_to_rep: Dict[int, int] = {}
     for group in pbc_groups:
@@ -155,8 +155,8 @@ def extract_pocket_peaks(cif_path: Path) -> List[Dict[str, Any]]:
     for pi, group in enumerate(pbc_groups):
         rep = min(group)
         nd = rag.nodes[rep]
-        x = np.asarray(nd.get("psd_x_pbc", BINS), dtype=float)
-        y = _norm(np.asarray(nd.get("psd_y_pbc", []), dtype=float))
+        x = np.asarray(nd.get("pocket_psd_x_pbc", BINS), dtype=float)
+        y = _norm(np.asarray(nd.get("pocket_psd_y_pbc", []), dtype=float))
         if y.size == 0:
             continue
         i1 = int(np.argmax(y))

@@ -1436,30 +1436,16 @@ def add_maxima_to_rag(G, maxima, maxima_radii, shape, ase_atoms):
 #     return grid_zoomed
 
 
-def add_psd_to_rag(G, region_props, bins, ase_atoms, shape):
+def add_csd_to_rag(G, region_props, bins, ase_atoms, shape):
     """
-    > This function takes a graph, a list of region properties, a list of bins, an ase atoms object, and
-    a shape, and adds the psd to the graph.
+    Attach cavity-size distribution (CSD) histograms to RAG nodes.
 
-    For each region, we calculate the distances between the centroid and the coordinates.
+    Each histogram is the PBC-free distribution of distances from the region
+    centroid to void voxels (centroid-distance / geometry histogram).  Stored as
+    ``csd_x`` (bin centers) and ``csd_y`` (density).
 
-    Then we calculate the histogram of the distances.
-
-    Then we calculate the bin centers.
-
-    Then we add the bin centers and the histogram to the graph.
-
-    Then we return the graph.
-
-    Note that these distance histograms or centroids do not account for periodic boundary conditions.
-    To include periodic boundary conditions, use the add_psd_to_rag_with_pbc function.
-
-    :param G: the graph
-    :param region_props: a list of dictionaries, each dictionary contains the properties of a region
-    :param bins: The number of bins to use for the histogram
-    :param ase_atoms: The atoms object from ASE
-    :param shape: shape of the image
-    :return: The graph with the psd_x and psd_y attributes added to the nodes.
+    For PBC-aware CSD, use :func:`add_csd_to_rag_with_pbc`.  For probe-occupiable
+    pocket PSDs from the Rust sampler, use :func:`add_pocket_psd_to_rag_with_pbc`.
     """
 
     import numpy as np
@@ -1475,15 +1461,26 @@ def add_psd_to_rag(G, region_props, bins, ase_atoms, shape):
             axis=1,
         )
 
-        G.nodes[region_prop["label"]]["psd_y"], bin_edges = np.histogram(
+        G.nodes[region_prop["label"]]["csd_y"], bin_edges = np.histogram(
             distances,
             bins=bins,
             density=True,
         )
-        # bin_edges = np.histogram(region_prop['coords']-region_prop['centroid'], bins=bins, normed=True, density=1)[1]
         bin_centers = (bin_edges[1:] + bin_edges[:-1]) / 2
-        G.nodes[region_prop["label"]]["psd_x"] = bin_centers
+        G.nodes[region_prop["label"]]["csd_x"] = bin_centers
     return G
+
+
+def add_psd_to_rag(G, region_props, bins, ase_atoms, shape):
+    """Deprecated alias for :func:`add_csd_to_rag`."""
+    import warnings
+
+    warnings.warn(
+        "add_psd_to_rag is deprecated; use add_csd_to_rag (node keys csd_x/csd_y)",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return add_csd_to_rag(G, region_props, bins, ase_atoms, shape)
 
 
 def rag_from_connections(connections, maxima, only_use_internal=True):
@@ -3399,131 +3396,121 @@ def add_centroids_to_rag_with_pbc(rag, props, pbc_groups, ase_atoms, shape):
     return G
 
 
-def add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, ase_atoms, shape, pocket_psds=None):
+def _csd_get_pbc_distances(coords, centroid_pbc, ase_atoms):
+    from ase.geometry import complete_cell
+
+    cell = complete_cell(ase_atoms.get_cell()).T
+    df = coords - centroid_pbc
+    df = df - np.round(df)
+    return np.linalg.norm(np.dot(cell, df.T).T, axis=1)
+
+
+def add_csd_to_rag_with_pbc(rag, props, pbc_groups, bins, ase_atoms, shape):
     """
-    > It takes a rag, a list of properties, a list of pbc groups, a list of bins, an ase atoms object
-    and a shape and returns a region adjacency graph with pbc properties added to it.
+    Attach PBC-aware cavity-size distribution (CSD) histograms to RAG nodes.
 
-    Let's see how we can use this function.
-
-    First, we need to get the pbc groups.
-
-    We can do that using the `get_pbc_groups` function and setting return_conn option to True (it is False by default)
-
-    Let's see how we can use it.
-
-    :param rag: the region adjacency graph
-    :param props: list of dictionaries containing the properties of each region
-    :param pbc_groups: list of lists of labels of regions that are connected by periodic boundary
-    conditions
-    :param bins: the bins for the histogram
-    :param ase_atoms: ASE atoms object
-    :param shape: shape of the image
-    :param pocket_psds: optional dict of precomputed pocketwise PSDs from the Rust sampler.
-        Keys are region IDs; values are dicts with 'hist' and 'bin_centers' arrays.
-        When provided, PSD histograms are taken from this dict instead of centroid-distance
-        histograms. If a group has no representative region in pocket_psds, it falls back
-        to the legacy centroid-distance histogram.
-    :return: The graph with the pbc properties added to the nodes.
+    Histograms are centroid-to-void-voxel distances with periodic boundary handling.
+    Stored as ``csd_x_pbc`` / ``csd_y_pbc``.  Also sets ``centroid_pbc`` on nodes.
     """
-
-    def get_pbc_distances(coords, centroid_pbc, ase_atoms):
-        """
-        > The function takes the coordinates of the grid points in the region, the centroid of the region, and
-        the atoms object, and returns the distances of the grid points from the periodic region centroid
-
-        :param coords: the coordinates of the atoms in the cluster
-        :param centroid_pbc: the centroid of the cluster in the PBC frame
-        :param ase_atoms: ASE atoms object
-        :return: The distances between the centroid and the atoms in the cluster.
-        """
-
-        from ase.geometry import complete_cell
-
-        cell = complete_cell(ase_atoms.get_cell()).T
-        # cell_inv = np.linalg.inv(cell)
-        df = coords - centroid_pbc
-        df = df - np.round(df)
-        distances = np.linalg.norm(np.dot(cell, df.T).T, axis=1)
-        return distances
-
     from scipy import stats
     import numpy as np
     import copy
     from .helper import find_coord_from_indices
 
-    # shape = regions.shape
     G = copy.deepcopy(rag)
     prop_labels = np.array([prop["label"] for prop in props])
-
-    # Tag the PSD source on the graph metadata so downstream consumers can inspect it.
-    if pocket_psds is not None:
-        G.graph["psd_source"] = "pocketwise_rust"
-    else:
-        G.graph["psd_source"] = "centroid_distance"
+    G.graph["csd_source"] = "centroid_distance_pbc"
 
     for group in pbc_groups:
         prop_indices = [np.where(prop_labels == g)[0][0] for g in group]
-        # print(group, prop_indices)
-
-        # Try to find a representative region in this group that has precomputed pocket PSD data
-        _pocket_psd_representative = None
-        if pocket_psds is not None:
-            for g in group:
-                if g in pocket_psds:
-                    _pocket_psd_representative = g
-                    break
 
         if len(group) > 1:
-            # * fractional coordinates of all the points present in this group
             coords = np.vstack([props[pi]["coords"] for pi in prop_indices]) / shape
-            # print(coords.shape)
-            # * pbc centroid of the group in fractional coordinates
             centroid = stats.circmean(coords, axis=0, low=0, high=1)
-
-            if _pocket_psd_representative is not None:
-                # Use precomputed pocketwise PSD for this group
-                psd_y_pbc = pocket_psds[_pocket_psd_representative]["hist"].astype(float)
-                psd_x_pbc = pocket_psds[_pocket_psd_representative]["bin_centers"].astype(float)
-            else:
-                # Legacy: centroid-distance histogram
-                distances = get_pbc_distances(coords, centroid, ase_atoms)
-                psd_y_pbc, bine = np.histogram(distances, bins=bins, density=True)
-                psd_x_pbc = (bine[1:] + bine[:-1]) / 2
-
-            # * Now update the property of all the nodes in the graph with the pbc psd and centroid properties
-            for i, g in enumerate(group):
+            distances = _csd_get_pbc_distances(coords, centroid, ase_atoms)
+            csd_y_pbc, bine = np.histogram(distances, bins=bins, density=True)
+            csd_x_pbc = (bine[1:] + bine[:-1]) / 2
+            for i, _g in enumerate(group):
                 G.nodes[props[prop_indices[i]]["label"]]["centroid_pbc"] = (
                     find_coord_from_indices(
                         indices=centroid * shape, ase_atoms=ase_atoms, shape=shape
                     )
                 )
-                G.nodes[props[prop_indices[i]]["label"]]["psd_x_pbc"] = psd_x_pbc
-                G.nodes[props[prop_indices[i]]["label"]]["psd_y_pbc"] = psd_y_pbc
+                G.nodes[props[prop_indices[i]]["label"]]["csd_x_pbc"] = csd_x_pbc
+                G.nodes[props[prop_indices[i]]["label"]]["csd_y_pbc"] = csd_y_pbc
         else:
             pi = np.where(prop_labels == list(group)[0])[0][0]
-            # print(pi)
-            # * get coordinates and centroids
             coords = props[pi]["coords"] / shape
             centroid = np.mean(coords, axis=0)
-
-            if _pocket_psd_representative is not None:
-                psd_y_pbc = pocket_psds[_pocket_psd_representative]["hist"].astype(float)
-                psd_x_pbc = pocket_psds[_pocket_psd_representative]["bin_centers"].astype(float)
-            else:
-                # Legacy: centroid-distance histogram
-                distances = get_pbc_distances(coords, centroid, ase_atoms)
-                psd_y_pbc, bine = np.histogram(distances, bins=bins, density=True)
-                psd_x_pbc = (bine[1:] + bine[:-1]) / 2
-
-            # * Now update the property of all the nodes in the graph with the pbc psd and centroid properties
+            distances = _csd_get_pbc_distances(coords, centroid, ase_atoms)
+            csd_y_pbc, bine = np.histogram(distances, bins=bins, density=True)
+            csd_x_pbc = (bine[1:] + bine[:-1]) / 2
             G.nodes[props[pi]["label"]]["centroid_pbc"] = find_coord_from_indices(
                 indices=centroid * shape, ase_atoms=ase_atoms, shape=shape
             )
-            G.nodes[props[pi]["label"]]["psd_x_pbc"] = psd_x_pbc
-            G.nodes[props[pi]["label"]]["psd_y_pbc"] = psd_y_pbc
+            G.nodes[props[pi]["label"]]["csd_x_pbc"] = csd_x_pbc
+            G.nodes[props[pi]["label"]]["csd_y_pbc"] = csd_y_pbc
 
     return G
+
+
+def add_pocket_psd_to_rag_with_pbc(rag, props, pbc_groups, pocket_psds):
+    """
+    Attach probe-occupiable pocket PSD histograms (Rust pocket-wise sampler) to RAG nodes.
+
+    ``pocket_psds`` maps region id -> dict with ``hist`` and ``bin_centers``.
+    Stored as ``pocket_psd_x_pbc`` / ``pocket_psd_y_pbc`` (one curve per PBC group).
+    Groups without a matching region id are skipped.
+    """
+    import numpy as np
+    import copy
+
+    if not pocket_psds:
+        raise ValueError("pocket_psds must be a non-empty dict")
+
+    G = copy.deepcopy(rag)
+    prop_labels = np.array([prop["label"] for prop in props])
+    G.graph["pocket_psd_source"] = "pocketwise_rust"
+
+    for group in pbc_groups:
+        rep = None
+        for g in group:
+            if g in pocket_psds:
+                rep = g
+                break
+        if rep is None:
+            continue
+
+        pocket_psd_y = pocket_psds[rep]["hist"].astype(float)
+        pocket_psd_x = pocket_psds[rep]["bin_centers"].astype(float)
+        for g in group:
+            pi = int(np.where(prop_labels == g)[0][0])
+            label = props[pi]["label"]
+            G.nodes[label]["pocket_psd_x_pbc"] = pocket_psd_x
+            G.nodes[label]["pocket_psd_y_pbc"] = pocket_psd_y
+
+    return G
+
+
+def add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, ase_atoms, shape, pocket_psds=None):
+    """Deprecated: calls add_csd_to_rag_with_pbc and optionally add_pocket_psd_to_rag_with_pbc."""
+    import warnings
+
+    warnings.warn(
+        "add_psd_to_rag_with_pbc is deprecated; use add_csd_to_rag_with_pbc and "
+        "add_pocket_psd_to_rag_with_pbc (keys csd_*_pbc vs pocket_psd_*_pbc)",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    rag = add_csd_to_rag_with_pbc(rag, props, pbc_groups, bins, ase_atoms, shape)
+    if pocket_psds is not None:
+        rag = add_pocket_psd_to_rag_with_pbc(rag, props, pbc_groups, pocket_psds)
+        rag.graph["psd_source"] = "pocketwise_rust"
+    else:
+        rag.graph["psd_source"] = "centroid_distance"
+    return rag
+
+
 
 
 def add_clustering_to_rag_geometry_js(
@@ -3541,9 +3528,9 @@ def add_clustering_to_rag_geometry_js(
         shape (tuple): shape of the region
         use_pbc (bool): whether to use PBC or not
         js_threshold (float): the threshold for the Jensen-Shannon distance
-        psd_source (str): "geometry" (legacy, default) uses centroid-distance histograms computed from
-            region coordinates. "pocket_psd" uses the per-group/per-node PSD histogram vectors already
-            attached to rag nodes (psd_y_pbc for pbc mode, psd_y for non-pbc mode). If those vectors
+        psd_source (str): "geometry" (default) uses centroid-distance histograms computed from
+            region coordinates. "pocket_psd" uses probe-occupiable pocket PSD vectors on RAG nodes
+            (``pocket_psd_y_pbc`` / ``pocket_psd_x_pbc`` when use_pbc=True). If those vectors
             are not available, falls back to geometry mode.
 
     Returns:
@@ -3680,8 +3667,8 @@ def add_clustering_to_rag_geometry_js(
     _use_pocket_psd = (psd_source == "pocket_psd")
     _psd_vectors = []  # one vector per group (pbc) or per node (non-pbc)
     _psd_bin_centers = []  # bin_centers corresponding to each histogram vector
-    _psd_key = "psd_y_pbc" if use_pbc else "psd_y"
-    _psd_x_key = "psd_x_pbc" if use_pbc else "psd_x"
+    _psd_key = "pocket_psd_y_pbc" if use_pbc else "pocket_psd_y"
+    _psd_x_key = "pocket_psd_x_pbc" if use_pbc else "pocket_psd_x"
 
     if _use_pocket_psd:
         if use_pbc:
@@ -4221,7 +4208,7 @@ def add_clustering_to_rag(rag2, return_cluster_obj=False, no_pbc=False, **kwargs
         return rag2
     else:
         raise ValueError(
-            "No PSD with PBC data in the RAG (pore graph). Call add_psd_to_rag_with_pbc() first."
+            "No CSD with PBC data in the RAG (pore graph). Call add_csd_to_rag_with_pbc() first."
         )
 
 

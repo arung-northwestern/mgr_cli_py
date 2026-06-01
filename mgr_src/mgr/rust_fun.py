@@ -1157,6 +1157,7 @@ def compute_pore_sizes_pocketwise_rust(
     import numpy as np
 
     cell = cellpar_to_cell(ase_atoms.cell.cellpar()).T
+    dgrid = np.ascontiguousarray(np.asarray(dgrid, dtype=np.float32))
     regions_eff = _effective_regions_pocket_psd_sampling(
         regions_pbc, dgrid, probe_center_min_radius
     )

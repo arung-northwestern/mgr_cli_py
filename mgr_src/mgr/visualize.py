@@ -2921,12 +2921,12 @@ def plot_psds(rag, pbc_groups, cscale=None, no_pbc=False, cluster_key='cluster')
     if no_pbc:
         for node in list(rag.nodes().keys()): 
             # node = np.min(list(g))
-            traces.append(go.Scatter(x=rag.nodes[node]['psd_x'], y=rag.nodes[node]['psd_y'], mode='markers+lines', line_color = cmap.get(int(float(rag.nodes[node][cluster_key]))), hovertext = 'Cluster: '+ rag.nodes[node][cluster_key]+'</br>'+'Region: {}'.format(node) , name='Region: ' +str(rag.nodes[node]['labels'][0])))
+            traces.append(go.Scatter(x=rag.nodes[node]['csd_x'], y=rag.nodes[node]['csd_y'], mode='markers+lines', line_color = cmap.get(int(float(rag.nodes[node][cluster_key]))), hovertext = 'Cluster: '+ rag.nodes[node][cluster_key]+'</br>'+'Region: {}'.format(node) , name='Region: ' +str(rag.nodes[node]['labels'][0])))
     else:
         for i,g in enumerate(pbc_groups): 
             node = np.min(list(g))
-            traces.append(go.Scatter(x=rag.nodes[node]['psd_x_pbc'], y=rag.nodes[node]['psd_y_pbc'], mode='markers+lines', line_color = cmap.get(int(float(rag.nodes[node][cluster_key]))), hovertext = 'Cluster: '+ rag.nodes[node][cluster_key]+'</br>'+'Regions: {}'.format(','.join(map(str, list(g)))) , name= 'PBC group: {}'.format(i) ))
-            # traces.append(go.Bar(x=rag.nodes[node]['psd_x_pbc'], y=rag.nodes[node]['psd_y_pbc'], marker_color=cmap.get(rag.nodes[node]['cluster']), marker_opacity=0.5, name='PBC group: {}'.format(i+1) ,hovertext = 'Cluster: '+ rag.nodes[node]['cluster']+'</br>'+'Regions: {}'.format(','.join(map(str, list(g))))) )
+            traces.append(go.Scatter(x=rag.nodes[node]['csd_x_pbc'], y=rag.nodes[node]['csd_y_pbc'], mode='markers+lines', line_color = cmap.get(int(float(rag.nodes[node][cluster_key]))), hovertext = 'Cluster: '+ rag.nodes[node][cluster_key]+'</br>'+'Regions: {}'.format(','.join(map(str, list(g)))) , name= 'PBC group: {}'.format(i) ))
+            # traces.append(go.Bar(x=rag.nodes[node]['csd_x_pbc'], y=rag.nodes[node]['csd_y_pbc'], marker_color=cmap.get(rag.nodes[node]['cluster']), marker_opacity=0.5, name='PBC group: {}'.format(i+1) ,hovertext = 'Cluster: '+ rag.nodes[node]['cluster']+'</br>'+'Regions: {}'.format(','.join(map(str, list(g))))) )
     
     return traces
 def plot_vdw_hists(rag, pbc_groups, cscale=None, no_pbc=False, cluster_key='cluster'):

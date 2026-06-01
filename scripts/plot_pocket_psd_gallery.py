@@ -155,9 +155,9 @@ def extract_material(name: str, cif_path: Path) -> Dict[str, Any]:
     except Exception as exc:
         return {"name": name, "error": f"pocket_psd failed: {exc}"}
 
-    rag = mgr.add_psd_to_rag_with_pbc(
-        rag, props, pbc_groups, BINS, atoms, dgrid.shape, pocket_psds=pocket_psds,
-    )
+    rag = mgr.add_csd_to_rag_with_pbc(rag, props, pbc_groups, BINS, atoms, dgrid.shape)
+    if pocket_psds is not None:
+        rag = mgr.add_pocket_psd_to_rag_with_pbc(rag, props, pbc_groups, pocket_psds)
 
     region_to_rep: Dict[int, int] = {}
     rep_to_pi: Dict[int, int] = {}
@@ -173,8 +173,8 @@ def extract_material(name: str, cif_path: Path) -> Dict[str, Any]:
     for pi, group in enumerate(pbc_groups):
         node_id = min(group)
         nd = rag.nodes[node_id]
-        x = np.asarray(nd.get("psd_x_pbc", BINS), dtype=float)
-        y = _norm_psd(np.asarray(nd.get("psd_y_pbc", []), dtype=float))
+        x = np.asarray(nd.get("pocket_psd_x_pbc", BINS), dtype=float)
+        y = _norm_psd(np.asarray(nd.get("pocket_psd_y_pbc", []), dtype=float))
         if y.size == 0:
             continue
         central[node_id] = y
@@ -197,7 +197,7 @@ def extract_material(name: str, cif_path: Path) -> Dict[str, Any]:
             pocket_adj.setdefault(pv, []).append((pu, wmax))
 
     x_axis = np.asarray(
-        rag.nodes[min(pbc_groups[0])].get("psd_x_pbc", BINS), dtype=float,
+        rag.nodes[min(pbc_groups[0])].get("pocket_psd_x_pbc", BINS), dtype=float,
     )
 
     pockets_out: List[Dict[str, Any]] = []

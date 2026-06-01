@@ -1616,7 +1616,9 @@ Notes:
                             except Exception:
                                 pocket_psds = None
 
-                            rag = mgr.add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, original_atoms, dgrid.shape, pocket_psds=pocket_psds)
+                            rag = mgr.add_csd_to_rag_with_pbc(rag, props, pbc_groups, bins, original_atoms, dgrid.shape)
+                            if pocket_psds is not None:
+                                rag = mgr.add_pocket_psd_to_rag_with_pbc(rag, props, pbc_groups, pocket_psds)
                             _psd_source = "pocket_psd" if pocket_psds is not None else "geometry"
                             rag = mgr.add_clustering_to_rag_geometry_js(rag, props, pbc_groups, original_atoms, dgrid.shape, use_pbc=True, js_threshold=js_threshold, psd_source=_psd_source)
 

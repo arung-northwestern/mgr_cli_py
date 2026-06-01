@@ -92,7 +92,7 @@ def quick_cluster(ase_atoms,
     from .compute import (dgrid_from_atoms_cpu, regions_from_dgrid, apply_pbc, 
                            connections_from_regions_and_dgrid, rag_from_connections, 
                            add_pbc_to_rag, add_centroids_to_rag_with_pbc, 
-                           add_psd_to_rag_with_pbc, clustering_grid_from_regions, 
+                           add_csd_to_rag_with_pbc, clustering_grid_from_regions, 
                            add_clustering_to_rag_geometry_js, add_maxima_to_rag)
     from .data import mix_lorentz_berthelot
     from .visualize import (plot_surface_dgrid, plot_framework_as_mesh, 
@@ -151,8 +151,8 @@ def quick_cluster(ase_atoms,
     # Add centroids to the RAG with PBC consideration
     rag = add_centroids_to_rag_with_pbc(rag, props, pbc_groups,ase_atoms, regions.shape)
 
-    # Add cavity size distribution (PSD) information to the RAG with PBC
-    rag = add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins=bins, 
+    # Add cavity size distribution (CSD) histograms to the RAG with PBC
+    rag = add_csd_to_rag_with_pbc(rag, props, pbc_groups, bins=bins, 
                                    ase_atoms=ase_atoms, shape=regions.shape)
 
     # Add clustering information to the RAG geometry
@@ -305,7 +305,7 @@ def quick_cluster(ase_atoms,
 #     #* colorscale for plotting 
 #     import plotly.express as px 
 #     from .analyze import update_with_covalent_bonds
-#     from .compute import dgrid_from_atoms,regions_from_dgrid,apply_pbc, get_rag_from_regions_and_grid,add_pbc_to_rag, add_psd_to_rag, add_psd_to_rag_with_pbc, add_clustering_to_rag_pca, clustering_grid_from_regions,add_clustering_to_rag_energy, add_vdw_hist_to_rag
+#     from .compute import dgrid_from_atoms,regions_from_dgrid,apply_pbc, get_rag_from_regions_and_grid,add_pbc_to_rag, add_psd_to_rag, add_csd_to_rag_with_pbc, add_clustering_to_rag_pca, clustering_grid_from_regions,add_clustering_to_rag_energy, add_vdw_hist_to_rag
 #     from .data import mix_lorentz_berthelot
 #     from .visualize import plot_surface_dgrid, plot_framework_as_mesh, plot_cell, plot_maxima, plot_psds, white_layout, plot_vdw_hists, draw_framework
 #     if cscale is None:
@@ -347,7 +347,7 @@ def quick_cluster(ase_atoms,
 #     props = regionprops(regions)  # * get the region properties from skimage.measure.regionprops
 #     rag =  add_psd_to_rag(rag, region_props=props,  bins=bins, ase_atoms=ase_atoms,
 #                               shape=regions.shape)  # *  add the cavity histogram without pbc to the RAG
-#     rag =  add_psd_to_rag_with_pbc(rag=rag, props=props, pbc_groups=pbc_groups, bins=bins,
+#     rag =  add_csd_to_rag_with_pbc(rag=rag, props=props, pbc_groups=pbc_groups, bins=bins,
 #                                        ase_atoms=ase_atoms, shape=regions.shape)  # * add the cavity histogram with pbc to the RAG
 #     # rag=  add_clustering_to_rag(rag) # * add the clustering labels to the RAG without pbc
 
