@@ -5,6 +5,30 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _voxel_lengths_for_smoothing(ase_atoms, spacing, grid_shape=None):
+    """Per-axis fractional grid step lengths in Å (anisotropic Gaussian smoothing)."""
+    from ase.geometry import cellpar_to_cell
+
+    M = cellpar_to_cell(ase_atoms.cell.cellpar())
+    cellpar = ase_atoms.cell.cellpar()
+    if grid_shape is not None:
+        nx, ny, nz = (int(grid_shape[0]), int(grid_shape[1]), int(grid_shape[2]))
+    else:
+        nx, ny, nz = (cellpar[:3] / spacing).astype(int) + 1
+    lx = float(np.linalg.norm(M[0]) / max(nx - 1, 1))
+    ly = float(np.linalg.norm(M[1]) / max(ny - 1, 1))
+    lz = float(np.linalg.norm(M[2]) / max(nz - 1, 1))
+    return (lx, ly, lz)
+
+
+def _cell_matrix_for_rust(ase_atoms):
+    """Return C for Rust ``cart = C @ delta_frac`` (matches ASE ``frac @ M``)."""
+    from ase.geometry import cellpar_to_cell
+
+    return cellpar_to_cell(ase_atoms.cell.cellpar()).T
+
+
+
 def _watershed_padded_labels(rust_mod, watershed_backend, padded_grid, markers, void_mask, compactness):
     """Run seeded watershed on the padded periodic grid; returns uint32 region labels."""
     wb = watershed_backend
@@ -58,7 +82,7 @@ def dgrid_from_atoms_rust(ase_atoms, spacing, radii=None):
     if radii is None:
         radii = vdw_radii[ase_atoms.get_atomic_numbers()]
     fpoints = ase_atoms.get_scaled_positions() - 0.5
-    cell = cellpar_to_cell(ase_atoms.cell.cellpar())
+    cell = _cell_matrix_for_rust(ase_atoms)
     nx, ny, nz = (ase_atoms.cell.cellpar()[:3] / spacing).astype(int) + 1
     dgrid = mgrcli_rust.dgrid_from_atoms(fpoints, cell, radii, int(nx), int(ny), int(nz))
     return dgrid
@@ -88,7 +112,7 @@ def dgrid_from_atoms_aabb_rust(ase_atoms, spacing, radii=None, n_neighbors=10):
     if radii is None:
         radii = vdw_radii[ase_atoms.get_atomic_numbers()]
     fpoints = ase_atoms.get_scaled_positions() - 0.5
-    cell = cellpar_to_cell(ase_atoms.cell.cellpar())
+    cell = _cell_matrix_for_rust(ase_atoms)
     nx, ny, nz = (ase_atoms.cell.cellpar()[:3] / spacing).astype(int) + 1
     dgrid = mgrcli_rust.dgrid_from_atoms_aabb(
         fpoints, cell, int(nx), int(ny), int(nz),
@@ -112,7 +136,7 @@ def dgrid_from_atoms_aabb_interp_rust(
     if radii is None:
         radii = vdw_radii[ase_atoms.get_atomic_numbers()]
     fpoints = ase_atoms.get_scaled_positions() - 0.5
-    cell = cellpar_to_cell(ase_atoms.cell.cellpar())
+    cell = _cell_matrix_for_rust(ase_atoms)
     nx, ny, nz = (ase_atoms.cell.cellpar()[:3] / spacing).astype(int) + 1
     dgrid = mgrcli_rust.dgrid_from_atoms_aabb_interp(
         fpoints,
@@ -312,6 +336,9 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     # )
 
     cell = cellpar_to_cell(mat_atoms.cell.cellpar()).T
+    voxel_lengths = _voxel_lengths_for_smoothing(
+        mat_atoms, spacing, grid_shape=dgrid.shape
+    )
     # merged_maxima, unmerged_maxima, raw_maxima = mgrcli_rust.detect_maxima_h_morph(dgrid, spacing=spacing, h=h, threshold_abs=threshold_abs, min_distance=min_distance, sigma_smooth=1.0, cell=cell)
     merged_maxima, unmerged_maxima, raw_maxima = (
         mgrcli_rust.detect_maxima_selective_smoothing_parallel(
@@ -323,6 +350,7 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
             threshold_abs=threshold_abs,
             min_distance=min_distance,
             cell=cell,
+            voxel_lengths=voxel_lengths,
         )
     )
     dt = dgrid.copy()
@@ -861,10 +889,9 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
             np.array([c[0], c[1], c[2], c[3], c[4]], dtype="object")
             for c in connections_list
         ]
-        # let's mark a connection as periodic if any maxima is far from the box, no reindexing just yet.
+        unit_cell_region_labels = np.delete(np.unique(regions), 0)
         for c in connections_list:
-            if np.any(~np.isin(c[0], valid_maxima_ids)):
-                # print(f"This connection is {c[0]}")
+            if np.any(~np.isin(c[0], unit_cell_region_labels)):
                 c[2] = "periodic"
         logger.info(
             "TIME(s): %s Done with computing connections\n",

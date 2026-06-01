@@ -3208,6 +3208,97 @@ fn detect_maxima_adaptive_geometry(
     ))
 }
 
+/// Per-axis voxel extent in Å (fractional grid step along each lattice direction).
+type VoxelLengths = (f32, f32, f32);
+
+/// Smoothing radius factor at a voxel (0..max_smooth_radius) → Gaussian σ in Å.
+#[inline]
+fn sigma_angstrom(smooth_radius_factor: f32, voxel_lengths: VoxelLengths) -> f32 {
+    let (lx, ly, lz) = voxel_lengths;
+    let l_min = lx.min(ly).min(lz);
+    smooth_radius_factor * l_min
+}
+
+/// 3σ kernel half-width in voxels per axis.
+#[inline]
+fn kernel_half_widths(
+    smooth_radius_factor: f32,
+    voxel_lengths: Option<VoxelLengths>,
+) -> (isize, isize, isize) {
+    match voxel_lengths {
+        None => {
+            let k = (smooth_radius_factor * 3.0).ceil() as isize;
+            (k, k, k)
+        }
+        Some((lx, ly, lz)) => {
+            let sigma = sigma_angstrom(smooth_radius_factor, (lx, ly, lz));
+            if sigma <= 0.0 {
+                return (0, 0, 0);
+            }
+            (
+                (3.0 * sigma / lx).ceil() as isize,
+                (3.0 * sigma / ly).ceil() as isize,
+                (3.0 * sigma / lz).ceil() as isize,
+            )
+        }
+    }
+}
+
+/// Periodic Gaussian smooth at one grid point (voxel- or physical-Å metric).
+fn selective_gaussian_at(
+    dgrid: &ndarray::ArrayView3<f32>,
+    i: usize,
+    j: usize,
+    k: usize,
+    smooth_radius_factor: f32,
+    voxel_lengths: Option<VoxelLengths>,
+) -> f32 {
+    let (nx, ny, nz) = dgrid.dim();
+    let (ki, kj, kk) = kernel_half_widths(smooth_radius_factor, voxel_lengths);
+    if ki == 0 && kj == 0 && kk == 0 {
+        return dgrid[[i, j, k]];
+    }
+
+    let mut weighted_sum = 0.0f32;
+    let mut weight_total = 0.0f32;
+
+    for di in -ki..=ki {
+        for dj in -kj..=kj {
+            for dk in -kk..=kk {
+                let ni = (i as isize + di).rem_euclid(nx as isize) as usize;
+                let nj = (j as isize + dj).rem_euclid(ny as isize) as usize;
+                let nk = (k as isize + dk).rem_euclid(nz as isize) as usize;
+
+                let (dist_sq, sigma_sq) = match voxel_lengths {
+                    None => {
+                        let dist_sq = (di * di + dj * dj + dk * dk) as f32;
+                        (dist_sq, smooth_radius_factor * smooth_radius_factor)
+                    }
+                    Some((lx, ly, lz)) => {
+                        let sigma = sigma_angstrom(smooth_radius_factor, (lx, ly, lz));
+                        let dx = di as f32 * lx;
+                        let dy = dj as f32 * ly;
+                        let dz = dk as f32 * lz;
+                        (dx * dx + dy * dy + dz * dz, sigma * sigma)
+                    }
+                };
+
+                if sigma_sq > 0.0 {
+                    let weight = (-0.5 * dist_sq / sigma_sq).exp();
+                    weighted_sum += weight * dgrid[[ni, nj, nk]];
+                    weight_total += weight;
+                }
+            }
+        }
+    }
+
+    if weight_total > 0.0 {
+        weighted_sum / weight_total
+    } else {
+        dgrid[[i, j, k]]
+    }
+}
+
 /// Selective smoothing h-maxima detection.
 /// Applies spatially-varying smoothing based on local pore size:
 /// - Small pockets (dgrid < preserve_threshold): minimal smoothing to preserve features
@@ -3222,18 +3313,19 @@ fn detect_maxima_adaptive_geometry(
 /// - cell: REQUIRED for merging - unit cell matrix for distance calculations
 /// - min_distance: merge distance in Å (default 1.0) - set to 0.0 to disable merging
 #[pyfunction]
-#[pyo3(signature = (grid, preserve_threshold=4.0, smooth_threshold=6.0, max_smooth_radius=2.0, h=0.2, cell=None, min_distance=1.0, mask_thickness=None, threshold_abs=None))]
+#[pyo3(signature = (grid, preserve_threshold=4.0, smooth_threshold=6.0, max_smooth_radius=2.0, h=0.2, cell=None, min_distance=1.0, mask_thickness=None, threshold_abs=None, voxel_lengths=None))]
 fn detect_maxima_selective_smoothing(
     py: Python<'_>,
     grid: PyReadonlyArray3<'_, f32>,
     preserve_threshold: f32,   // Preserve features smaller than this (default 4.0 Å)
     smooth_threshold: f32,     // Smooth features larger than this (default 6.0 Å)
-    max_smooth_radius: f32,    // Maximum smoothing radius in grid units (default 2.0)
+    max_smooth_radius: f32,    // Max smoothing factor (default 2.0)
     h: f32,                    // Single h parameter after smoothing (default 0.2)
     cell: Option<PyReadonlyArray2<'_, f64>>,
     min_distance: f32,
     mask_thickness: Option<f32>,
     threshold_abs: Option<f32>,
+    voxel_lengths: Option<(f32, f32, f32)>,
 ) -> PyResult<(
     Py<PyArray2<usize>>,
     Py<PyArray2<usize>>,
@@ -3278,34 +3370,15 @@ fn detect_maxima_selective_smoothing(
             for k in 0..nz {
                 let smooth_radius = smooth_radii[[i, j, k]];
                 
-                if smooth_radius > 0.1 { // Only smooth if radius is significant
-                    let kernel_size = (smooth_radius * 3.0).ceil() as usize; // 3-sigma kernel
-                    let mut weighted_sum = 0.0f32;
-                    let mut weight_total = 0.0f32;
-                    
-                    // Apply Gaussian kernel with periodic boundaries
-                    for di in -(kernel_size as isize)..=(kernel_size as isize) {
-                        for dj in -(kernel_size as isize)..=(kernel_size as isize) {
-                            for dk in -(kernel_size as isize)..=(kernel_size as isize) {
-                                let ni = (i as isize + di).rem_euclid(nx as isize) as usize;
-                                let nj = (j as isize + dj).rem_euclid(ny as isize) as usize;
-                                let nk = (k as isize + dk).rem_euclid(nz as isize) as usize;
-                                
-                                let dist_sq = (di * di + dj * dj + dk * dk) as f32;
-                                let sigma_sq = smooth_radius * smooth_radius;
-                                
-                                if sigma_sq > 0.0 {
-                                    let weight = (-0.5 * dist_sq / sigma_sq).exp();
-                                    weighted_sum += weight * dgrid[[ni, nj, nk]];
-                                    weight_total += weight;
-                                }
-                            }
-                        }
-                    }
-                    
-                    if weight_total > 0.0 {
-                        smoothed_grid[[i, j, k]] = weighted_sum / weight_total;
-                    }
+                if smooth_radius > 0.1 {
+                    smoothed_grid[[i, j, k]] = selective_gaussian_at(
+                        &dgrid.view(),
+                        i,
+                        j,
+                        k,
+                        smooth_radius,
+                        voxel_lengths,
+                    );
                 }
             }
         }
@@ -3453,18 +3526,19 @@ fn detect_maxima_selective_smoothing(
 /// This is identical to detect_maxima_selective_smoothing but parallelizes the main smoothing loop
 /// for 4-8x speedup while maintaining bit-exact identical results.
 #[pyfunction]
-#[pyo3(signature = (grid, preserve_threshold=3.0, smooth_threshold=6.0, max_smooth_radius=2.0, h=0.2, cell=None, min_distance=1.5, mask_thickness=None, threshold_abs=1.5))]
+#[pyo3(signature = (grid, preserve_threshold=3.0, smooth_threshold=6.0, max_smooth_radius=2.0, h=0.2, cell=None, min_distance=1.5, mask_thickness=None, threshold_abs=1.5, voxel_lengths=None))]
 fn detect_maxima_selective_smoothing_parallel(
     py: Python<'_>,
     grid: PyReadonlyArray3<'_, f32>,
     preserve_threshold: f32,   // Preserve features smaller than this (default 3.0 Å)
     smooth_threshold: f32,     // Smooth features larger than this (default 6.0 Å)
-    max_smooth_radius: f32,    // Maximum smoothing radius in grid units (default 2.0)
+    max_smooth_radius: f32,    // Max smoothing factor (default 2.0)
     h: f32,                    // Single h parameter after smoothing (default 0.2)
     cell: Option<PyReadonlyArray2<'_, f64>>,
     min_distance: f32,         // Distance merging threshold (default 1.5 Å)
     mask_thickness: Option<f32>,
     threshold_abs: Option<f32>, // Absolute threshold (default 1.5 Å)
+    voxel_lengths: Option<(f32, f32, f32)>,
 ) -> PyResult<(
     Py<PyArray2<usize>>,
     Py<PyArray2<usize>>,
@@ -3516,38 +3590,10 @@ fn detect_maxima_selective_smoothing_parallel(
             
             let smooth_radius = smooth_radii[[i, j, k]];
             
-            if smooth_radius > 0.1 { // Only smooth if radius is significant
-                let kernel_size = (smooth_radius * 3.0).ceil() as usize; // 3-sigma kernel
-                let mut weighted_sum = 0.0f32;
-                let mut weight_total = 0.0f32;
-                
-                // Apply Gaussian kernel with periodic boundaries (same as original)
-                for di in -(kernel_size as isize)..=(kernel_size as isize) {
-                    for dj in -(kernel_size as isize)..=(kernel_size as isize) {
-                        for dk in -(kernel_size as isize)..=(kernel_size as isize) {
-                            let ni = (i as isize + di).rem_euclid(nx as isize) as usize;
-                            let nj = (j as isize + dj).rem_euclid(ny as isize) as usize;
-                            let nk = (k as isize + dk).rem_euclid(nz as isize) as usize;
-                            
-                            let dist_sq = (di * di + dj * dj + dk * dk) as f32;
-                            let sigma_sq = smooth_radius * smooth_radius;
-                            
-                            if sigma_sq > 0.0 {
-                                let weight = (-0.5 * dist_sq / sigma_sq).exp();
-                                weighted_sum += weight * dgrid[[ni, nj, nk]];
-                                weight_total += weight;
-                            }
-                        }
-                    }
-                }
-                
-                if weight_total > 0.0 {
-                    weighted_sum / weight_total
-                } else {
-                    dgrid[[i, j, k]]
-                }
+            if smooth_radius > 0.1 {
+                selective_gaussian_at(&dgrid.view(), i, j, k, smooth_radius, voxel_lengths)
             } else {
-                dgrid[[i, j, k]] // No smoothing needed
+                dgrid[[i, j, k]]
             }
         })
         .collect();
@@ -3696,18 +3742,19 @@ fn detect_maxima_selective_smoothing_parallel(
 /// Selective smoothing with nested parallelization (Strategy 2)
 /// Parallelizes both grid points AND individual Gaussian kernel computations
 #[pyfunction]
-#[pyo3(signature = (grid, preserve_threshold=3.0, smooth_threshold=6.0, max_smooth_radius=2.0, h=0.2, cell=None, min_distance=1.5, mask_thickness=None, threshold_abs=None))]
+#[pyo3(signature = (grid, preserve_threshold=3.0, smooth_threshold=6.0, max_smooth_radius=2.0, h=0.2, cell=None, min_distance=1.5, mask_thickness=None, threshold_abs=None, voxel_lengths=None))]
 fn detect_maxima_selective_smoothing_parallel2(
     py: Python<'_>,
     grid: PyReadonlyArray3<'_, f32>,
     preserve_threshold: f32,   // Preserve features smaller than this (default 3.0 Å)
     smooth_threshold: f32,     // Smooth features larger than this (default 6.0 Å)
-    max_smooth_radius: f32,    // Maximum smoothing radius in grid units (default 2.0)
+    max_smooth_radius: f32,    // Max smoothing factor (default 2.0)
     h: f32,                    // Single h parameter after smoothing (default 0.2)
     cell: Option<PyReadonlyArray2<'_, f64>>,
     min_distance: f32,         // Distance merging threshold (default 1.5 Å)
     mask_thickness: Option<f32>,
     threshold_abs: Option<f32>, // Absolute threshold (default 1.5 Å)
+    voxel_lengths: Option<(f32, f32, f32)>,
 ) -> PyResult<(
     Py<PyArray2<usize>>,
     Py<PyArray2<usize>>,
@@ -3758,57 +3805,10 @@ fn detect_maxima_selective_smoothing_parallel2(
             
             let smooth_radius = smooth_radii[[i, j, k]];
             
-            if smooth_radius > 0.1 { // Only smooth if radius is significant
-                let kernel_size = (smooth_radius * 3.0).ceil() as i32; // 3-sigma kernel
-                
-                // STRATEGY 2: Parallelize the Gaussian kernel computation more conservatively
-                let sigma_sq = smooth_radius * smooth_radius;
-                
-                let weighted_sum: f64 = (-kernel_size..=kernel_size)
-                    .into_par_iter()
-                    .map(|di| {
-                        (-kernel_size..=kernel_size)
-                            .map(|dj| {
-                                (-kernel_size..=kernel_size)
-                                    .map(|dk| {
-                                        let ni = (i as i32 + di).rem_euclid(nx as i32) as usize;
-                                        let nj = (j as i32 + dj).rem_euclid(ny as i32) as usize;
-                                        let nk = (k as i32 + dk).rem_euclid(nz as i32) as usize;
-                                        
-                                        let dist_sq = (di * di + dj * dj + dk * dk) as f64;
-                                        let weight = (-0.5 * dist_sq / (sigma_sq as f64)).exp();
-                                        
-                                        weight * dgrid[[ni, nj, nk]] as f64
-                                    })
-                                    .sum::<f64>()
-                            })
-                            .sum::<f64>()
-                    })
-                    .sum::<f64>();
-                
-                let total_weight: f64 = (-kernel_size..=kernel_size)
-                    .into_par_iter()
-                    .map(|di| {
-                        (-kernel_size..=kernel_size)
-                            .map(|dj| {
-                                (-kernel_size..=kernel_size)
-                                    .map(|dk| {
-                                        let dist_sq = (di * di + dj * dj + dk * dk) as f64;
-                                        (-0.5 * dist_sq / (sigma_sq as f64)).exp()
-                                    })
-                                    .sum::<f64>()
-                            })
-                            .sum::<f64>()
-                    })
-                    .sum::<f64>();
-                
-                if total_weight > 0.0 {
-                    (weighted_sum / total_weight) as f32
-                } else {
-                    dgrid[[i, j, k]]
-                }
+            if smooth_radius > 0.1 {
+                selective_gaussian_at(&dgrid.view(), i, j, k, smooth_radius, voxel_lengths)
             } else {
-                dgrid[[i, j, k]] // No smoothing
+                dgrid[[i, j, k]]
             }
         })
         .collect();

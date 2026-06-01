@@ -1141,7 +1141,8 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
     connections = results.get("connections", [])
     unique_regions = np.asarray(results.get("unique_regions", []), dtype=int)
     if unique_regions.size:
-        connections_trimmed = [c for c in connections if np.any(np.isin(c[0], unique_regions))]
+        from mgr.helper import trim_connections_to_unique_regions
+        connections_trimmed = trim_connections_to_unique_regions(connections, unique_regions)
     else:
         connections_trimmed = list(connections)
 
@@ -1208,32 +1209,31 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
 
     if defaults.get("plot_connections", True) and connections_trimmed:
         _emit(_step_labels[_step_idx])
-        connections_traces = mgr_visualize.plot_connections_as_it_is(connections_trimmed, all_maxima, dgrid.shape, mat_atoms)
+        connections_traces = mgr_visualize.plot_connections_as_it_is(
+            connections_trimmed,
+            all_maxima,
+            dgrid.shape,
+            mat_atoms,
+            plot_periodic=bool(defaults.get("plot_connections_periodic", True)),
+        )
         traces.extend(connections_traces)
 
-    # Windows for internal connections only (same reference as connections: unique_regions via connections_trimmed)
     if defaults.get("plot_windows", True) and connections_trimmed:
         _emit(_step_labels[_step_idx])
-        internal_for_windows = [
+        window_conns = [
             c for c in connections_trimmed
-            if c[1] and c[2] == "internal" and len(c) > 3 and c[3] is not None and np.asarray(c[3]).size >= 3
+            if c[1] and len(c) > 3 and c[3] is not None and np.asarray(c[3]).size >= 3
         ]
-        if internal_for_windows:
-            # Estimate spacing from cell and dgrid shape for window filtering
-            _cell = mat_atoms.get_cell().array.T
-            _lengths = np.linalg.norm(_cell, axis=0)
-            _shape = np.asarray(dgrid.shape, dtype=float)
-            _est_spacing = float(np.mean(_lengths / np.maximum(_shape, 1.0)))
-            window_trace = mgr_visualize.plot_windows(
-                internal_for_windows,
-                atoms=mat_atoms,
-                spacing=_est_spacing,
-                name="windows (internal)",
-                marker_color="red",
-                marker_size=10,
-                opacity=0.6,
+        if window_conns:
+            traces.append(
+                mgr_visualize.plot_windows(
+                    window_conns,
+                    name="windows",
+                    marker_color="yellow",
+                    marker_size=10,
+                    opacity=0.8,
+                )
             )
-            traces.append(window_trace)
 
     if defaults.get("plot_maxima", True) and len(maxima):
         _emit(_step_labels[_step_idx])

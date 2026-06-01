@@ -53,10 +53,8 @@ def show_mof_threejs(
     maxima_pbc_dict = results.get("maxima_pbc_dict")
     connections_raw = results.get("connections", [])
     unique_regions = np.asarray(results.get("unique_regions", []), dtype=int)
-    if unique_regions.size:
-        connections = [c for c in connections_raw if np.any(np.isin(c[0], unique_regions))]
-    else:
-        connections = list(connections_raw)
+    from mgr.helper import trim_connections_to_unique_regions
+    connections = trim_connections_to_unique_regions(connections_raw, unique_regions)
 
     # Match Plotly show_mof: only plot the first regions.max() maxima (excludes padding-only sites).
     regions_arr = np.asarray(regions)
