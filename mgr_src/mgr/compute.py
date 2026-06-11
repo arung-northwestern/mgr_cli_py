@@ -9116,6 +9116,26 @@ def _merge_winding_kwargs(
     return merged
 
 
+def _unique_percolated_clusters_from_components(components) -> dict:
+    """Collapse duplicate per-axis components that share the same region set."""
+    if not components:
+        return {}
+    seen: set = set()
+    out: dict = {}
+    idx = 0
+    for _axis, comp_list in components.items():
+        if not comp_list:
+            continue
+        for comp in comp_list:
+            key = frozenset(int(r) for r in comp)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out[f"cluster_{idx}"] = set(key)
+            idx += 1
+    return out
+
+
 def _accessible_percolating_region_labels(
     results_dict,
     probe_radius,
@@ -9339,8 +9359,9 @@ def compute_surface_area_from_results_mc(
 
     # Interpolate distance and region labels at sample points
     d_samples = map_coordinates(distance_grid, coords, order=1, mode="wrap")
+    region_field = results_dict.get("regions", regions_pbc)
     reg_samples = map_coordinates(
-        regions_pbc.astype(float), coords, order=0, mode="wrap"
+        np.asarray(region_field, dtype=float), coords, order=0, mode="wrap"
     ).astype(int)
 
     half_delta = shell_thickness / 2.0
@@ -9396,17 +9417,7 @@ def compute_surface_area_from_results_mc(
         # --- Per-percolated-cluster accessible SA (MC) ---
         by_cluster_mc = {}
         if threshold is not None and components and percolating_regions:
-            percolated_clusters = {}
-            cluster_id = 0
-            for axis, comp_list in components.items():
-                if not comp_list:
-                    continue
-                for comp in comp_list:
-                    cluster_regions = set(comp)
-                    if cluster_regions:
-                        key = f"axis_{axis}_cluster_{cluster_id}"
-                        percolated_clusters[key] = cluster_regions
-                        cluster_id += 1
+            percolated_clusters = _unique_percolated_clusters_from_components(components)
             for cid, region_set in percolated_clusters.items():
                 cluster_area = sum(by_region_mc.get(int(r), 0.0) for r in region_set)
                 if cluster_area > 0:
@@ -9618,20 +9629,13 @@ def compute_surface_area_from_results(
         if accessible_pocket_area > 0:
             accessible_pocket_areas[pocket_id] = accessible_pocket_area
 
-    # Step 6: Group accessible regions into percolated clusters using the SAME components
-    # chosen by select_percolation_threshold (avoid re-scanning history with brittle float equality).
-    percolated_clusters = {}
-    if threshold is not None and components:
-        cluster_id = 0
-        for axis, comp_list in components.items():
-            if not comp_list:
-                continue
-            for comp in comp_list:
-                cluster_regions = set(comp)
-                if cluster_regions:
-                    percolated_clusters[f"axis_{axis}_cluster_{cluster_id}"] = cluster_regions
-                    cluster_id += 1
-        logger.info(f"Found {len(percolated_clusters)} percolated clusters at threshold {selected_threshold:.3f} Å")
+    # Step 6: Unique percolated clusters (dedupe identical region sets across axes).
+    percolated_clusters = _unique_percolated_clusters_from_components(components)
+    if percolated_clusters:
+        logger.info(
+            f"Found {len(percolated_clusters)} unique percolated clusters at threshold "
+            f"{selected_threshold:.3f} Å"
+        )
     else:
         logger.info("No percolated clusters found - no accessible regions for cluster formation")
 
@@ -9884,19 +9888,13 @@ def compute_void_volume_from_results(
         if accessible_pocket_volume > 0:
             accessible_pocket_volumes[pocket_id] = accessible_pocket_volume
 
-    # Step 5: Group accessible regions into percolated clusters (same components as threshold selection).
-    percolated_clusters = {}
-    if threshold is not None and components:
-        cluster_id = 0
-        for axis, comp_list in components.items():
-            if not comp_list:
-                continue
-            for comp in comp_list:
-                cluster_regions = set(comp)
-                if cluster_regions:
-                    percolated_clusters[f"axis_{axis}_cluster_{cluster_id}"] = cluster_regions
-                    cluster_id += 1
-        logger.info(f"Found {len(percolated_clusters)} percolated clusters at threshold {selected_threshold:.3f} Å")
+    # Step 5: Unique percolated clusters (dedupe identical region sets across axes).
+    percolated_clusters = _unique_percolated_clusters_from_components(components)
+    if percolated_clusters:
+        logger.info(
+            f"Found {len(percolated_clusters)} unique percolated clusters at threshold "
+            f"{selected_threshold:.3f} Å"
+        )
     else:
         logger.info("No percolated clusters found - no accessible regions for cluster formation")
 

@@ -1240,6 +1240,7 @@ def compute_psd_uniform_rust(
     density=False,
     return_fig=False,
     material="Material",
+    probe_center_min_radius=None,
 ):
     """Compute pore size distribution using uniform sampling.
 
@@ -1271,8 +1272,9 @@ def compute_psd_uniform_rust(
     from .visualize import get_pore_size_distribution_trace
     from .compute import interpolate_dgrid
 
+    dgrid_eff = _effective_dgrid_uniform_psd_sampling(dgrid, probe_center_min_radius)
     sample_points, pore_sizes = compute_pore_sizes_uniform_rust(
-        dgrid, ase_atoms, num_samples_total=num_samples_total
+        dgrid_eff, ase_atoms, num_samples_total=num_samples_total
     )
     if bins is None:
         bins = np.linspace(0, 50, 200)  # histogram bins
@@ -1292,8 +1294,13 @@ def compute_psd_uniform_rust(
         # print(f"  Max probability density: {np.max(hist):.4f}")
         fig = go.Figure()
         fig.add_trace(histogram_trace)
+        mat_title = material
+        if probe_center_min_radius is not None and float(probe_center_min_radius) > 0:
+            mat_title = (
+                f"{material} (probe-center sites ≥ {float(probe_center_min_radius):.2g} Å)"
+            )
         fig.update_layout(
-            title=f"Pore Size Distribution with uniform sampling across box {material}",
+            title=f"Pore Size Distribution with uniform sampling across box {mat_title}",
             xaxis_title="Pore Diameter (Å)",
             yaxis_title="Counts",
             legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
@@ -1474,7 +1481,7 @@ def compute_pocket_psds_for_segmentation(
         segmentation.get("regions_pbc", segmentation["regions"])
     )
     if bins is None:
-        from mofography.pocket_typing import psd_bins
+        from .pocket_typing import psd_bins
 
         bins = psd_bins(dgrid)
     return compute_psds_pocketwise_rust(

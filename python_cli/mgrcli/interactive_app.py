@@ -1906,8 +1906,8 @@ def _hts_one_material(
                 if "distance_grid" not in modified_results:
                     modified_results["distance_grid"] = modified_results.get("dgrid")
                 probe = float(options.get("probe_radius_sa_vol", 1.2))
-                from mgr.compute import compute_surface_area_from_results_mc, compute_void_volume_from_results
-                sa_results = compute_surface_area_from_results_mc(modified_results, atoms, probe)
+                from mgr.compute import compute_surface_area_from_results, compute_void_volume_from_results
+                sa_results = compute_surface_area_from_results(modified_results, atoms, probe)
                 vol_results = compute_void_volume_from_results(modified_results, atoms, probe)
                 if options.get("save_sa_vol_csv"):
                     if sa_results:
@@ -4417,7 +4417,7 @@ def main() -> None:
             st.markdown("### Surface Area & Void Volume Analysis")
             if st.button("Compute Surface Area & Void Volume", key="compute_sa_vol"):
                 try:
-                    from mgr.compute import compute_surface_area_from_results_mc, compute_void_volume_from_results
+                    from mgr.compute import compute_surface_area_from_results, compute_void_volume_from_results
 
                     # First, ensure we have percolation analysis data
                     analysis_key = st.session_state.get("analysis_key")
@@ -4460,7 +4460,7 @@ def main() -> None:
                         with st.spinner("Computing surface area analysis..."):
                             print(f"Computing surface area with probe radius: {probe_radius:.3f} Å")
                             print(f"Results keys available: {list(modified_results.keys())}")
-                            sa_results = compute_surface_area_from_results_mc(
+                            sa_results = compute_surface_area_from_results(
                                 modified_results,
                                 atoms,
                                 probe_radius,

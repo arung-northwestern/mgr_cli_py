@@ -170,16 +170,28 @@ def _edge_connected(data: dict) -> bool:
 
 
 def _import_mgr():
-    import mgr
+    """RAG/PSD helpers from mgr.compute and mgr.rust_fun."""
+    import types
 
-    return mgr
+    from . import compute as _compute
+    from . import rust_fun as _rust_fun
+
+    ns = types.SimpleNamespace()
+    ns.rag_from_connections = _compute.rag_from_connections
+    ns.add_window_info_to_rag = _compute.add_window_info_to_rag
+    ns.add_pbc_to_rag = _compute.add_pbc_to_rag
+    ns.add_maxima_to_rag = _compute.add_maxima_to_rag
+    ns.compute_psds_pocketwise_rust = _rust_fun.compute_psds_pocketwise_rust
+    ns.compute_pocket_psds_for_segmentation = _rust_fun.compute_pocket_psds_for_segmentation
+    ns.add_csd_to_rag_with_pbc = _compute.add_csd_to_rag_with_pbc
+    ns.add_pocket_psd_to_rag_with_pbc = _compute.add_pocket_psd_to_rag_with_pbc
+    ns.add_psd_to_rag_with_pbc = _compute.add_psd_to_rag_with_pbc
+    return ns
 
 
 def _import_get_pbc_groups():
-    try:
-        from python_cli.mgrcli.cli import get_pbc_groups
-    except ImportError:
-        from mgrcli.cli import get_pbc_groups
+    from .compute import get_pbc_groups
+
     return get_pbc_groups
 
 
@@ -198,7 +210,7 @@ def build_pockets_from_segmentation(
     *,
     probe_radius_psd: float = DEFAULT_PROBE_RADIUS_PSD_A,
     psd_bin_edges: Optional[np.ndarray] = None,
-) -> Tuple[List[Dict[str, Any]], List[List[int]], Dict[int, float]]:
+) -> Tuple[List[Dict[str, Any]], List[List[int]], Dict[int, float], Optional[str]]:
     """Build pocket records (id, d1, neighbors) from segmentation + PSD on RAG."""
     mgr = _import_mgr()
     get_pbc_groups = _import_get_pbc_groups()
@@ -229,25 +241,34 @@ def build_pockets_from_segmentation(
     rag = mgr.add_maxima_to_rag(rag, maxima, maxima_radii, dgrid.shape, atoms)
     props = regionprops(regions)
 
-    try:
-        pocket_psds = mgr.compute_psds_pocketwise_rust(
-            dgrid,
-            regions_pbc,
-            atoms,
-            num_samples_per_region=1000,
-            bins=psd_bin_edges,
-            return_fig=False,
-            probe_center_min_radius=probe_radius_psd,
-        )
-    except Exception as exc:
-        import warnings
+    pocket_psd_error: Optional[str] = None
+    pocket_psds = segmentation.get("pocket_psds")
+    pocket_psd_error = segmentation.get("pocket_psd_error")
+    if pocket_psds is None and pocket_psd_error is None:
+        try:
+            pocket_psds = mgr.compute_pocket_psds_for_segmentation(
+                segmentation,
+                atoms,
+                num_samples_per_region=1000,
+                bins=psd_bin_edges,
+                probe_center_min_radius=probe_radius_psd,
+            )
+        except Exception as exc:
+            import logging
 
-        warnings.warn(
-            f"compute_psds_pocketwise_rust failed ({exc!r}); "
-            "pocket PSD unavailable (CSD still attached on csd_*_pbc keys)",
-            stacklevel=2,
+            pocket_psd_error = str(exc)
+            logging.getLogger(__name__).warning(
+                "compute_pocket_psds_for_segmentation failed (%s); pocket typing needs probe PSDs on the RAG.",
+                exc,
+            )
+            pocket_psds = None
+    elif pocket_psds is None and pocket_psd_error:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "segmentation has pocket_psd_error=%r; skipping pocket PSD attach.",
+            pocket_psd_error,
         )
-        pocket_psds = None
 
     rag = mgr.add_csd_to_rag_with_pbc(
         rag, props, pbc_groups, psd_bin_edges, atoms, dgrid.shape
@@ -336,7 +357,7 @@ def build_pockets_from_segmentation(
             }
         )
 
-    return pockets, pbc_groups, d1_map
+    return pockets, pbc_groups, d1_map, pocket_psd_error
 
 
 def compute_pocket_fingerprints(
@@ -1052,14 +1073,17 @@ def assign_pocket_types_from_segmentation(
                 error=f"segmentation missing keys: {', '.join(missing)}",
             )
 
-        pockets, pbc_groups, _d1_map = build_pockets_from_segmentation(
+        pockets, pbc_groups, _d1_map, pocket_psd_error = build_pockets_from_segmentation(
             segmentation,
             atoms,
             probe_radius_psd=probe_radius_psd,
             psd_bin_edges=psd_bin_edges,
         )
         if not pockets:
-            return PocketTypingResult(ok=False, error="no pockets extracted from segmentation")
+            err = "no pockets extracted from segmentation"
+            if pocket_psd_error:
+                err += f" (pocket PSD failed: {pocket_psd_error})"
+            return PocketTypingResult(ok=False, error=err, method=method)
 
         fps = compute_pocket_fingerprints(
             segmentation,
