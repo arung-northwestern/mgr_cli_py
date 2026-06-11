@@ -2,11 +2,14 @@ import numpy as np
 import ase
 import logging
 
+from .vdw_radii import default_vdw_radii_angstrom
+
 logger = logging.getLogger(__name__)
 
 
+
 def _voxel_lengths_for_smoothing(ase_atoms, spacing, grid_shape=None):
-    """Per-axis fractional grid step lengths in Å (anisotropic Gaussian smoothing)."""
+    """Per-axis fractional grid step lengths in Å (for anisotropic Gaussian smoothing)."""
     from ase.geometry import cellpar_to_cell
 
     M = cellpar_to_cell(ase_atoms.cell.cellpar())
@@ -20,7 +23,6 @@ def _voxel_lengths_for_smoothing(ase_atoms, spacing, grid_shape=None):
     lz = float(np.linalg.norm(M[2]) / max(nz - 1, 1))
     return (lx, ly, lz)
 
-
 def _cell_matrix_for_rust(ase_atoms):
     """Return C for Rust ``cart = C @ delta_frac`` (matches ASE ``frac @ M``)."""
     from ase.geometry import cellpar_to_cell
@@ -28,37 +30,11 @@ def _cell_matrix_for_rust(ase_atoms):
     return cellpar_to_cell(ase_atoms.cell.cellpar()).T
 
 
-
-def _watershed_padded_labels(rust_mod, watershed_backend, padded_grid, markers, void_mask, compactness):
-    """Run seeded watershed on the padded periodic grid; returns uint32 region labels."""
-    wb = watershed_backend
-    pg32 = padded_grid.astype(np.float32)
-    seeds_u32 = markers.astype(np.uint32)
-    mask_u8 = void_mask.astype(np.uint8)
-    if wb == "rust_bucket":
-        return rust_mod.seeded_watershed_bucket(pg32, seeds_u32, mask=mask_u8)
-    if wb == "rust_det":
-        return rust_mod.seeded_watershed_det(pg32, seeds_u32, mask_u8)
-    if wb == "rust_det_parallel":
-        return rust_mod.seeded_watershed_det_parallel(pg32, seeds_u32, mask_u8)
-    if wb == "skimage":
-        from skimage.segmentation import watershed as sk_watershed
-
-        return sk_watershed(
-            -padded_grid,
-            markers.astype(np.int32),
-            mask=void_mask.astype(bool),
-            compactness=compactness,
-            connectivity=3,
-        ).astype(np.uint32)
-    raise ValueError(
-        f"Unknown watershed_backend {wb!r}. Expected "
-        "'rust_bucket', 'rust_det', 'rust_det_parallel', or 'skimage'."
-    )
-
-
 def dgrid_from_atoms_rust(ase_atoms, spacing, radii=None):
     """Compute a distance grid from atomic positions using the Rust backend.
+
+    Uses optimized exact MIC (SoA, SIMD on orthogonal cells, Wassenaar 7-image
+    fallback on skewed cells).
 
     This function calculates the distance field (dgrid) for a given atomic structure,
     where each grid point represents the minimum distance to the nearest atom surface,
@@ -68,7 +44,9 @@ def dgrid_from_atoms_rust(ase_atoms, spacing, radii=None):
     :type ase_atoms: ase.Atoms
     :param spacing: Grid spacing in Angstroms
     :type spacing: float
-    :param radii: Van der Waals radii for each atom. If None, uses ASE's vdw_radii
+    :param radii: Van der Waals radii for each atom. If None, uses the CRC/Bondi
+        (1964) VDW table from :func:`~mofography.vdw_radii.default_vdw_radii_angstrom`.
+        Pass ``mendeleev_vdw_radii_angstrom(atoms)`` for the legacy Mendeleev table.
     :type radii: numpy.ndarray or None
     :return: 3D distance grid where values represent distances to atom surfaces
     :rtype: numpy.ndarray
@@ -76,11 +54,10 @@ def dgrid_from_atoms_rust(ase_atoms, spacing, radii=None):
     import mgrcli_rust
 
     logger.info(f"Using {mgrcli_rust.rayon_num_threads()} threads for parallel processing")
-    from ase.geometry import cellpar_to_cell
-    from ase.data import vdw_radii
 
     if radii is None:
-        radii = vdw_radii[ase_atoms.get_atomic_numbers()]
+        radii = default_vdw_radii_angstrom(ase_atoms)
+
     fpoints = ase_atoms.get_scaled_positions() - 0.5
     cell = _cell_matrix_for_rust(ase_atoms)
     nx, ny, nz = (ase_atoms.cell.cellpar()[:3] / spacing).astype(int) + 1
@@ -88,57 +65,66 @@ def dgrid_from_atoms_rust(ase_atoms, spacing, radii=None):
     return dgrid
 
 
+def dgrid_from_atoms_exp_rust(ase_atoms, spacing, radii=None):
+    """Deprecated alias for :func:`dgrid_from_atoms_rust`."""
+    return dgrid_from_atoms_rust(ase_atoms, spacing, radii=radii)
+
 
 def dgrid_from_atoms_aabb_rust(ase_atoms, spacing, radii=None, n_neighbors=10):
-    """Compute a distance grid using the Rust R-tree (AABB) backend.
-
-    Uses an R-tree spatial index over periodically replicated atoms for
-    approximate nearest-neighbor distance queries.  Faster than the exact
-    brute-force method for large systems, but only checks ``n_neighbors``
-    closest replicated atoms per grid point.
+    """Compute a distance grid using the Rust AABB/PBC neighbor search backend.
 
     :param ase_atoms: ASE Atoms object containing the atomic structure
+    :type ase_atoms: ase.Atoms
     :param spacing: Grid spacing in Angstroms
-    :param radii: Van der Waals radii for each atom. If None, uses ASE's vdw_radii
-    :param n_neighbors: Number of nearest replicated atoms to query per grid point
-    :return: 3D distance grid (float32)
+    :type spacing: float
+    :param radii: Van der Waals radii for each atom. If None, uses the CRC/Bondi
+        (1964) VDW table from :func:`~mofography.vdw_radii.default_vdw_radii_angstrom`.
+        Pass ``mendeleev_vdw_radii_angstrom(atoms)`` for the legacy Mendeleev table.
+    :type radii: numpy.ndarray or None
+    :param n_neighbors: Number of nearest neighbors to query from the AABB tree, defaults to 10
+    :type n_neighbors: int
+    :return: 3D distance grid where values represent distances to atom surfaces
+    :rtype: numpy.ndarray
     """
     import mgrcli_rust
 
-    logger.info(f"Using {mgrcli_rust.rayon_num_threads()} threads for AABB distance grid")
-    from ase.geometry import cellpar_to_cell
-    from ase.data import vdw_radii
+    logger.info(f"Using {mgrcli_rust.rayon_num_threads()} threads for parallel processing")
 
     if radii is None:
-        radii = vdw_radii[ase_atoms.get_atomic_numbers()]
+        radii = default_vdw_radii_angstrom(ase_atoms)
+
     fpoints = ase_atoms.get_scaled_positions() - 0.5
     cell = _cell_matrix_for_rust(ase_atoms)
     nx, ny, nz = (ase_atoms.cell.cellpar()[:3] / spacing).astype(int) + 1
-    dgrid = mgrcli_rust.dgrid_from_atoms_aabb(
-        fpoints, cell, int(nx), int(ny), int(nz),
-        radii=radii, n_neighbors=n_neighbors,
+    return mgrcli_rust.dgrid_from_atoms_aabb(
+        fpoints, cell, int(nx), int(ny), int(nz), radii, int(n_neighbors)
     )
-    return dgrid
 
 
 def dgrid_from_atoms_aabb_interp_rust(
     ase_atoms, spacing, coarse_factor=2, radii=None, n_neighbors=10
 ):
-    """Compute smoothed distance grid with coarse Rust R-tree + interpolation."""
+    """Compute a smoothed distance grid using coarse AABB sampling + trilinear interpolation.
+
+    :param ase_atoms: ASE Atoms object containing the atomic structure
+    :param spacing: Grid spacing in Angstroms (fine grid)
+    :param coarse_factor: Coarsening factor (>1) for the AABB sampling grid; 2 is a mild smoothing
+    :param radii: Van der Waals radii for each atom. If None, uses the CRC/Bondi (1964) VDW table from :func:`~mofography.vdw_radii.default_vdw_radii_angstrom`
+    :param n_neighbors: Number of nearest neighbors to query from the AABB tree, defaults to 10
+    :return: 3D distance grid (float32) with mild smoothing from interpolation
+    """
     import mgrcli_rust
 
-    logger.info(
-        f"Using {mgrcli_rust.rayon_num_threads()} threads for interpolated AABB distance grid"
-    )
-    from ase.geometry import cellpar_to_cell
-    from ase.data import vdw_radii
+    logger.info(f"Using {mgrcli_rust.rayon_num_threads()} threads for parallel processing")
 
     if radii is None:
-        radii = vdw_radii[ase_atoms.get_atomic_numbers()]
+        radii = default_vdw_radii_angstrom(ase_atoms)
+
     fpoints = ase_atoms.get_scaled_positions() - 0.5
     cell = _cell_matrix_for_rust(ase_atoms)
     nx, ny, nz = (ase_atoms.cell.cellpar()[:3] / spacing).astype(int) + 1
-    dgrid = mgrcli_rust.dgrid_from_atoms_aabb_interp(
+
+    return mgrcli_rust.dgrid_from_atoms_aabb_interp(
         fpoints,
         cell,
         int(nx),
@@ -148,7 +134,6 @@ def dgrid_from_atoms_aabb_interp_rust(
         radii,
         int(n_neighbors),
     )
-    return dgrid
 
 
 def egrid_from_atoms_rust(
@@ -174,12 +159,14 @@ def egrid_from_atoms_rust(
     :rtype: numpy.ndarray
     """
     import mgrcli_rust
-    from .data import mix_lorentz_berthelot
+    import mofography as mgr
     from ase.geometry import cellpar_to_cell
     from .compute import get_repetitions_to_meet_cutoff
     logger.info(f"Using {mgrcli_rust.rayon_num_threads()} threads for parallel processing")
     if forcefield_mixed is None:
-        forcefield_mixed = mix_lorentz_berthelot(ase_atoms, probe_symbol=probe_symbol)
+        forcefield_mixed = mgr.mix_lorentz_berthelot(
+            ase_atoms, probe_symbol=probe_symbol
+        )
     mat_atoms_repeat, ff_repeat = mgr.repeat_to_meet_cutoff(
         ase_atoms, forcefield_mixed=forcefield_mixed, cutoff=cutoff
     )
@@ -204,7 +191,99 @@ def egrid_from_atoms_rust(
         return egrid
 
 
-def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, min_distance=1.5, threshold_abs=1.5, return_padded_regions=False, spacing=None, minimum_window_separation=None, wall_thickness=0.05, extra_padding=5, compactness=0, min_region_size=0.001, disable_tqdm=False, compute_connections=True, return_dgrid=False, watershed_backend="rust_bucket",):
+def seeded_watershed_det_rust(image, seeds, mask=None):
+    """Deterministic single-threaded seeded watershed wrapper around mgrcli_rust.
+
+    Parameters
+    ----------
+    image : ndarray, float32
+        3D scalar field; larger values flood first. For a distance grid, pass
+        the raw ``dgrid`` (do NOT negate).
+    seeds : ndarray, uint32
+        3D array of markers (0 = background).
+    mask : ndarray, uint8 or bool, optional
+        3D mask array; voxels with mask == 0 are never labeled.
+    """
+    import numpy as np
+    import mgrcli_rust
+
+    img32 = np.asarray(image, dtype=np.float32)
+    seeds32 = np.asarray(seeds, dtype=np.uint32)
+    if mask is not None:
+        mask8 = np.asarray(mask, dtype=np.uint8)
+        return mgrcli_rust.seeded_watershed_det(img32, seeds32, mask8)
+    else:
+        return mgrcli_rust.seeded_watershed_det(img32, seeds32, None)
+
+
+def seeded_watershed_det_parallel_rust(image, seeds, mask=None):
+    """Deterministic parallel seeded watershed wrapper around mgrcli_rust.
+
+    Parameters
+    ----------
+    image : ndarray, float32
+        3D scalar field; larger values flood first. For a distance grid, pass
+        the raw ``dgrid`` (do NOT negate).
+    seeds : ndarray, uint32
+        3D array of markers (0 = background).
+    mask : ndarray, uint8 or bool, optional
+        3D mask array; voxels with mask == 0 are never labeled.
+    """
+    import numpy as np
+    import mgrcli_rust
+
+    img32 = np.asarray(image, dtype=np.float32)
+    seeds32 = np.asarray(seeds, dtype=np.uint32)
+    if mask is not None:
+        mask8 = np.asarray(mask, dtype=np.uint8)
+        return mgrcli_rust.seeded_watershed_det_parallel(img32, seeds32, mask8)
+    else:
+        return mgrcli_rust.seeded_watershed_det_parallel(img32, seeds32, None)
+
+
+
+def _seeded_watershed_backend(
+    padded_grid,
+    seeds,
+    mask,
+    backend,
+    *,
+    compactness=0,
+    watershed_connectivity=3,
+):
+    """Dispatch seeded watershed to the selected Rust/skimage backend."""
+    import mgrcli_rust
+
+    img = padded_grid.astype(np.float32)
+    seeds_u32 = seeds.astype(np.uint32)
+    mask_u8 = mask.astype(np.uint8)
+
+    if backend == "rust_bucket":
+        return mgrcli_rust.seeded_watershed_bucket(img, seeds_u32, mask_u8)
+    if backend == "rust_det":
+        return mgrcli_rust.seeded_watershed_det(img, seeds_u32, mask_u8)
+    if backend == "rust_det_parallel":
+        return mgrcli_rust.seeded_watershed_det_parallel(img, seeds_u32, mask_u8)
+    if backend == "skimage":
+        from skimage.segmentation import watershed as sk_watershed
+
+        return sk_watershed(
+            -padded_grid,
+            seeds.astype(np.int32),
+            mask=mask.astype(bool),
+            compactness=compactness,
+            connectivity=watershed_connectivity,
+        ).astype(np.uint32)
+    raise ValueError(
+        f"Unknown watershed_backend '{backend}'. Expected 'rust_bucket', 'rust_det', "
+        "'rust_det_parallel', or 'skimage'."
+    )
+
+
+
+
+
+def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.05, h=0.2, min_distance=1.5, threshold_abs=1.5, preserve_threshold=3.0, smooth_threshold=6.0, max_smooth_radius=2.0, return_padded_regions=False, spacing=None, minimum_window_separation=None, wall_thickness=0.05, extra_padding=5, compactness=0, min_region_size=0.001, disable_tqdm=False, compute_connections=True, return_dgrid=False, watershed_backend="rust_det", watershed_connectivity=3, skip_endchannel_pairs=True):
     """Perform periodic segmentation on a distance grid to identify pore regions.
 
     This function implements a comprehensive pore segmentation algorithm that:
@@ -226,6 +305,12 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     :type min_distance: float
     :param threshold_abs: Absolute threshold for maxima detection
     :type threshold_abs: float
+    :param preserve_threshold: Distance cutoff (Å) below which maxima are untouched during smoothing
+    :type preserve_threshold: float
+    :param smooth_threshold: Distance threshold (Å) above which maxima are always smoothed
+    :type smooth_threshold: float
+    :param max_smooth_radius: Maximum radius (Å) used when smoothing maxima
+    :type max_smooth_radius: float
     :param return_padded_regions: Whether to return padded region arrays
     :type return_padded_regions: bool
     :param spacing: Grid spacing. If None, estimated from dgrid size and cell lengths. Specify for better accuracy.
@@ -246,13 +331,16 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     :type compute_connections: bool
     :param return_dgrid: Whether to include dgrid in output
     :type return_dgrid: bool
-    :param watershed_backend: Watershed implementation: rust_bucket (default), rust_det,
-        rust_det_parallel, or skimage (requires scikit-image).
+    :param watershed_backend: Which watershed backend to use: \"rust_det\" (default, deterministic Rust heap), \"rust_bucket\" (parallel bucket flood), \"rust_det_parallel\" (deterministic parallel), or \"skimage\".
+    :param skip_endchannel_pairs: If True (default), do not merge tiny wall-touching end-channel slivers into neighbors. Set False only for cosmetic visualization cleanup.
     :type watershed_backend: str
+    :param watershed_connectivity: Connectivity for skimage watershed (2=18-NN, 3=26-NN). Only used when watershed_backend="skimage".
+    :type watershed_connectivity: int
     :return: Dictionary containing segmentation results including maxima, regions, connections, etc.
     :rtype: dict
     """
     import numpy as np
+    import mgrcli_rust
 
     # from skimage.segmentation import watershed
     from ase.geometry import cellpar_to_cell
@@ -270,7 +358,7 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     logger.info(f"Using {mgrcli_rust.rayon_num_threads()} threads for parallel processing")
     logger.info("Watershed backend: %s", watershed_backend)
     start_time = time()
-    from .helper import (
+    from mofography import (
         compute_wall_cells,
         move_maximum_to_peak,
         process_wall_maxima,
@@ -281,8 +369,6 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
         find_end_channel_pairs,
         merge_small_regions,
         merge_small_regions_pbc,
-    )
-    from .compute import (
         find_pore_limiting_radius,
         calculate_padding_thickness,
         detect_periodic_maxima_direct,
@@ -292,6 +378,9 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     # print(f"timer started")
     logger.info(f"timer started")
     # h = 0.11
+
+    # Precompute metric-aware weights if needed by the selected backend (done
+    # after cell matrix is available below)
     # note: uncomment these imports when refactoring
     # from .helper import find_touching_region_pairs,compute_wall_cells, move_maximum_to_peak, process_wall_maxima, is_inside_or_close_to_boundary, get_fractional_coordinates, interpolate_labels
     # smooth = false
@@ -311,9 +400,8 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     plr = find_pore_limiting_radius(dgrid)
 
     logger.info(
-        "time(s): %s pore limiting radius is %s\n",
-        np.round(time() - start_time, decimals=2),
-        np.round(plr, decimals=2),
+        "time(s): %.2f pore limiting radius is %.2f\n"
+        % (np.round(time() - start_time, decimals=2), np.round(plr, decimals=2))
     )
     if (plr - 0.25) < mask_thickness:
         logger.warning(
@@ -343,9 +431,9 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     merged_maxima, unmerged_maxima, raw_maxima = (
         mgrcli_rust.detect_maxima_selective_smoothing_parallel(
             dgrid,
-            preserve_threshold=3.0,
-            smooth_threshold=6.0,
-            max_smooth_radius=2.0,
+            preserve_threshold=preserve_threshold,
+            smooth_threshold=smooth_threshold,
+            max_smooth_radius=max_smooth_radius,
             h=h,
             threshold_abs=threshold_abs,
             min_distance=min_distance,
@@ -353,12 +441,15 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
             voxel_lengths=voxel_lengths,
         )
     )
+
+    # Merged (PBC) and unmerged floods share the same backend for parity checks.
+    merged_watershed_backend = watershed_backend
     dt = dgrid.copy()
     temp = np.ceil(merged_maxima)
     # compute wall cells
     logger.info(
-        "time(s): %s computing maxima with pbc\n",
-        np.round(time() - start_time, decimals=2),
+        "time(s): %.2f computing maxima with pbc\n"
+        % np.round(time() - start_time, decimals=2)
     )
     # computed merged maxima nad regions_pbc!
     # padding_thickness=5
@@ -401,8 +492,8 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     )
 
     logger.info(
-        "time(s): %s computing regions with pbc \n",
-        np.round(time() - start_time, decimals=2),
+        "time(s): %.2f computing regions with pbc \n"
+        % np.round(time() - start_time, decimals=2)
     )
     # compactness = 0
     # compute markers for padded, periodic segmentation
@@ -428,19 +519,18 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     # )
 
     # run the watershed segmentation using the merged markers.
-    padded_regions = _watershed_padded_labels(
-        mgrcli_rust,
-        watershed_backend,
+    padded_regions = _seeded_watershed_backend(
         padded_grid,
         padded_markers,
         padded_void,
-        compactness,
+        merged_watershed_backend,
+        compactness=compactness,
+        watershed_connectivity=watershed_connectivity,
     )
 
     logger.info(
-        "TIME(s): %s Looking to remove regions smaller than %s * dgrid.size",
-        np.round(time() - start_time, decimals=2),
-        min_region_size,
+        "TIME(s): %.2f Looking to remove regions smaller than %f * dgrid.size"
+        % (np.round(time() - start_time, decimals=2), min_region_size)
     )
     # clean up the regions_pbc from small regions, remove less than 0.1% of the total size, this is trickier than one would think. We want to find the volume % of just the box, then make our selection to remove, and then pad back up to get the cleaned padded grid.
     padded_regions_box_trimmed = padded_regions[
@@ -464,8 +554,8 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
         ~np.isin(unique_padded_regions, unique_padded_regions_cleaned)
     ]
     logger.info(
-        "Found that labels are too small within the box even with pbc %s",
-        removed_labels_pbc,
+        "Found that labels are too small within the box even with pbc %s"
+        % removed_labels_pbc
     )
 
     # TODO: is this necesary? isnt' everytihng an original maxima this point.
@@ -482,8 +572,8 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
 
     if len(removed_maxima_labels) > 0:
         logger.info(
-            "TIME(s): %s Redoing segmentation for clean sequential labels in regions pbc",
-            np.round(time() - start_time, decimals=2),
+            "TIME(s): %.2f Redoing segmentation for clean sequential labels in regions pbc"
+            % np.round(time() - start_time, decimals=2)
         )
         markers = np.zeros_like(dgrid, dtype=int)
         if len(merged_maxima) > 0:
@@ -498,13 +588,13 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
         padded_void = np.pad(void_mask, padding_thickness, mode="wrap")
 
         # run the watershed segmentation using the merged markers.
-        padded_regions = _watershed_padded_labels(
-            mgrcli_rust,
-            watershed_backend,
+        padded_regions = _seeded_watershed_backend(
             padded_grid,
             padded_markers,
             padded_void,
-            compactness,
+            merged_watershed_backend,
+            compactness=compactness,
+            watershed_connectivity=watershed_connectivity,
         )
 
     # replace regions_pbc with regions_pbc_cleaned
@@ -520,13 +610,21 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
 
     #
     logger.info(
-        "time(s): %s computing maxima and regions without pbc\n",
-        np.round(time() - start_time, decimals=2),
+        "time(s): %.2f computing maxima and regions without pbc\n"
+        % np.round(time() - start_time, decimals=2)
     )
 
     # step 2: get unmerged maxima info using valid maxima
     original_shape = np.array(dgrid.shape)
     padded_shape = np.array(padded_grid.shape)
+
+    # Stable periodic seed IDs regardless of watershed backend / merge order.
+    merged_maxima = np.asarray(merged_maxima, dtype=int)
+    if merged_maxima.size:
+        order = np.lexsort(
+            (merged_maxima[:, 2], merged_maxima[:, 1], merged_maxima[:, 0])
+        )
+        merged_maxima = merged_maxima[order]
 
     new_maxima_info_list = []
     counter = 1
@@ -557,6 +655,7 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
 
     maxima_info = np.array(new_maxima_info_list, dtype=int)
 
+
     # rust version goes here--
     # maxima_info = mgrcli_rust.build_maxima_info(merged_maxima.astype(np.uintp), np.array(dgrid.shape, dtype=np.uintp), int(padding_thickness))
     # maxima_info = np.asarray(maxima_info, dtype=int)
@@ -580,13 +679,13 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     #     )
 
     # compute unmerged regions
-    unmerged_padded_regions = _watershed_padded_labels(
-        mgrcli_rust,
-        watershed_backend,
+    unmerged_padded_regions = _seeded_watershed_backend(
         padded_grid,
         unmerged_markers,
         padded_void,
-        compactness,
+        watershed_backend,
+        compactness=compactness,
+        watershed_connectivity=watershed_connectivity,
     )
 
     # grab the central block
@@ -597,12 +696,15 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     ]
 
     logger.info(
-        "time(s): %s computed regions without pbc\n",
-        np.round(time() - start_time, decimals=2),
+        "time(s): %.2f computed regions without pbc\n"
+        % np.round(time() - start_time, decimals=2)
     )
-    endchannel_pairs = find_end_channel_pairs(
-        regions_pbc, unmerged_regions, size_ratio=0.3
-    )
+    if skip_endchannel_pairs:
+        endchannel_pairs = []
+    else:
+        endchannel_pairs = find_end_channel_pairs(
+            regions_pbc, unmerged_regions, size_ratio=0.3
+        )
     # so we need to replace only if the removed label is far outside the unit cell
     wall_region_thicknesses = compute_wall_cells(
         mat_atoms, spacing, wall_thickness=wall_thickness
@@ -683,9 +785,8 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
             # check if the target index is already used
             if target_index in used_indices:
                 logger.info(
-                    "conflict: maxima %s maps to already-used index %s",
-                    info[0],
-                    target_index,
+                    "conflict: maxima %s maps to already-used index %s"
+                    % (info[0], target_index)
                 )
             else:
                 remap_dict[info[0]] = target_index
@@ -744,12 +845,13 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
         maxima_info_copy[k - 1][0] = v
         regions[unmerged_regions == k] = v
         regions_padded[unmerged_padded_regions == k] = v
+
     # sort maxima based on first column
     maxima_info_copy = maxima_info_copy[maxima_info_copy[:, 0].argsort()]
     # maxima_info[:10, :], maxima_info_copy[:10, :]
     logger.info(
-        "time(s): %s.  done with reindexing-1/2\n",
-        np.round(time() - start_time, decimals=2),
+        "time(s): %.2f.  done with reindexing-1/2\n"
+        % np.round(time() - start_time, decimals=2)
     )
     # print('remap_dict is ', remap_dict)
 
@@ -788,26 +890,32 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
             dgrid.shape
         )
         logger.info(
-            "time(s): %s compute_connections is set to False. No connections computed. Calculations Ending! :) \n",
-            np.round(time() - start_time, decimals=2),
+            "time(s): %.2f compute_connections is set to False. No connections computed. Calculations Ending! :) \n"
+            % np.round(time() - start_time, decimals=2)
         )
         logger.info(
-            "TIME(s): %s Checking indexing consistency,",
-            np.round(time() - start_time, decimals=2),
+            "TIME(s): %.2f Checking indexing consistency,"
+            % np.round(time() - start_time, decimals=2)
         )
         logger.info(
-            "regions w pbc: %s",
-            np.unique(regions_pbc, return_counts=False).shape[0] - 1
-            == regions_pbc.max(),
+            "regions w pbc: %s"
+            % (
+                np.unique(regions_pbc, return_counts=False).shape[0] - 1
+                == regions_pbc.max()
+            )
         )
         logger.info(
-            "regions w/o pbc: %s",
-            np.unique(regions, return_counts=False).shape[0] - 1 == regions.max(),
+            "regions w/o pbc: %s"
+            % (
+                np.unique(regions, return_counts=False).shape[0] - 1 == regions.max()
+            )
         )
         logger.info(
-            "regions w/ padding: %s",
-            np.unique(regions_padded, return_counts=False).shape[0] - 1
-            == regions_padded.max(),
+            "regions w/ padding: %s"
+            % (
+                np.unique(regions_padded, return_counts=False).shape[0] - 1
+                == regions_padded.max()
+            )
         )
         missing_regions = set(range(0, regions.max())) - set(np.unique(regions))
         missing_regions_pbc = set(range(0, regions_pbc.max())) - set(
@@ -850,8 +958,8 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
             outputs["regions_padded"] = regions_padded
     else:
         logger.info(
-            "time(s): %s compute_connections is True--this might take a while! \n",
-            np.round(time() - start_time, decimals=2),
+            "time(s): %.2f compute_connections is True--this might take a while! \n"
+            % np.round(time() - start_time, decimals=2)
         )
 
         # def compute_boundary(reg):
@@ -874,8 +982,8 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
         # dinterp = interpolate_labels(dgrid)
 
         logger.info(
-            "TIME(s): %s Adjusting for periodic connections\n",
-            np.round(time() - start_time, decimals=2),
+            "TIME(s): %.2f Adjusting for periodic connections\n"
+            % np.round(time() - start_time, decimals=2)
         )
 
         connections_list = mgrcli_rust.window_connections(
@@ -883,23 +991,25 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
             padded_grid.astype(np.float32),
             padding_thickness,
             A_unit,
-            1.5,
+            float(minimum_window_separation),
         )
         connections_list = [
             np.array([c[0], c[1], c[2], c[3], c[4]], dtype="object")
             for c in connections_list
         ]
+        # Periodic = edge touches a region outside the unit-cell label set (padding ghosts),
+        # not merely a far-outside maximum on an in-cell region.
         unit_cell_region_labels = np.delete(np.unique(regions), 0)
         for c in connections_list:
             if np.any(~np.isin(c[0], unit_cell_region_labels)):
                 c[2] = "periodic"
         logger.info(
-            "TIME(s): %s Done with computing connections\n",
-            np.round(time() - start_time, decimals=2),
+            "TIME(s): %.2f Done with computing connections\n"
+            % np.round(time() - start_time, decimals=2)
         )
         logger.info(
-            "TIME(s): %s Reindexing part 2/2-- Connected nodes getting priority\n",
-            np.round(time() - start_time, decimals=2),
+            "TIME(s): %.2f Reindexing part 2/2-- Connected nodes getting priority\n"
+            % np.round(time() - start_time, decimals=2)
         )
 
         # NOTE: if padded regions are in the connections list, we need to prioritize those in the indexing over other regions in regions padded
@@ -942,22 +1052,28 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
             maxima_info_copy_copy[:, 0].argsort()
         ]
         logger.info(
-            "TIME(s): %s Checking indexing consistency,",
-            np.round(time() - start_time, decimals=2),
+            "TIME(s): %.2f Checking indexing consistency,"
+            % np.round(time() - start_time, decimals=2)
         )
         logger.info(
-            "regions w pbc: %s",
-            np.unique(regions_pbc, return_counts=False).shape[0] - 1
-            == regions_pbc.max(),
+            "regions w pbc: %s"
+            % (
+                np.unique(regions_pbc, return_counts=False).shape[0] - 1
+                == regions_pbc.max()
+            )
         )
         logger.info(
-            "regions w/o pbc: %s",
-            np.unique(regions, return_counts=False).shape[0] - 1 == regions.max(),
+            "regions w/o pbc: %s"
+            % (
+                np.unique(regions, return_counts=False).shape[0] - 1 == regions.max()
+            )
         )
         logger.info(
-            "regions w/ padding: %s",
-            np.unique(regions_padded, return_counts=False).shape[0] - 1
-            == regions_padded.max(),
+            "regions w/ padding: %s"
+            % (
+                np.unique(regions_padded, return_counts=False).shape[0] - 1
+                == regions_padded.max()
+            )
         )
         missing_regions = set(range(0, regions.max())) - set(np.unique(regions))
         missing_regions_pbc = set(range(0, regions_pbc.max())) - set(
@@ -974,6 +1090,7 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
         ] * np.array(dgrid.shape)
         outputs = dict(
             dgrid=dgrid,
+            mat_atoms=mat_atoms,
             maxima_pbc=merged_maxima,
             regions_pbc=regions_pbc,
             maxima_info=maxima_info_copy_copy,
@@ -989,6 +1106,7 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
         )
         # we need to save the input params to the results, for future reference.
         outputs["input_params"] = {
+            "watershed_backend": watershed_backend,
             "mask_thickness": mask_thickness,
             "h": h,
             "min_distance": min_distance,
@@ -1007,10 +1125,85 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.5, h=0.2, 
     if return_dgrid:
         outputs["dgrid"] = dgrid
     logger.info(
-        "TIME(s): %s Padded segmentation workflow complete :) \n",
-        np.round(time() - start_time, decimals=2),
+        "TIME(s): %.2f Padded segmentation workflow complete :) \n"
+        % np.round(time() - start_time, decimals=2)
     )
+    # Run a consistency check between maxima_info-based pocket radii and
+    # true per-region maxima on the central box. This helps distinguish
+    # segmentation issues from missing/under-detected maxima.
+    try:
+        _check_pocket_maxima_consistency(dgrid, outputs["regions"], outputs["maxima_info"])
+    except Exception as exc:
+        logger.warning(f"[pocket_maxima_check] consistency check failed with error: {exc}")
+
     return outputs
+
+
+def _check_pocket_maxima_consistency(dgrid, regions, maxima_info, tol=0.25):
+    """
+    Diagnostic check: compare pocket radii from maxima_info with the true
+    per-region maxima in dgrid, and log a warning when the gap is large.
+
+    Parameters
+    ----------
+    dgrid : ndarray
+        Distance grid used for segmentation.
+    regions : ndarray (int)
+        Region labels on the central (unpadded) box.
+    maxima_info : ndarray
+        Array of shape (n_maxima, 7) with columns
+        [label, i, j, k, ox, oy, oz].
+    tol : float
+        Tolerance (Å). If true_max - pocket_from_max > tol, a warning is logged.
+    """
+    import numpy as np
+
+    maxima_info = np.asarray(maxima_info)
+    regions = np.asarray(regions)
+
+    labels = np.unique(regions)
+    labels = labels[labels != 0]
+
+    n_flagged = 0
+    for lab in labels:
+        rows = maxima_info[maxima_info[:, 0] == lab]
+        if rows.size == 0:
+            logger.warning(
+                f"[pocket_maxima_check] No maxima_info row found for region {lab}"
+            )
+            continue
+
+        row = rows[0]
+        voxel = tuple(row[1:4].astype(int))
+        pocket_from_max = float(dgrid[voxel])
+
+        mask = regions == lab
+        if not np.any(mask):
+            logger.warning(
+                f"[pocket_maxima_check] Region {lab} has no voxels in regions array"
+            )
+            continue
+
+        true_max = float(dgrid[mask].max())
+        gap = true_max - pocket_from_max
+        if gap > tol:
+            n_flagged += 1
+            logger.warning(
+                "[pocket_maxima_check] Region %d: pocket_radius from maxima_info "
+                "(%.3f Å) underestimates true region max (%.3f Å) by %.3f Å; "
+                "this suggests a missing or under-detected maximum.",
+                lab,
+                pocket_from_max,
+                true_max,
+                gap,
+            )
+    logger.info(
+        "[pocket_maxima_check] Completed maxima vs region-max consistency check: "
+        "checked %d regions, %d flagged with gap > %.2f Å",
+        int(labels.size),
+        int(n_flagged),
+        float(tol),
+    )
 
 
 def compute_pore_sizes_uniform_rust(dgrid, ase_atoms, num_samples_total=10000):
@@ -1039,26 +1232,6 @@ def compute_pore_sizes_uniform_rust(dgrid, ase_atoms, num_samples_total=10000):
     return sample_points, pore_sizes
 
 
-def _effective_dgrid_uniform_psd_sampling(dgrid, probe_center_min_radius):
-    """Rust uniform PSD collects ``dgrid > 0``; mark sub-threshold void as −1 so it is omitted."""
-    d = np.asarray(dgrid, dtype=np.float32)
-    if probe_center_min_radius is None or float(probe_center_min_radius) <= 0:
-        return d
-    s = np.float32(float(probe_center_min_radius))
-    return np.where(d >= s, d, np.float32(-1.0))
-
-
-def _effective_regions_pocket_psd_sampling(regions_pbc, dgrid, probe_center_min_radius):
-    """Zero region labels wherever clearance would not host the probe center; keep geometric dgrid for sizing."""
-    rg = np.asarray(regions_pbc, dtype=np.uint32)
-    if probe_center_min_radius is None or float(probe_center_min_radius) <= 0:
-        return rg
-    d = np.asarray(dgrid, dtype=np.float32)
-    s = np.float32(float(probe_center_min_radius))
-    valid = (rg > np.uint32(0)) & (d >= s)
-    return np.where(valid, rg, np.uint32(0))
-
-
 def compute_psd_uniform_rust(
     dgrid,
     ase_atoms,
@@ -1067,7 +1240,6 @@ def compute_psd_uniform_rust(
     density=False,
     return_fig=False,
     material="Material",
-    probe_center_min_radius=None,
 ):
     """Compute pore size distribution using uniform sampling.
 
@@ -1088,7 +1260,7 @@ def compute_psd_uniform_rust(
     :type return_fig: bool
     :param material: Name of the material for plot title
     :type material: str
-    :param probe_center_min_radius: If > 0, only void voxels with dgrid >= this radius are used as PSD sample sites / sphere centers for uniform PSD.
+    :param probe_center_min_radius: If > 0, only void voxels with dgrid >= this value are sampled.
     :type probe_center_min_radius: float or None
     :return: If return_fig is False, returns histogram values. If True, returns (histogram, figure)
     :rtype: numpy.ndarray or tuple[numpy.ndarray, plotly.graph_objects.Figure]
@@ -1099,37 +1271,17 @@ def compute_psd_uniform_rust(
     from .visualize import get_pore_size_distribution_trace
     from .compute import interpolate_dgrid
 
-    d_sampling = _effective_dgrid_uniform_psd_sampling(dgrid, probe_center_min_radius)
+    sample_points, pore_sizes = compute_pore_sizes_uniform_rust(
+        dgrid, ase_atoms, num_samples_total=num_samples_total
+    )
     if bins is None:
         bins = np.linspace(0, 50, 200)  # histogram bins
-    bins_arr = np.asarray(bins)
-    if not np.any(d_sampling > np.float32(0)):
-        print("\nSkipping uniform PSD Rust sampler: no void voxels with dgrid >= probe-center cutoff.")
-        psd_hist = np.zeros(bins_arr.size - 1, dtype=float)
-        if return_fig:
-            sig_note = ""
-            if probe_center_min_radius is not None and float(probe_center_min_radius) > 0:
-                sig_note = f" (probe-center ≥ {float(probe_center_min_radius):.2g} Å)"
-            fig = go.Figure()
-            fig.update_layout(
-                title=f"Pore Size Distribution — {material}: no pore sites above cutoff{sig_note}",
-                xaxis_title="Pore Diameter (Å)",
-                yaxis_title="Counts",
-                width=1000,
-                height=600,
-            )
-            return psd_hist, fig
-        return psd_hist
-
-    sample_points, pore_sizes = compute_pore_sizes_uniform_rust(
-        d_sampling, ase_atoms, num_samples_total=num_samples_total
-    )
     print("\nCreating region-wise PSD plots...")
 
-    psd_hist, _ = np.histogram(pore_sizes * 2, bins=bins_arr, density=density)
+    psd_hist, _ = np.histogram(pore_sizes * 2, bins=bins, density=density)
     if return_fig:
         histogram_trace = get_pore_size_distribution_trace(
-            pore_sizes * 2, normalize=False, cumulative=False, bins=bins_arr
+            pore_sizes * 2, normalize=False, cumulative=False, bins=bins
         )
         dgrid_interpolator = interpolate_dgrid(dgrid)
         print("UNIFORM SAMPLING STATISTICS:")
@@ -1140,11 +1292,8 @@ def compute_psd_uniform_rust(
         # print(f"  Max probability density: {np.max(hist):.4f}")
         fig = go.Figure()
         fig.add_trace(histogram_trace)
-        sig_note = ""
-        if probe_center_min_radius is not None and float(probe_center_min_radius) > 0:
-            sig_note = f" (probe-center sites ≥ {float(probe_center_min_radius):.2g} Å)"
         fig.update_layout(
-            title=f"Pore Size Distribution with uniform sampling{sig_note} — {material}",
+            title=f"Pore Size Distribution with uniform sampling across box {material}",
             xaxis_title="Pore Diameter (Å)",
             yaxis_title="Counts",
             legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
@@ -1154,6 +1303,31 @@ def compute_psd_uniform_rust(
         return psd_hist, fig
     else:
         return psd_hist
+
+
+
+def _effective_dgrid_uniform_psd_sampling(dgrid, probe_center_min_radius):
+    """Rust uniform PSD collects ``dgrid > 0``; mark sub-threshold void as −1 so it is omitted."""
+    import numpy as np
+
+    d = np.asarray(dgrid, dtype=np.float32)
+    if probe_center_min_radius is None or float(probe_center_min_radius) <= 0:
+        return d
+    s = np.float32(float(probe_center_min_radius))
+    return np.where(d >= s, d, np.float32(-1.0))
+
+
+def _effective_regions_pocket_psd_sampling(regions_pbc, dgrid, probe_center_min_radius):
+    """Zero region labels wherever clearance would not host the probe center."""
+    import numpy as np
+
+    rg = np.asarray(regions_pbc, dtype=np.uint32)
+    if probe_center_min_radius is None or float(probe_center_min_radius) <= 0:
+        return rg
+    d = np.asarray(dgrid, dtype=np.float32)
+    s = np.float32(float(probe_center_min_radius))
+    valid = (rg > np.uint32(0)) & (d >= s)
+    return np.where(valid, rg, np.uint32(0))
 
 
 def compute_pore_sizes_pocketwise_rust(
@@ -1193,7 +1367,7 @@ def compute_pore_sizes_pocketwise_rust(
             dgrid,
             regions_eff,
             cell,
-            samples_per_region=samples_per_region,  # Small number for testing
+            samples_per_region=samples_per_region,
         )
     )
     return sample_points, pore_sizes, region_labels
@@ -1252,7 +1426,9 @@ def compute_psds_pocketwise_rust(
     if return_fig:
         mat_title = material
         if probe_center_min_radius is not None and float(probe_center_min_radius) > 0:
-            mat_title = f"{material} (probe-center sites ≥ {float(probe_center_min_radius):.2g} Å)"
+            mat_title = (
+                f"{material} (probe-center sites ≥ {float(probe_center_min_radius):.2g} Å)"
+            )
         fig = plot_pocket_psds(
             pore_sizes * 2, region_labels, pocket_psds, bins, material_name=mat_title
         )
@@ -1261,19 +1437,55 @@ def compute_psds_pocketwise_rust(
         return pocket_psds
 
 
-def _strictly_increasing_bin_edges(bin_edges):
-    """float64 edges with e[i] < e[i+1]; fixes float duplicates that break np.histogram sizing."""
-    e = np.asarray(bin_edges, dtype=np.float64).ravel()
-    if e.size < 2:
-        raise ValueError("bin_edges must have at least two values")
-    if np.any(~np.isfinite(e)):
-        raise ValueError("bin_edges must be finite")
-    if np.any(np.diff(e) <= 0):
-        e = e.copy()
-        for i in range(1, e.size):
-            if e[i] <= e[i - 1]:
-                e[i] = np.nextafter(e[i - 1], np.inf)
-    return e
+def compute_pocket_psds_for_segmentation(
+    segmentation,
+    atoms,
+    *,
+    num_samples_per_region=1000,
+    bins=None,
+    probe_center_min_radius=None,
+    probe_radius_psd=None,
+):
+    """Compute Rust pocket-wise PSDs from a periodic segmentation dict.
+
+    Parameters
+    ----------
+    segmentation
+        Dict with ``dgrid``, ``regions_pbc`` (or ``regions``), from
+        :func:`do_periodic_segmentation_rust`.
+    atoms
+        ASE :class:`~ase.Atoms`.
+    probe_center_min_radius, probe_radius_psd
+        Minimum clearance (Å) for probe-centre sample sites.
+        ``probe_radius_psd`` is an alias (pocket-typing default 1.2 Å).
+
+    Returns
+    -------
+    dict
+        Region id → ``{"hist", "bin_centers"}`` (same as
+        :func:`compute_psds_pocketwise_rust` without ``return_fig``).
+    """
+    import numpy as np
+
+    if probe_center_min_radius is None:
+        probe_center_min_radius = probe_radius_psd
+    dgrid = np.asarray(segmentation["dgrid"], dtype=np.float32)
+    regions_pbc = np.asarray(
+        segmentation.get("regions_pbc", segmentation["regions"])
+    )
+    if bins is None:
+        from mofography.pocket_typing import psd_bins
+
+        bins = psd_bins(dgrid)
+    return compute_psds_pocketwise_rust(
+        dgrid,
+        regions_pbc,
+        atoms,
+        num_samples_per_region=num_samples_per_region,
+        bins=bins,
+        return_fig=False,
+        probe_center_min_radius=probe_center_min_radius,
+    )
 
 
 def compute_accessible_psd_from_results(
@@ -1284,7 +1496,6 @@ def compute_accessible_psd_from_results(
     samples_per_region=10000,
     accessible_only=True,
     pb_normalization=False,
-    enforce_probe_center_occupiable=True,
 ):
     """
     Compute a PoreBlazer-style accessible PSD by:
@@ -1307,9 +1518,6 @@ def compute_accessible_psd_from_results(
         Fixed number of samples per pocket for the pocketwise sampler.
     accessible_only : bool
         If True, restrict to percolating (accessible) regions; if False, include all regions.
-    enforce_probe_center_occupiable : bool
-        If True, keep only sample-domain voxels with dgrid >= probe_radius
-        (probe center can host a probe of radius probe_radius).
 
     Returns
     -------
@@ -1321,6 +1529,7 @@ def compute_accessible_psd_from_results(
         - per_region: dict of per-pocket PDFs (unweighted), voxel counts, and weights
         - accessible_region_ids: list of region ids used
     """
+    import numpy as np
     import mgrcli_rust
     from ase.geometry import cellpar_to_cell
     from .winding_percolation import percolation_all_axes_winding
@@ -1329,8 +1538,6 @@ def compute_accessible_psd_from_results(
     dgrid = np.asarray(results.get("dgrid", None))
     if dgrid is None:
         raise ValueError("results does not include 'dgrid'; rerun segmentation with return_dgrid=True or supply dgrid.")
-
-    bin_edges = _strictly_increasing_bin_edges(bin_edges)
 
     # Determine accessible region ids
     if accessible_only:
@@ -1360,8 +1567,6 @@ def compute_accessible_psd_from_results(
 
     # Mask regions to accessible only
     mask = np.isin(regions_pbc, list(accessible_region_ids))
-    if enforce_probe_center_occupiable:
-        mask = mask & (dgrid >= float(probe_radius))
     regions_accessible = np.where(mask, regions_pbc, 0)
 
     # Per-region voxel counts (all voxels have same volume)
@@ -1388,6 +1593,7 @@ def compute_accessible_psd_from_results(
         samples_per_region=int(samples_per_region),
     )
 
+    bin_edges = np.asarray(bin_edges)
     bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
     per_region = {}
     pdf_global = np.zeros(len(bin_edges) - 1, dtype=float)
@@ -1419,16 +1625,17 @@ def compute_accessible_psd_from_results(
         if mid_width is not None:
             psd[1:-1] = -(cum[2:] - cum[:-2]) / (2.0 * mid_width)
         else:
-            # Interior length is n-2; pair each difference with its bin width (not bin_widths[1:] / [:-1]).
+            # variable bin widths: use centered differences with local widths
             psd[1:-1] = -(
-                (cum[2:] - cum[1:-1]) / bin_widths[1:-1]
-                - (cum[1:-1] - cum[:-2]) / bin_widths[:-2]
+                (cum[2:] - cum[1:-1]) / bin_widths[1:]
+                - (cum[1:-1] - cum[:-2]) / bin_widths[:-1]
             ) / 2.0
 
     pdf_pb = None
     cum_pb = None
     psd_pb = None
     if pb_normalization:
+        # PB-style: normalize cumulative to 1 at the largest bin and take -d(cum)/dD
         cum_pb = np.cumsum(pdf_global[::-1])[::-1]
         if cum_pb.size > 0 and cum_pb[0] > 0:
             cum_pb = cum_pb / cum_pb[0]
@@ -1440,8 +1647,8 @@ def compute_accessible_psd_from_results(
                 psd_pb[1:-1] = -(cum_pb[2:] - cum_pb[:-2]) / (2.0 * mid_width)
             else:
                 psd_pb[1:-1] = -(
-                    (cum_pb[2:] - cum_pb[1:-1]) / bin_widths[1:-1]
-                    - (cum_pb[1:-1] - cum_pb[:-2]) / bin_widths[:-2]
+                    (cum_pb[2:] - cum_pb[1:-1]) / bin_widths[1:]
+                    - (cum_pb[1:-1] - cum_pb[:-2]) / bin_widths[:-1]
                 ) / 2.0
         pdf_pb = psd_pb
 
@@ -1467,7 +1674,6 @@ def compute_psd_global_accessible(
     density=False,
     return_fig=False,
     material="Material",
-    enforce_probe_center_occupiable=True,
 ):
     """Compute global accessible PSD (volume-weighted from percolating regions only).
 
@@ -1495,6 +1701,7 @@ def compute_psd_global_accessible(
     :return: psd_hist or (psd_hist, fig) - same shape as compute_psd_uniform_rust
     :rtype: numpy.ndarray or tuple[numpy.ndarray, plotly.graph_objects.Figure]
     """
+    import numpy as np
     import plotly.graph_objects as go
 
     if bins is None:
@@ -1509,7 +1716,6 @@ def compute_psd_global_accessible(
         samples_per_region=samples_per_region,
         accessible_only=True,
         pb_normalization=False,
-        enforce_probe_center_occupiable=enforce_probe_center_occupiable,
     )
 
     pdf = out["pdf"]
@@ -1517,10 +1723,12 @@ def compute_psd_global_accessible(
     accessible_region_ids = out["accessible_region_ids"]
 
     # Convert pdf to histogram for consistency with compute_psd_uniform_rust
+    # pdf is normalized (sum=1); scale to counts: total_samples = samples_per_region * num_regions
     n_regions = len(accessible_region_ids)
     total_samples = samples_per_region * n_regions if n_regions > 0 else 1
     if density:
         bin_widths = np.diff(bin_edges)
+        # density = pdf / bin_width (so integral = 1)
         psd_hist = np.where(bin_widths > 0, pdf / bin_widths, 0.0)
     else:
         psd_hist = pdf * total_samples
@@ -1557,7 +1765,6 @@ def compute_psds_pocketwise_accessible(
     bins=None,
     return_fig=False,
     material="Material",
-    enforce_probe_center_occupiable=True,
 ):
     """Compute pocket-wise PSD restricted to accessible (percolating) regions only.
 
@@ -1581,6 +1788,7 @@ def compute_psds_pocketwise_accessible(
     :return: pocket_psds or (pocket_psds, fig) - same shape as compute_psds_pocketwise_rust
     :rtype: dict or tuple[dict, plotly.graph_objects.Figure]
     """
+    import numpy as np
     from .visualize import plot_pocket_psds
 
     if bins is None:
@@ -1595,7 +1803,6 @@ def compute_psds_pocketwise_accessible(
         samples_per_region=num_samples_per_region,
         accessible_only=True,
         pb_normalization=False,
-        enforce_probe_center_occupiable=enforce_probe_center_occupiable,
     )
 
     per_region = out["per_region"]
@@ -1619,7 +1826,11 @@ def compute_psds_pocketwise_accessible(
         }
 
     if return_fig:
+        # Reconstruct pore_sizes and region_labels for plot_pocket_psds
+        # (plot_pocket_psds needs them for the overall trace; we use bin_centers + hist)
         if pocket_psds:
+            all_bin_centers = list(pocket_psds.values())[0]["bin_centers"]
+            # Create synthetic pore_sizes by expanding hist to sample points
             pore_sizes_list = []
             region_labels_list = []
             for rid, psd_data in pocket_psds.items():
@@ -1644,6 +1855,7 @@ def compute_psds_pocketwise_accessible(
                     title=f"Accessible Pore Size Distribution (probe {probe_radius} Å) - {material}",
                 )
                 return pocket_psds, fig
+        # Empty case: create minimal figure
         import plotly.graph_objects as go
 
         fig = go.Figure()

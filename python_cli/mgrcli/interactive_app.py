@@ -109,11 +109,16 @@ WATERSHED_BACKEND_DETAILS: Dict[str, str] = {
     ),
 }
 WATERSHED_BACKEND_ORDER: Tuple[str, ...] = (
-    "rust_bucket",
     "rust_det",
+    "rust_bucket",
     "rust_det_parallel",
     "skimage",
 )
+
+VDW_RADII_SET_LABELS: Dict[str, str] = {
+    "crc": "CRC / Bondi (1964) — default for pore analysis",
+    "mendeleev": "Mendeleev (legacy, larger transition metals)",
+}
 
 SPACES_MAX_UPLOAD_BYTES = 1 * 1024 * 1024  # 1 MB (RASPA2 structures/mofs/cif)
 SPACES_MIN_SPACING = 0.4
@@ -734,13 +739,42 @@ def _safe_uploaded_cif_path(uploaded_file: Any) -> Path:
     return tmp_path
 
 
+def _vdw_radii_set_widgets() -> str:
+    """VDW radii table selector plus compact per-element preview (Å, NA if missing)."""
+    radii_set = st.selectbox(
+        "Van der Waals radii table",
+        options=("crc", "mendeleev"),
+        format_func=lambda k: VDW_RADII_SET_LABELS[k],
+        key="vdw_radii_set",
+        help="Radii used when building the distance grid. CRC/Bondi matches zeo++/PoreBlazer defaults.",
+    )
+    from mgr.vdw_radii import CRC_VDW_RADII_PM, MENDELEEV_VDW_RADII_PM
+
+    table = CRC_VDW_RADII_PM if radii_set == "crc" else MENDELEEV_VDW_RADII_PM
+    preview_rows = [
+        {
+            "Element": sym,
+            "Radius (Å)": f"{val / 100:.3f}" if pd.notna(val) else "NA",
+        }
+        for sym, val in table.items()
+    ]
+    st.caption("Per-element radii for the selected table (NA = not defined in this set).")
+    st.dataframe(
+        pd.DataFrame(preview_rows),
+        height=180,
+        use_container_width=True,
+        hide_index=True,
+    )
+    return radii_set
+
+
 def _watershed_backend_widgets(widget_key_suffix: str) -> str:
     """Selectbox plus help text for the chosen backend. Suffix keeps Streamlit widget keys unique."""
     sel_key = f"watershed_backend_select_{widget_key_suffix}"
     choice = st.selectbox(
         "Watershed backend",
         options=list(WATERSHED_BACKEND_ORDER),
-        index=1,
+        index=0,
         format_func=lambda k: WATERSHED_BACKEND_LABELS[k],
         key=sel_key,
         help="Seeded watershed implementation used on the padded periodic distance grid.",
@@ -1138,7 +1172,13 @@ def _start_compute_thread(
                     )
                     dgrid = dgrid_dask.compute().astype(np.float32)
                 elif dgrid_method == "rust_aabb":
-                    dgrid = compute_dgrid_rust(w_atoms, spacing, method="rust_aabb", n_neighbors=n_neighbors)
+                    dgrid = compute_dgrid_rust(
+                        w_atoms,
+                        spacing,
+                        method="rust_aabb",
+                        n_neighbors=n_neighbors,
+                        radii_set=vdw_radii_set,
+                    )
                 elif dgrid_method == "rust_aabb_interp":
                     dgrid = compute_dgrid_rust(
                         w_atoms,
@@ -1146,9 +1186,10 @@ def _start_compute_thread(
                         method="rust_aabb_interp",
                         n_neighbors=n_neighbors,
                         coarse_factor=coarse_factor,
+                        radii_set=vdw_radii_set,
                     )
                 else:
-                    dgrid = compute_dgrid_rust(w_atoms, spacing)
+                    dgrid = compute_dgrid_rust(w_atoms, spacing, radii_set=vdw_radii_set)
 
                 _results = _run_segmentation(
                     w_atoms,
@@ -1551,14 +1592,16 @@ def _hts_one_material(
                 method=_method,
                 n_neighbors=n_neighbors,
                 coarse_factor=coarse_factor,
+                radii_set=vdw_radii_set_w,
             )
 
-        mask_thickness = float(params.get("mask_thickness", 0.5))
+        mask_thickness = float(params.get("mask_thickness", 0.05))
         h_value = float(params.get("h_value", 0.4))
         min_distance = float(params.get("min_distance", 1.5))
         threshold_abs = float(params.get("threshold_abs", 1.5))
         extra_padding = float(params.get("extra_padding", 5.0))
-        watershed_backend_w = str(params.get("watershed_backend", "rust_bucket"))
+        watershed_backend_w = str(params.get("watershed_backend", "rust_det"))
+        vdw_radii_set_w = str(params.get("vdw_radii_set", "crc"))
 
         if __package__ and "mgrcli" in __package__:
             from mgrcli.cli import python_do_periodic_segmentation_rust
@@ -2265,6 +2308,8 @@ def main() -> None:
     # Derive the legacy bool from the method selector.
     use_aabb_method = dgrid_method == "python_aabb"
     _is_rust_aabb = dgrid_method in ("rust_aabb", "rust_aabb_interp")
+
+    vdw_radii_set = _vdw_radii_set_widgets()
 
     block_size = 50000  # Default block size for AABB method
     n_neighbors = 10  # Default for Rust AABB
@@ -3077,6 +3122,7 @@ def main() -> None:
                                             _base_atoms,
                                             _fine_spacing,
                                             method="rust_aabb",
+                                            radii_set=vdw_radii_set,
                                         )
                                     refined_results["ase_atoms"] = refined_results.get("ase_atoms", _base_atoms)
 
@@ -3138,6 +3184,7 @@ def main() -> None:
                 "h_value": float(h_value),
                 "threshold_abs": float(threshold_abs),
                 "watershed_backend": str(watershed_backend),
+                "vdw_radii_set": str(vdw_radii_set),
             }
             st.session_state["analysis_key"] = results_key
             if not st.session_state.get("_counter_incremented"):
@@ -3660,7 +3707,7 @@ def main() -> None:
                             min_distance=float(min_distance),
                             extra_padding=float(extra_padding),
                             watershed_backend=str(
-                                metadata.get("watershed_backend", "rust_bucket")
+                                metadata.get("watershed_backend", "rust_det")
                             ),
                         ),
                         result_slot=pld_status_slot,
@@ -3929,7 +3976,7 @@ def main() -> None:
                             spacing=float(md_p.get("spacing", 0.5)),
                             h_value=float(md_p.get("h_value", 0.4)),
                             threshold_abs=float(md_p.get("threshold_abs", 1.5)),
-                            mask_thickness=float(md_p.get("mask_thickness", 0.5)),
+                            mask_thickness=float(md_p.get("mask_thickness", 0.05)),
                         )
                         _perc_title = f"Percolation probe r={selected_radius:.2f}Å | {material_name} | {_p_slug}"
                         if percolation_layout_choice == "white":
@@ -4308,6 +4355,18 @@ def main() -> None:
                 st.session_state.pop("vol_results", None)
                 st.session_state["last_probe_key"] = current_probe_key
 
+            window_fp_for_accessible = st.checkbox(
+                "Window fingerprint for accessible SA / void volume",
+                value=True,
+                help="Use winding percolation plus window-fingerprint bridging when computing accessible metrics.",
+            )
+            st.info(
+                "When enabled, accessible surface area and void volume use winding percolation at the "
+                "probe radius and a window-fingerprint check on PLD-critical windows. This tolerates "
+                "small grid-sampling gaps: physically connected sub-probe windows can be merged into the "
+                "accessible cluster. Disable to use the legacy percolation-history threshold only."
+            )
+
             st.markdown("### Surface Area & Void Volume Analysis")
             if st.button("Compute Surface Area & Void Volume", key="compute_sa_vol"):
                 try:
@@ -4332,7 +4391,7 @@ def main() -> None:
                                 min_distance=float(min_distance),
                                 extra_padding=float(extra_padding),
                                 watershed_backend=str(
-                                    metadata.get("watershed_backend", "rust_bucket")
+                                    metadata.get("watershed_backend", "rust_det")
                                 ),
                             )
                             pld_cache[sa_vol_cache_key] = percolation_analysis
@@ -4354,11 +4413,21 @@ def main() -> None:
                         with st.spinner("Computing surface area analysis..."):
                             print(f"Computing surface area with probe radius: {probe_radius:.3f} Å")
                             print(f"Results keys available: {list(modified_results.keys())}")
-                            sa_results = compute_surface_area_from_results_mc(modified_results, atoms, probe_radius)
+                            sa_results = compute_surface_area_from_results_mc(
+                                modified_results,
+                                atoms,
+                                probe_radius,
+                                window_fp_for_accessible=window_fp_for_accessible,
+                            )
                             print(f"Surface area results: {sa_results}")
                         with st.spinner("Computing void volume analysis..."):
                             print(f"Computing void volume with probe radius: {probe_radius:.3f} Å")
-                            vol_results = compute_void_volume_from_results(modified_results, atoms, probe_radius)
+                            vol_results = compute_void_volume_from_results(
+                                modified_results,
+                                atoms,
+                                probe_radius,
+                                window_fp_for_accessible=window_fp_for_accessible,
+                            )
                             print(f"Void volume results: {vol_results}")
 
                     if sa_results:
@@ -4633,7 +4702,7 @@ def _render_hts_mode() -> None:
         hts_h = st.number_input("h (Å)", value=0.2, min_value=0.05, key="hts_h")
         hts_surface_value = st.number_input("Surface value (Å)", value=1.0, min_value=0.1, key="hts_surface_value")
         hts_min_dist, hts_threshold, hts_extra_pad = 1.5, 1.5, 5.0
-        hts_watershed_backend = "rust_bucket"
+        hts_watershed_backend = "rust_det"
         with st.expander("Advanced segmentation", expanded=False):
             hts_min_dist = st.number_input("Min distance (Å)", value=1.5, key="hts_md")
             hts_threshold = st.number_input("Threshold abs (Å)", value=1.5, key="hts_thr")

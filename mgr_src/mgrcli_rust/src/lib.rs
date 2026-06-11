@@ -18,6 +18,7 @@ use rstar::RTree;
 mod aromatic;
 mod bonds;
 mod cif;
+mod dgrid_exp;
 
 // #[pyfunction]
 // #[pyo3(signature = (dgrid, cell, threshold_abs, min_distance=1.5))]
@@ -5935,7 +5936,7 @@ fn mgrcli_rust(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     // Enable better error reporting when the module is imported from Python.
     pyo3_log::init();
 
-    m.add_function(wrap_pyfunction!(dgrid_from_atoms, m)?)?;
+    m.add_function(wrap_pyfunction!(dgrid_exp::dgrid_from_atoms, m)?)?;
     m.add_function(wrap_pyfunction!(dgrid_from_atoms_aabb, m)?)?;
     m.add_function(wrap_pyfunction!(dgrid_from_atoms_aabb_interp, m)?)?;
     m.add_function(wrap_pyfunction!(egrid_from_atoms, m)?)?;
@@ -6298,7 +6299,7 @@ fn mcli_rust(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     // Enable better error reporting when the module is imported from Python.
     pyo3_log::init();
 
-    m.add_function(wrap_pyfunction!(dgrid_from_atoms, m)?)?;
+    m.add_function(wrap_pyfunction!(dgrid_exp::dgrid_from_atoms, m)?)?;
     m.add_function(wrap_pyfunction!(dgrid_from_atoms_aabb, m)?)?;
     m.add_function(wrap_pyfunction!(dgrid_from_atoms_aabb_interp, m)?)?;
     m.add_function(wrap_pyfunction!(egrid_from_atoms, m)?)?;

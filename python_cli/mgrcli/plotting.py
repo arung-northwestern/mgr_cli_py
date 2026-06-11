@@ -27,13 +27,8 @@ if str(MGR_SRC_PATH) not in sys.path:
     sys.path.insert(0, str(MGR_SRC_PATH))
 
 # Import the reference MGR library from mgr_src/mgr
-try:
-    import mgr.visualize as mgr_visualize
-    from mgr.analyze import update_with_covalent_bonds
-except ImportError:
-    # Fallback to mgr_visualize if mgr_src is not available
-    import mgr_visualize.mgr.visualize as mgr_visualize
-    from mgr_visualize.mgr.analyze import update_with_covalent_bonds
+import mgr.visualize as mgr_visualize
+from mgr.analyze import update_with_covalent_bonds
 
 
 DEFAULT_LIGHTING = dict(

@@ -66,94 +66,59 @@ except ImportError:
     HAS_NUMPY = False
     np = None
 
-def compute_dgrid_rust(mat_atoms, spacing, method="exact", n_neighbors=10, coarse_factor=2):
+def _resolve_vdw_radii(mat_atoms, radii=None, radii_set="crc"):
+    """Return per-atom VDW radii (Å) for distance-grid construction."""
+    if radii is not None:
+        return radii
+    from mgr.vdw_radii import default_vdw_radii_angstrom, mendeleev_vdw_radii_angstrom
+
+    if str(radii_set).lower() == "mendeleev":
+        return mendeleev_vdw_radii_angstrom(mat_atoms)
+    return default_vdw_radii_angstrom(mat_atoms)
+
+
+def compute_dgrid_rust(
+    mat_atoms,
+    spacing,
+    method="exact",
+    n_neighbors=10,
+    coarse_factor=2,
+    radii=None,
+    radii_set="crc",
+):
     """Compute distance grid using Rust backend.
 
     :param method: "exact", "rust_aabb", or "rust_aabb_interp".
     :param n_neighbors: Number of nearest neighbors for R-tree methods.
     :param coarse_factor: Coarsening factor for rust_aabb_interp.
+    :param radii: Optional explicit per-atom radii array (Å).
+    :param radii_set: "crc" (Bondi/CRC default) or "mendeleev" when *radii* is None.
     """
+    radii = _resolve_vdw_radii(mat_atoms, radii=radii, radii_set=radii_set)
     if method == "rust_aabb":
-        try:
-            from mgr.rust_fun import dgrid_from_atoms_aabb_rust
-            return dgrid_from_atoms_aabb_rust(mat_atoms, spacing, n_neighbors=n_neighbors)
-        except ImportError:
-            try:
-                from mgr_visualize.mgr.rust.rust_fun import dgrid_from_atoms_aabb_rust
-                return dgrid_from_atoms_aabb_rust(mat_atoms, spacing, n_neighbors=n_neighbors)
-            except ImportError:
-                import mgrcli_rust
-                from ase.geometry import cellpar_to_cell
-                from ase.data import vdw_radii
-                radii = vdw_radii[mat_atoms.get_atomic_numbers()]
-                fpoints = mat_atoms.get_scaled_positions() - 0.5
-                cell = cellpar_to_cell(mat_atoms.cell.cellpar())
-                nx, ny, nz = (mat_atoms.cell.cellpar()[:3] / spacing).astype(int) + 1
-                return mgrcli_rust.dgrid_from_atoms_aabb(
-                    fpoints, cell, int(nx), int(ny), int(nz),
-                    radii=radii, n_neighbors=n_neighbors,
-                )
+        from mgr.rust_fun import dgrid_from_atoms_aabb_rust
+
+        return dgrid_from_atoms_aabb_rust(
+            mat_atoms, spacing, radii=radii, n_neighbors=n_neighbors
+        )
     if method == "rust_aabb_interp":
-        try:
-            from mgr.rust_fun import dgrid_from_atoms_aabb_interp_rust
-            return dgrid_from_atoms_aabb_interp_rust(
-                mat_atoms,
-                spacing,
-                coarse_factor=coarse_factor,
-                n_neighbors=n_neighbors,
-            )
-        except ImportError:
-            try:
-                from mgr_visualize.mgr.rust.rust_fun import dgrid_from_atoms_aabb_interp_rust
-                return dgrid_from_atoms_aabb_interp_rust(
-                    mat_atoms,
-                    spacing,
-                    coarse_factor=coarse_factor,
-                    n_neighbors=n_neighbors,
-                )
-            except ImportError:
-                import mgrcli_rust
-                from ase.geometry import cellpar_to_cell
-                from ase.data import vdw_radii
-                radii = vdw_radii[mat_atoms.get_atomic_numbers()]
-                fpoints = mat_atoms.get_scaled_positions() - 0.5
-                cell = cellpar_to_cell(mat_atoms.cell.cellpar())
-                nx, ny, nz = (mat_atoms.cell.cellpar()[:3] / spacing).astype(int) + 1
-                return mgrcli_rust.dgrid_from_atoms_aabb_interp(
-                    fpoints,
-                    cell,
-                    int(nx),
-                    int(ny),
-                    int(nz),
-                    int(coarse_factor),
-                    radii,
-                    int(n_neighbors),
-                )
-    # method == "exact" (default)
-    try:
-        from mgr.rust_fun import dgrid_from_atoms_rust
-        return dgrid_from_atoms_rust(mat_atoms, spacing)
-    except ImportError:
-        try:
-            from mgr_visualize.mgr.rust_fun import dgrid_from_atoms_rust
-            return dgrid_from_atoms_rust(mat_atoms, spacing)
-        except ImportError:
-            try:
-                import mgrcli_rust
-                fpoints = mat_atoms.get_positions()
-                cell = mat_atoms.get_cell().array.T
-                radii = np.array([1.0] * len(fpoints), dtype=np.float64)
-                nx, ny, nz = int(np.round(cell[0,0] / spacing)), int(np.round(cell[1,1] / spacing)), int(np.round(cell[2,2] / spacing))
-                return mgrcli_rust.dgrid_from_atoms(fpoints, cell, radii, nx, ny, nz)
-            except ImportError:
-                print("Error: mgrcli_rust Rust library not found. Please build the project first.")
-                print("Run: maturin build --release && pip install --force-reinstall target/wheels/*.whl")
-                sys.exit(1)
+        from mgr.rust_fun import dgrid_from_atoms_aabb_interp_rust
+
+        return dgrid_from_atoms_aabb_interp_rust(
+            mat_atoms,
+            spacing,
+            coarse_factor=coarse_factor,
+            radii=radii,
+            n_neighbors=n_neighbors,
+        )
+    from mgr.rust_fun import dgrid_from_atoms_rust
+
+    return dgrid_from_atoms_rust(mat_atoms, spacing, radii=radii)
 
 def python_do_periodic_segmentation_rust(
     dgrid,
     mat_atoms,
-    mask_thickness=0.5,
+    mask_thickness=0.05,
     h=0.2,
     min_distance=1.5,
     threshold_abs=1.5,
@@ -167,22 +132,13 @@ def python_do_periodic_segmentation_rust(
     disable_tqdm=False,
     compute_connections=True,
     return_dgrid=False,
-    watershed_backend='rust_bucket',
+    watershed_backend='rust_det',
 ):
     """Perform periodic segmentation using Rust backend."""
     import logging
     logging.basicConfig(level=logging.INFO)
-    
-    try:
-        # Import directly from the reference MGR library
-        from mgr.rust_fun import do_periodic_segmentation_rust
-    except ImportError:
-        try:
-            # Fallback to mgr_visualize if mgr_src is not available
-            from mgr_visualize.mgr.rust_fun import do_periodic_segmentation_rust
-        except ImportError as e:
-            print("Error: do_periodic_segmentation_rust function not found. Please ensure MGR library is available.")
-            sys.exit(1)
+
+    from mgr.rust_fun import do_periodic_segmentation_rust
 
     # Call the reference implementation (mgr.rust_fun)
     result = do_periodic_segmentation_rust(
@@ -397,15 +353,10 @@ def compute_auto_parameters(mat_atoms, spacing):
     - Dictionary with estimated parameters
     """
     try:
-        # Try to import from the reference library first
         from mgr.helper import estimate_h_from_percolation_history
-    except ImportError:
-        try:
-            # Fallback to mgr_visualize
-            from mgr_visualize.mgr.helper import estimate_h_from_percolation_history
-        except ImportError as e:
-            print(f"Warning: Could not import helper functions: {e}")
-            return {}
+    except ImportError as e:
+        print(f"Warning: Could not import helper functions: {e}")
+        return {}
 
     # Compute distance grid for analysis
     dgrid = compute_dgrid_rust(mat_atoms, spacing)
@@ -610,7 +561,13 @@ def save_psd_csv(results, output_file, material_name="material"):
         print(f"Error saving PSD CSV: {e}")
 
 
-def compute_surface_area_analysis(results_dict, mat_atoms, probe_radius=None):
+def compute_surface_area_analysis(
+    results_dict,
+    mat_atoms,
+    probe_radius=None,
+    window_fp_for_accessible=True,
+    winding_kwargs=None,
+):
     """
     Compute surface area analysis from results dictionary.
 
@@ -630,19 +587,17 @@ def compute_surface_area_analysis(results_dict, mat_atoms, probe_radius=None):
             modified_results['distance_grid'] = modified_results['dgrid']
 
         from mgr.compute import compute_surface_area_from_results
-        return compute_surface_area_from_results(modified_results, mat_atoms, probe_radius)
-    except ImportError:
-        try:
-            # Convert results dict to expected format for reference functions
-            modified_results = results_dict.copy()
-            if 'dgrid' in modified_results:
-                modified_results['distance_grid'] = modified_results['dgrid']
 
-            from mgr_visualize.mgr.compute import compute_surface_area_from_results
-            return compute_surface_area_from_results(modified_results, mat_atoms, probe_radius)
-        except ImportError:
-            print("Warning: Surface area computation functions not available. Please ensure mgr_src is properly installed.")
-            return None
+        return compute_surface_area_from_results(
+            modified_results,
+            mat_atoms,
+            probe_radius,
+            window_fp_for_accessible=window_fp_for_accessible,
+            winding_kwargs=winding_kwargs,
+        )
+    except ImportError:
+        print("Warning: Surface area computation functions not available. Please ensure mgr_src is properly installed.")
+        return None
     except Exception as e:
         print(f"Warning: Surface area computation failed with error: {e}")
         print("This might be due to inappropriate parameters for this material structure.")
@@ -654,7 +609,13 @@ def compute_surface_area_analysis(results_dict, mat_atoms, probe_radius=None):
         return None
 
 
-def compute_void_volume_analysis(results_dict, mat_atoms, probe_radius=None):
+def compute_void_volume_analysis(
+    results_dict,
+    mat_atoms,
+    probe_radius=None,
+    window_fp_for_accessible=True,
+    winding_kwargs=None,
+):
     """
     Compute void volume analysis from results dictionary.
 
@@ -674,19 +635,17 @@ def compute_void_volume_analysis(results_dict, mat_atoms, probe_radius=None):
             modified_results['distance_grid'] = modified_results['dgrid']
 
         from mgr.compute import compute_void_volume_from_results
-        return compute_void_volume_from_results(modified_results, mat_atoms, probe_radius)
-    except ImportError:
-        try:
-            # Convert results dict to expected format for reference functions
-            modified_results = results_dict.copy()
-            if 'dgrid' in modified_results:
-                modified_results['distance_grid'] = modified_results['dgrid']
 
-            from mgr_visualize.mgr.compute import compute_void_volume_from_results
-            return compute_void_volume_from_results(modified_results, mat_atoms, probe_radius)
-        except ImportError:
-            print("Warning: Void volume computation functions not available. Please ensure mgr_src is properly installed.")
-            return None
+        return compute_void_volume_from_results(
+            modified_results,
+            mat_atoms,
+            probe_radius,
+            window_fp_for_accessible=window_fp_for_accessible,
+            winding_kwargs=winding_kwargs,
+        )
+    except ImportError:
+        print("Warning: Void volume computation functions not available. Please ensure mgr_src is properly installed.")
+        return None
     except Exception as e:
         print(f"Warning: Void volume computation failed with error: {e}")
         print("This might be due to inappropriate parameters for this material structure.")
@@ -2333,17 +2292,10 @@ Notes:
                 or nb != no
             )
             if needs_bonds:
-                try:
-                    import mgr as mgr  # noqa: F401
-                    from mgr.analyze import update_with_covalent_bonds
+                import mgr as mgr  # noqa: F401
+                from mgr.analyze import update_with_covalent_bonds
 
-                    atoms = update_with_covalent_bonds(atoms)
-                except ImportError:
-                    # Fallback to mgr_visualize if mgr_src is not available
-                    import mgr_visualize.mgr as mgr  # noqa: F401
-                    from mgr_visualize.mgr.analyze import update_with_covalent_bonds
-
-                    atoms = update_with_covalent_bonds(atoms)
+                atoms = update_with_covalent_bonds(atoms)
 
             return atoms
         except Exception as exc:  # pragma: no cover - file errors
