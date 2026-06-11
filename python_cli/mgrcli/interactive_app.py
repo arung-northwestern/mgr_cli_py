@@ -133,6 +133,13 @@ VDW_RADII_SET_HELP: Dict[str, str] = {
         "Alvarez (2013) cartography (`vdw_radius_alvarez` in mendeleev), with noble-gas updates."
     ),
 }
+VDW_RADII_FALLBACK_WARNING = (
+    "**Hybrid radii in use.** Bondi and Alvarez tables have gaps (NA), especially for transition "
+    "metals common in MOFs. For any element missing in the selected table, the distance grid uses "
+    "**CRC Handbook** radii (mendeleev `vdw_radius`) next; if still missing, **ASE Bondi** defaults. "
+    "This avoids crashes but is **not** a pure Bondi/Alvarez run—compare against **CRC** when metal "
+    "nodes matter."
+)
 
 SPACES_MAX_UPLOAD_BYTES = 1 * 1024 * 1024  # 1 MB (RASPA2 structures/mofs/cif)
 SPACES_MIN_SPACING = 0.4
@@ -753,7 +760,7 @@ def _safe_uploaded_cif_path(uploaded_file: Any) -> Path:
     return tmp_path
 
 
-def _vdw_radii_set_widgets() -> str:
+def _vdw_radii_set_widgets(atoms=None) -> str:
     """VDW radii table selector plus compact per-element preview (Å, NA if missing)."""
     radii_set = st.selectbox(
         "Van der Waals radii table",
@@ -763,7 +770,7 @@ def _vdw_radii_set_widgets() -> str:
         help="Radii used when building the distance grid.",
     )
     st.caption(VDW_RADII_SET_HELP.get(radii_set, ""))
-    from mgr.vdw_radii import vdw_radii_table_pm
+    from mgr.vdw_radii import vdw_radii_resolution_report, vdw_radii_table_pm
 
     table = vdw_radii_table_pm(radii_set)
     preview_rows = [
@@ -780,6 +787,26 @@ def _vdw_radii_set_widgets() -> str:
         use_container_width=True,
         hide_index=True,
     )
+    if radii_set in ("bondi", "alvarez"):
+        _fallback_lines = [VDW_RADII_FALLBACK_WARNING]
+        if atoms is not None:
+            report = vdw_radii_resolution_report(atoms.get_chemical_symbols(), radii_set)
+            if report["crc_fallback"]:
+                _fallback_lines.append(
+                    f"- **This structure** — CRC Handbook fallback: "
+                    f"{', '.join(report['crc_fallback'])}"
+                )
+            if report["ase_fallback"]:
+                _fallback_lines.append(
+                    f"- **This structure** — ASE Bondi fallback: "
+                    f"{', '.join(report['ase_fallback'])}"
+                )
+            if not report["uses_fallback"]:
+                _fallback_lines.append(
+                    "- **This structure** — all elements are defined in the selected table; "
+                    "no fallback needed."
+                )
+        st.warning("\n\n".join(_fallback_lines))
     return radii_set
 
 
@@ -2325,7 +2352,7 @@ def main() -> None:
     use_aabb_method = dgrid_method == "python_aabb"
     _is_rust_aabb = dgrid_method in ("rust_aabb", "rust_aabb_interp")
 
-    vdw_radii_set = _vdw_radii_set_widgets()
+    vdw_radii_set = _vdw_radii_set_widgets(atoms)
 
     block_size = 50000  # Default block size for AABB method
     n_neighbors = 10  # Default for Rust AABB

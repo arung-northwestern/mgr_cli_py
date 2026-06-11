@@ -394,6 +394,58 @@ MENDELEEV_VDW_RADII_PM = CRC_MENDELEEV_VDW_RADII_PM
 CRC_VDW_RADII_PM = CRC_MENDELEEV_VDW_RADII_PM
 
 
+def _normalize_radii_set_key(radii_set: str) -> str:
+    key = str(radii_set).lower()
+    if key == "mendeleev":
+        return "crc"
+    return key
+
+
+def vdw_radii_resolution_report(symbols, radii_set: str) -> dict:
+    """Report which source supplies each element for the chosen radii set.
+
+    For ``bondi`` and ``alvarez``, elements missing from the primary table
+    fall back to CRC Handbook (mendeleev ``vdw_radius``), then ASE ``vdw_radii``.
+    """
+    key = _normalize_radii_set_key(radii_set)
+    unique = sorted(set(symbols))
+    if key == "crc":
+        return {
+            "radii_set": key,
+            "uses_fallback": False,
+            "primary": unique,
+            "crc_fallback": [],
+            "ase_fallback": [],
+        }
+
+    if key == "bondi":
+        primary_pm = BONDI_VDW_RADII_PM
+    elif key == "alvarez":
+        primary_pm = ALVAREZ_VDW_RADII_PM
+    else:
+        primary_pm = CRC_MENDELEEV_VDW_RADII_PM
+
+    primary: list[str] = []
+    crc_fallback: list[str] = []
+    ase_fallback: list[str] = []
+    for sym in unique:
+        if pd.notna(primary_pm.get(sym, np.nan)):
+            primary.append(sym)
+            continue
+        if pd.notna(CRC_MENDELEEV_VDW_RADII_PM.get(sym, np.nan)):
+            crc_fallback.append(sym)
+            continue
+        ase_fallback.append(sym)
+
+    return {
+        "radii_set": key,
+        "uses_fallback": bool(crc_fallback or ase_fallback),
+        "primary": primary,
+        "crc_fallback": crc_fallback,
+        "ase_fallback": ase_fallback,
+    }
+
+
 def _symbols_to_pm(symbols, table_pm: pd.Series, fallback_pm: pd.Series | None = None) -> np.ndarray:
     vals = table_pm.reindex(symbols).to_numpy(dtype=float).copy()
     if fallback_pm is not None:
@@ -414,9 +466,7 @@ def _symbols_to_pm(symbols, table_pm: pd.Series, fallback_pm: pd.Series | None =
 def vdw_radii_angstrom(ase_atoms, radii_set: str = 'crc') -> np.ndarray:
     """Per-atom VDW radii in Å for the requested table."""
     symbols = ase_atoms.get_chemical_symbols()
-    key = str(radii_set).lower()
-    if key == 'mendeleev':
-        key = 'crc'
+    key = _normalize_radii_set_key(radii_set)
     if key == 'bondi':
         pm = _symbols_to_pm(symbols, BONDI_VDW_RADII_PM, CRC_MENDELEEV_VDW_RADII_PM)
     elif key == 'alvarez':
@@ -445,9 +495,7 @@ def alvarez_vdw_radii_angstrom(ase_atoms) -> np.ndarray:
 
 
 def vdw_radii_table_pm(radii_set: str) -> pd.Series:
-    key = str(radii_set).lower()
-    if key == 'mendeleev':
-        key = 'crc'
+    key = _normalize_radii_set_key(radii_set)
     if key == 'bondi':
         return BONDI_VDW_RADII_PM
     if key == 'alvarez':
