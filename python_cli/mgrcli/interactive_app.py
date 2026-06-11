@@ -116,8 +116,22 @@ WATERSHED_BACKEND_ORDER: Tuple[str, ...] = (
 )
 
 VDW_RADII_SET_LABELS: Dict[str, str] = {
-    "crc": "CRC / Bondi (1964) — default for pore analysis",
-    "mendeleev": "Mendeleev (legacy, larger transition metals)",
+    "crc": "CRC Handbook (mendeleev vdw_radius) — default",
+    "bondi": "Bondi (1964; ASE default where defined)",
+    "alvarez": "Alvarez (2013; transition metals)",
+}
+VDW_RADII_SET_HELP: Dict[str, str] = {
+    "crc": (
+        "CRC Handbook values as stored in [mendeleev](https://mendeleev.readthedocs.io/en/stable/data.html) "
+        "(`vdw_radius`). Includes radii for many metals useful in MOFs."
+    ),
+    "bondi": (
+        "Bondi (1964) radii (`vdw_radius_bondi` in mendeleev). Matches ASE `vdw_radii` where Bondi "
+        "reported a value; many metals show NA in the preview table."
+    ),
+    "alvarez": (
+        "Alvarez (2013) cartography (`vdw_radius_alvarez` in mendeleev), with noble-gas updates."
+    ),
 }
 
 SPACES_MAX_UPLOAD_BYTES = 1 * 1024 * 1024  # 1 MB (RASPA2 structures/mofs/cif)
@@ -743,14 +757,15 @@ def _vdw_radii_set_widgets() -> str:
     """VDW radii table selector plus compact per-element preview (Å, NA if missing)."""
     radii_set = st.selectbox(
         "Van der Waals radii table",
-        options=("crc", "mendeleev"),
+        options=("crc", "bondi", "alvarez"),
         format_func=lambda k: VDW_RADII_SET_LABELS[k],
         key="vdw_radii_set",
-        help="Radii used when building the distance grid. CRC/Bondi matches zeo++/PoreBlazer defaults.",
+        help="Radii used when building the distance grid.",
     )
-    from mgr.vdw_radii import CRC_VDW_RADII_PM, MENDELEEV_VDW_RADII_PM
+    st.caption(VDW_RADII_SET_HELP.get(radii_set, ""))
+    from mgr.vdw_radii import vdw_radii_table_pm
 
-    table = CRC_VDW_RADII_PM if radii_set == "crc" else MENDELEEV_VDW_RADII_PM
+    table = vdw_radii_table_pm(radii_set)
     preview_rows = [
         {
             "Element": sym,
@@ -1107,6 +1122,7 @@ def _start_compute_thread(
     coarse_factor: int = 2,
     min_box_thickness_enabled: bool = False,
     min_box_thickness: float = 6.0,
+    vdw_radii_set: str = "crc",
     progress: Optional[_StreamingProgress] = None,
 ) -> _StreamingProgress:
     if progress is None:
@@ -1566,6 +1582,7 @@ def _hts_one_material(
         block_size = int(params.get("block_size", 50000))
         n_neighbors = int(params.get("n_neighbors", 10))
         coarse_factor = int(params.get("coarse_factor", 2))
+        vdw_radii_set_w = str(params.get("vdw_radii_set", "crc"))
 
         if dgrid_method == "python_aabb" or use_aabb:
             from mgr.compute import dgrid_from_atoms_cpu
@@ -1601,7 +1618,6 @@ def _hts_one_material(
         threshold_abs = float(params.get("threshold_abs", 1.5))
         extra_padding = float(params.get("extra_padding", 5.0))
         watershed_backend_w = str(params.get("watershed_backend", "rust_det"))
-        vdw_radii_set_w = str(params.get("vdw_radii_set", "crc"))
 
         if __package__ and "mgrcli" in __package__:
             from mgrcli.cli import python_do_periodic_segmentation_rust
@@ -2809,6 +2825,7 @@ def main() -> None:
                     coarse_factor=coarse_factor,
                     min_box_thickness_enabled=min_box_thickness_enabled,
                     min_box_thickness=_min_box,
+                    vdw_radii_set=vdw_radii_set,
                     progress=queue_progress,
                 )
                 if queue_job_id is not None:
@@ -2872,6 +2889,7 @@ def main() -> None:
                 coarse_factor=coarse_factor,
                 min_box_thickness_enabled=min_box_thickness_enabled,
                 min_box_thickness=_min_box,
+                vdw_radii_set=vdw_radii_set,
             )
             st.session_state["_compute_progress"] = progress
             st.rerun()
@@ -3088,6 +3106,7 @@ def main() -> None:
                                             dgrid_method="rust_aabb",
                                             min_box_thickness_enabled=min_box_thickness_enabled,
                                             min_box_thickness=min_box_thickness,
+                                            vdw_radii_set=vdw_radii_set,
                                         )
                                     except Exception as _aabb_err:
                                         st.warning(
@@ -3107,6 +3126,7 @@ def main() -> None:
                                             dgrid_method="rust_exact",
                                             min_box_thickness_enabled=min_box_thickness_enabled,
                                             min_box_thickness=min_box_thickness,
+                                            vdw_radii_set=vdw_radii_set,
                                         )
 
                                     while not refine_progress.done:

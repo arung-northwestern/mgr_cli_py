@@ -70,11 +70,9 @@ def _resolve_vdw_radii(mat_atoms, radii=None, radii_set="crc"):
     """Return per-atom VDW radii (Å) for distance-grid construction."""
     if radii is not None:
         return radii
-    from mgr.vdw_radii import default_vdw_radii_angstrom, mendeleev_vdw_radii_angstrom
+    from mgr.vdw_radii import vdw_radii_angstrom
 
-    if str(radii_set).lower() == "mendeleev":
-        return mendeleev_vdw_radii_angstrom(mat_atoms)
-    return default_vdw_radii_angstrom(mat_atoms)
+    return vdw_radii_angstrom(mat_atoms, radii_set=radii_set)
 
 
 def compute_dgrid_rust(
@@ -92,7 +90,7 @@ def compute_dgrid_rust(
     :param n_neighbors: Number of nearest neighbors for R-tree methods.
     :param coarse_factor: Coarsening factor for rust_aabb_interp.
     :param radii: Optional explicit per-atom radii array (Å).
-    :param radii_set: "crc" (Bondi/CRC default) or "mendeleev" when *radii* is None.
+    :param radii_set: "crc" (CRC Handbook / mendeleev default), "bondi", or "alvarez".
     """
     radii = _resolve_vdw_radii(mat_atoms, radii=radii, radii_set=radii_set)
     if method == "rust_aabb":
