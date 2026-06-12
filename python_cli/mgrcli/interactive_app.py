@@ -765,7 +765,8 @@ def _vdw_radii_set_widgets(atoms=None) -> str:
     """VDW radii table selector plus compact per-element preview (Å, NA if missing)."""
     radii_set = st.selectbox(
         "Van der Waals radii table",
-        options=("crc", "bondi", "alvarez"),
+        options=("bondi", "crc", "alvarez"),
+        index=0,
         format_func=lambda k: VDW_RADII_SET_LABELS[k],
         key="vdw_radii_set",
         help="Radii used when building the distance grid.",
@@ -1206,7 +1207,7 @@ def _start_compute_thread(
     coarse_factor: int = 2,
     min_box_thickness_enabled: bool = False,
     min_box_thickness: float = 6.0,
-    vdw_radii_set: str = "crc",
+    vdw_radii_set: str = "bondi",
     progress: Optional[_StreamingProgress] = None,
 ) -> _StreamingProgress:
     if progress is None:
@@ -1666,7 +1667,7 @@ def _hts_one_material(
         block_size = int(params.get("block_size", 50000))
         n_neighbors = int(params.get("n_neighbors", 10))
         coarse_factor = int(params.get("coarse_factor", 2))
-        vdw_radii_set_w = str(params.get("vdw_radii_set", "crc"))
+        vdw_radii_set_w = str(params.get("vdw_radii_set", "bondi"))
 
         if dgrid_method == "python_aabb" or use_aabb:
             from mgr.compute import dgrid_from_atoms_cpu
@@ -2791,6 +2792,11 @@ def main() -> None:
             value=False,
             help="Cluster cavities into pocket-type groups and add cluster surface coloring.",
         )
+        if detect_pocket_types:
+            st.caption(
+                "Pocket typing uses Bondi radii (CRC fallback for undefined elements) for probe-size "
+                "classification, independent of the analysis VDW table above."
+            )
 
         surface_opacity = st.slider(
             "Surface Opacity",
