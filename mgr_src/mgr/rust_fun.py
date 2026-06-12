@@ -159,15 +159,15 @@ def egrid_from_atoms_rust(
     :rtype: numpy.ndarray
     """
     import mgrcli_rust
-    import mofography as mgr
     from ase.geometry import cellpar_to_cell
-    from .compute import get_repetitions_to_meet_cutoff
+    from .compute import get_repetitions_to_meet_cutoff, repeat_to_meet_cutoff
+    from .data import mix_lorentz_berthelot
     logger.info(f"Using {mgrcli_rust.rayon_num_threads()} threads for parallel processing")
     if forcefield_mixed is None:
-        forcefield_mixed = mgr.mix_lorentz_berthelot(
+        forcefield_mixed = mix_lorentz_berthelot(
             ase_atoms, probe_symbol=probe_symbol
         )
-    mat_atoms_repeat, ff_repeat = mgr.repeat_to_meet_cutoff(
+    mat_atoms_repeat, ff_repeat = repeat_to_meet_cutoff(
         ase_atoms, forcefield_mixed=forcefield_mixed, cutoff=cutoff
     )
     eps, sig = ff_repeat[:, 0], ff_repeat[:, 1]
@@ -358,21 +358,23 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.05, h=0.2,
     logger.info(f"Using {mgrcli_rust.rayon_num_threads()} threads for parallel processing")
     logger.info("Watershed backend: %s", watershed_backend)
     start_time = time()
-    from mofography import (
-        compute_wall_cells,
-        move_maximum_to_peak,
-        process_wall_maxima,
-        is_inside_or_close_to_boundary,
-        get_fractional_coordinates,
-        interpolate_labels,
-        find_touching_region_pairs,
-        find_end_channel_pairs,
-        merge_small_regions,
-        merge_small_regions_pbc,
-        find_pore_limiting_radius,
+    from .compute import (
         calculate_padding_thickness,
         detect_periodic_maxima_direct,
+        find_pore_limiting_radius,
         get_pbc_groups,
+    )
+    from .helper import (
+        compute_wall_cells,
+        find_end_channel_pairs,
+        find_touching_region_pairs,
+        get_fractional_coordinates,
+        interpolate_labels,
+        is_inside_or_close_to_boundary,
+        merge_small_regions,
+        merge_small_regions_pbc,
+        move_maximum_to_peak,
+        process_wall_maxima,
     )
 
     # print(f"timer started")
@@ -1503,6 +1505,8 @@ def compute_accessible_psd_from_results(
     samples_per_region=10000,
     accessible_only=True,
     pb_normalization=False,
+    probe_center_min_radius=None,
+    enforce_probe_center_occupiable=False,
 ):
     """
     Compute a PoreBlazer-style accessible PSD by:
@@ -1575,6 +1579,12 @@ def compute_accessible_psd_from_results(
     # Mask regions to accessible only
     mask = np.isin(regions_pbc, list(accessible_region_ids))
     regions_accessible = np.where(mask, regions_pbc, 0)
+    if enforce_probe_center_occupiable:
+        probe_center_min_radius = float(probe_radius)
+    if probe_center_min_radius is not None and float(probe_center_min_radius) > 0:
+        regions_accessible = _effective_regions_pocket_psd_sampling(
+            regions_accessible, dgrid, float(probe_center_min_radius)
+        )
 
     # Per-region voxel counts (all voxels have same volume)
     region_ids_present = np.unique(regions_accessible)
@@ -1681,6 +1691,8 @@ def compute_psd_global_accessible(
     density=False,
     return_fig=False,
     material="Material",
+    probe_center_min_radius=None,
+    enforce_probe_center_occupiable=False,
 ):
     """Compute global accessible PSD (volume-weighted from percolating regions only).
 
@@ -1723,6 +1735,8 @@ def compute_psd_global_accessible(
         samples_per_region=samples_per_region,
         accessible_only=True,
         pb_normalization=False,
+        probe_center_min_radius=probe_center_min_radius,
+        enforce_probe_center_occupiable=enforce_probe_center_occupiable,
     )
 
     pdf = out["pdf"]
@@ -1772,6 +1786,8 @@ def compute_psds_pocketwise_accessible(
     bins=None,
     return_fig=False,
     material="Material",
+    probe_center_min_radius=None,
+    enforce_probe_center_occupiable=False,
 ):
     """Compute pocket-wise PSD restricted to accessible (percolating) regions only.
 
@@ -1810,6 +1826,8 @@ def compute_psds_pocketwise_accessible(
         samples_per_region=num_samples_per_region,
         accessible_only=True,
         pb_normalization=False,
+        probe_center_min_radius=probe_center_min_radius,
+        enforce_probe_center_occupiable=enforce_probe_center_occupiable,
     )
 
     per_region = out["per_region"]

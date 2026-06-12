@@ -381,6 +381,7 @@ from mgr.queue_state import (
     RESULT_CACHE as _RESULT_CACHE,
     COMPUTE_TIMEOUT_SEC as _COMPUTE_TIMEOUT_SEC,
     QUEUE_WORKER_STARTED as _QUEUE_WORKER_STARTED_REF,
+    clear_result_cache as _clear_result_cache,
 )
 import mgr.queue_state as _queue_state
 _QUEUE_WORKER_STARTED = _QUEUE_WORKER_STARTED_REF  # type: ignore[assignment]
@@ -1073,6 +1074,62 @@ def clear_framework_cache(*args, **kwargs):
     return func(*args, **kwargs)
 
 
+def _build_compute_results_key(
+    *,
+    cif_name: str,
+    spacing: float,
+    dgrid_method: str,
+    block_size: int,
+    n_neighbors: int,
+    coarse_factor: int,
+    vdw_radii_set: str,
+    mask_thickness: float,
+    h_value: float,
+    min_distance: float,
+    threshold_abs: float,
+    extra_padding: float,
+    watershed_backend: str,
+    min_box_thickness_enabled: bool,
+    min_box_thickness: float,
+) -> str:
+    """Stable cache key for segmentation — must include every input that changes dgrid/segments."""
+    return (
+        f"{cif_name}::sp={float(spacing):.4f}::dg={dgrid_method}"
+        f"::bs={int(block_size)}::nn={int(n_neighbors)}::cf={int(coarse_factor)}"
+        f"::vdw={str(vdw_radii_set).lower()}"
+        f"::mt={float(mask_thickness):.4f}::h={float(h_value):.4f}"
+        f"::md={float(min_distance):.4f}::ta={float(threshold_abs):.4f}"
+        f"::ep={float(extra_padding):.4f}::ws={watershed_backend}"
+        f"::mbt={int(bool(min_box_thickness_enabled))}::{float(min_box_thickness):.2f}"
+    )
+
+
+def _clear_all_app_caches() -> int:
+    """Clear process-global result cache, framework mesh cache, and derived session caches."""
+    n_results = _clear_result_cache()
+    clear_framework_cache()
+    for key in (
+        "latest_results",
+        "latest_metadata",
+        "analysis_key",
+        "pld_cache",
+        "psd_cache",
+        "sa_results",
+        "vol_results",
+        "percolation_plot_cache",
+        "mesh_prewarm_jobs",
+        "_compute_progress",
+        "_compute_job_id",
+        "_compute_thread",
+        "_compute_log",
+        "_counter_incremented",
+        "hts_run_results",
+        "last_probe_key",
+    ):
+        st.session_state.pop(key, None)
+    return n_results
+
+
 STYLIZE_LIGHTING = None
 STYLIZE_LIGHTPOSITION = None
 dark_layout = None
@@ -1747,6 +1804,8 @@ def _hts_one_material(
                     results["pocket_type_summary"] = _pt_dict.get("pocket_type_summary", [])
                     results["pocket_rep_to_type"] = _pt_dict.get("pocket_rep_to_type", {})
                     results["pocket_typing_audit"] = _pt_dict.get("pocket_typing_audit", {})
+                    _pt_audit = _pt_dict.get("pocket_typing_audit") or {}
+                    results["pocket_typing_radii"] = _pt_audit.get("typing_radii", "bondi_crc_fallback")
             except Exception:
                 pass
 
@@ -1989,10 +2048,11 @@ def main() -> None:
     col_reset, col_logs, col_refresh = st.sidebar.columns(3)
     with col_reset:
         if st.button("Clear/Reset", use_container_width=True, key="reset_app"):
-            clear_framework_cache()
+            n_cleared = _clear_all_app_caches()
             next_gen = int(st.session_state.get("widget_reset_generation", 0)) + 1
             st.session_state.clear()
             st.session_state["widget_reset_generation"] = next_gen
+            st.toast(f"Cleared {n_cleared} cached result(s) and session data.", icon="🧹")
             st.rerun()
     with col_logs:
         if st.button("Clear Logs", use_container_width=True, key="clear_logs"):
@@ -2767,19 +2827,40 @@ def main() -> None:
 
 
 
-    results_key = (
-        f"{getattr(cif_path, 'name', 'uploaded')}::{spacing:.3f}::method={dgrid_method}"
-        f"::bs={block_size}::nn={n_neighbors}::cf={coarse_factor}"
+    results_key = _build_compute_results_key(
+        cif_name=str(getattr(cif_path, "name", "uploaded")),
+        spacing=float(spacing),
+        dgrid_method=str(dgrid_method),
+        block_size=int(block_size),
+        n_neighbors=int(n_neighbors),
+        coarse_factor=int(coarse_factor),
+        vdw_radii_set=str(vdw_radii_set),
+        mask_thickness=float(mask_thickness),
+        h_value=float(h_value),
+        min_distance=float(min_distance),
+        threshold_abs=float(threshold_abs),
+        extra_padding=float(extra_padding),
+        watershed_backend=str(watershed_backend),
+        min_box_thickness_enabled=bool(min_box_thickness_enabled),
+        min_box_thickness=float(min_box_thickness),
     )
-    col_btn1, col_btn2 = st.columns([3, 1])
+    col_btn1, col_btn2, col_btn3 = st.columns([3, 1, 1])
     with col_btn1:
         compute_clicked = st.button("Compute and Visualize", use_container_width=True)
     with col_btn2:
+        force_recompute = st.checkbox(
+            "Force recompute",
+            value=False,
+            key="force_recompute",
+            help="Ignore the in-memory result cache and run segmentation again.",
+        )
+    with col_btn3:
         if st.button("🔄 Reset", use_container_width=True, help="Clear all inputs and results"):
-            clear_framework_cache()
+            n_cleared = _clear_all_app_caches()
             next_gen = int(st.session_state.get("widget_reset_generation", 0)) + 1
             st.session_state.clear()
             st.session_state["widget_reset_generation"] = next_gen
+            st.toast(f"Cleared {n_cleared} cached result(s) and session data.", icon="🧹")
             st.rerun()
 
     compute_status_slot = st.empty()
@@ -2806,11 +2887,12 @@ def main() -> None:
         st.session_state.pop("_counter_incremented", None)  # reset for new compute
         if not _spaces_allow_compute_now():
             return
-        # Check result cache first
-        if results_key in _RESULT_CACHE:
+        # Check result cache first (key includes VDW radii + segmentation params)
+        if not force_recompute and results_key in _RESULT_CACHE:
             st.session_state["_compute_progress"] = _StreamingProgress()
             st.session_state["_compute_progress"].result = _RESULT_CACHE[results_key]
             st.session_state["_compute_progress"].done = True
+            st.toast("Loaded cached segmentation result.", icon="📦")
             st.rerun()
         # Guard: if a queued/running job already exists, don't submit a duplicate.
         _existing_job_id = st.session_state.get("_compute_job_id")
@@ -3059,10 +3141,14 @@ def main() -> None:
                     _target["pocket_types_detected"] = True
                     _target["psd_source"] = _out.get("psd_source", "pocket_psd")
                     _target["probe_radius_psd_used"] = _out.get("probe_psd", 1.2)
-                    _target["pocket_typing_method"] = _out.get("pocket_typing_method", "max_probe_radius")
+                    _target["pocket_typing_method"] = _out.get("pocket_typing_method", "env_cluster")
                     _target["pocket_type_summary"] = _out.get("pocket_type_summary", [])
                     _target["pocket_rep_to_type"] = _out.get("pocket_rep_to_type", {})
                     _target["pocket_typing_audit"] = _out.get("pocket_typing_audit", {})
+                    _pt_audit = _out.get("pocket_typing_audit") or {}
+                    _target["pocket_typing_radii"] = _pt_audit.get(
+                        "typing_radii", "bondi_crc_fallback"
+                    )
                     _target["pocket_type_cluster_diagnostics"] = _out.get("cluster_diags", [])
                     _target["pocket_type_pbc_group_count"] = int(_out.get("pbc_group_count", 0))
                     _target["pocket_type_refined"] = bool(refined)
@@ -3213,7 +3299,7 @@ def main() -> None:
                                 "(rough estimate based on current run)."
                             )
                     _final_clusters = int(np.max(results.get("regions_cluster", np.array([0]))))
-                    _method_label = results.get("pocket_typing_method", "max_probe_radius")
+                    _method_label = results.get("pocket_typing_method", "env_cluster")
                     if results.get("pocket_type_refined"):
                         _method_label += " (refined grid)"
                     st.info(
@@ -3241,8 +3327,13 @@ def main() -> None:
                 except Exception:
                     pass
             _RESULT_CACHE[results_key] = results
+            # Derived tabs cache on analysis_key — drop stale subsidiary results.
+            st.session_state.pop("sa_results", None)
+            st.session_state.pop("vol_results", None)
+            st.session_state.pop("last_probe_key", None)
+            st.session_state["psd_cache"] = {}
             pld_cache = st.session_state.setdefault("pld_cache", {})
-            pld_cache.pop(results_key, None)
+            pld_cache.clear()
 
         elapsed = time.time() - progress.start_time
         st.session_state["_compute_log"] = {
@@ -3267,6 +3358,13 @@ def main() -> None:
     results_data = st.session_state.get("latest_results")
     metadata = st.session_state.get("latest_metadata", {})
     analysis_key = st.session_state.get("analysis_key")
+
+    if results_data is not None and analysis_key and analysis_key != results_key:
+        st.warning(
+            "Displayed results were computed with different settings than currently selected "
+            f"(cached key mismatch). Click **Compute and Visualize** to refresh — "
+            f"VDW table: {metadata.get('vdw_radii_set', '?')} → **{vdw_radii_set}**."
+        )
 
     if results_data is not None and st.session_state.get("_compute_log"):
         log = st.session_state["_compute_log"]
@@ -4536,12 +4634,12 @@ def main() -> None:
                             'Surface Area (m²/g)': area
                         })
 
-                # Pocket-wise breakdown (PBC groups)
+                # Pocket-wise breakdown (regions_pbc labels — matches visualization)
                 by_pocket = sa_results.get('by_pocket', {})
                 if by_pocket:
                     for pocket_id, area in by_pocket.items():
                         breakdown_data.append({
-                            'Type': 'Pocket (PBC)',
+                            'Type': 'Pocket (regions_pbc)',
                             'Category': 'Grouped',
                             'Label': str(pocket_id),
                             'Surface Area (m²/g)': area
@@ -4616,12 +4714,12 @@ def main() -> None:
                             'Void Volume (cm³/g)': volume
                         })
 
-                # Pocket-wise breakdown (PBC groups)
+                # Pocket-wise breakdown (regions_pbc labels — matches visualization)
                 by_pocket = vol_results.get('by_pocket', {})
                 if by_pocket:
                     for pocket_id, volume in by_pocket.items():
                         breakdown_data.append({
-                            'Type': 'Pocket (PBC)',
+                            'Type': 'Pocket (regions_pbc)',
                             'Category': 'Grouped',
                             'Label': str(pocket_id),
                             'Void Volume (cm³/g)': volume

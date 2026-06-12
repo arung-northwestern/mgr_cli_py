@@ -119,8 +119,9 @@ def framework_atom_indices_near_void(
         return np.array([], dtype=int)
     cell = complete_cell(atoms.get_cell()).T
     frac_atoms = atoms.get_scaled_positions()
+    # Do not floor void fractions to [0,1): surface samples may be MIC-wrapped
+    # around the pocket peak and flooring snaps them to the wrong cell image.
     frac_void = np.linalg.solve(cell.T, void_cart.T).T
-    frac_void = frac_void - np.floor(frac_void)
     dr = frac_void[None, :, :] - frac_atoms[:, None, :]
     dr = dr - np.round(dr)
     dist = np.linalg.norm(np.einsum("mni,ij->mnj", dr, cell), axis=2)
@@ -557,8 +558,20 @@ def compute_pocket_fingerprint(
         if len(a_idx) and bonds:
             a_idx = expand_bond_closure(a_idx, bonds, n_hops=1)
             a_idx = a_idx[(a_idx >= 0) & (a_idx < n_atoms_total)]
-        # r_shell: normalisation radius = cage size + query reach + margin
-        r_shell = float(max_probe_radius_a) + SURFACE_ATOM_QUERY_R_A + 2.0
+        if len(a_idx) == 0:
+            # Surface voxels can land in the wrong periodic image (PBC / MIC);
+            # fall back to MIC void cloud + adaptive shell.
+            void_pts = void_cart_mic_for_fragment_group(
+                regions_pbc, dgrid, frag_labels, shape, atoms,
+            )
+            centroid = pocket_centroid(void_pts)
+            a_idx, r_shell = framework_indices_adaptive_shell(
+                atoms, void_pts, bonds, r_scale,
+                alpha=alpha, delta=delta, r_min=r_min, r_max=r_max,
+            )
+        else:
+            # r_shell: normalisation radius = cage size + probe reach + margin
+            r_shell = float(max_probe_radius_a) + SURFACE_ATOM_QUERY_R_A + 2.0
     elif void_near_peak:
         void_pts = void_cart_near_dgrid_peak(regions, dgrid, rep, shape, atoms)
         if void_pts.size == 0:

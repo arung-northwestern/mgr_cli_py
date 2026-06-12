@@ -331,13 +331,13 @@ def spectral_smooth_3d(dgrid: np.ndarray, atoms, grid_spacing: float, sigma: flo
 
 
 def trim_connections_to_unique_regions(connections, unique_regions):
-    """Keep connections whose both endpoint labels are in *unique_regions*."""
+    """Keep connections with at least one endpoint label in *unique_regions*."""
     import numpy as np
 
     unique = np.asarray(unique_regions, dtype=int)
     if unique.size == 0:
         return list(connections)
-    return [c for c in connections if np.all(np.isin(c[0], unique))]
+    return [c for c in connections if np.any(np.isin(c[0], unique))]
 
 def compute_wall_cells(ase_atoms, spacing, wall_thickness=0.05):
     import numpy as np

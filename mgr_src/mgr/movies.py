@@ -794,8 +794,10 @@ def _serialize_windows_trace(
     conns = list(seg.get("connections", []))
     internal_windows = []
     internal_hover = []
+    internal_window_radii: list[float] = []
     periodic_windows = []
     periodic_hover = []
+    periodic_window_radii: list[float] = []
 
     # Compute wall tolerance for "close or inside" criteria (same as maxima).
     wall_tol = None
@@ -845,20 +847,25 @@ def _serialize_windows_trace(
                     )[0]
                     if loc == "far_outside":
                         periodic_windows.append(wp)
+                        periodic_window_radii.append(float(r))
                         periodic_hover.append(txt.replace("internal", "periodic (wrapped)"))
                         continue
             if ctype == "internal":
                 internal_windows.append(wp)
+                internal_window_radii.append(float(r))
                 internal_hover.append(txt)
             elif ctype == "periodic":
                 periodic_windows.append(wp)
+                periodic_window_radii.append(float(r))
                 periodic_hover.append(txt)
     out: dict[str, Any] = {
         "internal_positions": [],
         "internal_hover": internal_hover,
+        "internal_window_radii": internal_window_radii,
         "internal_n_points": 0,
         "periodic_positions": [],
         "periodic_hover": periodic_hover,
+        "periodic_window_radii": periodic_window_radii,
         "periodic_n_points": 0,
     }
     if internal_windows:
@@ -881,8 +888,10 @@ def _serialize_connection_traces(
         return {
             "internal_segments": [],
             "internal_hover": [],
+            "internal_segment_window_radii": [],
             "periodic_segments": [],
             "periodic_hover": [],
+            "periodic_segment_window_radii": [],
             "internal_points": [],
             "internal_points_hover": [],
             "periodic_points": [],
@@ -903,8 +912,10 @@ def _serialize_connection_traces(
 
     internal_segments: list[list[float]] = []
     internal_hover: list[str] = []
+    internal_segment_window_radii: list[list[float]] = []
     periodic_segments: list[list[float]] = []
     periodic_hover: list[str] = []
+    periodic_segment_window_radii: list[list[float]] = []
     internal_nodes: set[int] = set()
     periodic_nodes: set[int] = set()
     for c in conns:
@@ -918,6 +929,7 @@ def _serialize_connection_traces(
         ctype = str(c[2])
         pts = c[3] if c[3] is not None else []
         wr = c[4] if c[4] is not None else []
+        wr_vals = [float(x) for x in np.asarray(wr, dtype=float).reshape(-1) if np.isfinite(x)]
         if ctype == "internal":
             internal_nodes.update([n1, n2])
             internal_segments.append(
@@ -926,9 +938,10 @@ def _serialize_connection_traces(
                     float(p2[0]), float(p2[1]), float(p2[2]),
                 ]
             )
+            internal_segment_window_radii.append(wr_vals)
             txt = f"trace: internal connections\nedge: {n1}-{n2}"
-            if len(pts) and len(wr):
-                txt += f"\nwindow radius: {float(wr[0]):.3f} A"
+            if len(pts) and len(wr_vals):
+                txt += f"\nwindow radius: {wr_vals[0]:.3f} A"
             internal_hover.append(txt)
         elif ctype == "periodic":
             periodic_nodes.update([n1, n2])
@@ -938,9 +951,10 @@ def _serialize_connection_traces(
                     float(p2[0]), float(p2[1]), float(p2[2]),
                 ]
             )
+            periodic_segment_window_radii.append(wr_vals)
             txt = f"trace: periodic connections\nedge: {n1}-{n2}"
-            if len(pts) and len(wr):
-                txt += f"\nwindow radius: {float(wr[0]):.3f} A"
+            if len(pts) and len(wr_vals):
+                txt += f"\nwindow radius: {wr_vals[0]:.3f} A"
             periodic_hover.append(txt)
 
     def _pack_nodes(node_ids: set[int], label: str) -> tuple[list[float], list[str]]:
@@ -971,11 +985,13 @@ def _serialize_connection_traces(
             if internal_segments else []
         ),
         "internal_hover": internal_hover,
+        "internal_segment_window_radii": internal_segment_window_radii,
         "periodic_segments": (
             np.asarray(periodic_segments, dtype=float).reshape(-1).tolist()
             if periodic_segments else []
         ),
         "periodic_hover": periodic_hover,
+        "periodic_segment_window_radii": periodic_segment_window_radii,
         "internal_points": internal_points,
         "internal_points_hover": internal_points_hover,
         "periodic_points": periodic_points,
@@ -1917,6 +1933,7 @@ def make_windows_trace(
         data={
             "positions": payload["internal_positions"],
             "n_points": payload["internal_n_points"],
+            "window_radii": payload["internal_window_radii"],
         },
         style="internal_windows",
         hover=payload["internal_hover"],
@@ -1929,6 +1946,7 @@ def make_windows_trace(
         data={
             "positions": payload["periodic_positions"],
             "n_points": payload["periodic_n_points"],
+            "window_radii": payload["periodic_window_radii"],
         },
         style="periodic_windows",
         hover=payload["periodic_hover"],
@@ -1952,6 +1970,7 @@ def make_connections_trace(
         data={
             "positions": payload["internal_segments"],
             "n_segments": len(payload["internal_segments"]) // 6,
+            "segment_window_radii": payload["internal_segment_window_radii"],
         },
         style="internal_connections",
         hover=payload["internal_hover"],
@@ -1964,6 +1983,7 @@ def make_connections_trace(
         data={
             "positions": payload["periodic_segments"],
             "n_segments": len(payload["periodic_segments"]) // 6,
+            "segment_window_radii": payload["periodic_segment_window_radii"],
         },
         style="periodic_connections",
         hover=payload["periodic_hover"],
@@ -3416,6 +3436,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       <label id="labelShowPeriodicWindows"><input type="checkbox" id="showPeriodicWindows" /> Periodic windows</label>
       <label id="labelShowInternalConnections"><input type="checkbox" id="showInternalConnections" checked /> Internal connections</label>
       <label id="labelShowPeriodicConnections"><input type="checkbox" id="showPeriodicConnections" /> Periodic connections</label>
+      <label id="labelWindowMinThreshold">Min window (Å): <input id="windowMinThreshold" type="number" step="0.05" min="0" placeholder="off" style="width:52px;vertical-align:middle;" title="Hide connections/windows whose radii are all below this threshold" /></label>
     </div>
     <div class="checkrow" id="groupChecks"></div>
     <button id="toggleLegend" style="font-size:10px;margin-top:2px;" title="Fold/unfold legend entries">Fold Legend ▲</button>
@@ -3611,6 +3632,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     const showPeriodicWindows = document.getElementById("showPeriodicWindows");
     const showInternalConnections = document.getElementById("showInternalConnections");
     const showPeriodicConnections = document.getElementById("showPeriodicConnections");
+    const windowMinThresholdInput = document.getElementById("windowMinThreshold");
     const pivotSceneBtn = document.getElementById("pivotScene");
     const pivotOriginBtn = document.getElementById("pivotOrigin");
     const resetCamBtn = document.getElementById("resetCam");
@@ -4080,6 +4102,11 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       if (style.dashSize !== undefined) lines.computeLineDistances();
       lines.name = trace.id;
       lines.userData.originalOpacity = mat.opacity !== undefined ? mat.opacity : 1.0;
+      if (trace.data.segment_window_radii) {
+        lines.userData.originalPositions = pts.slice();
+        lines.userData.segmentWindowRadii = trace.data.segment_window_radii;
+        lines.userData.windowFilterKind = "connection_lines";
+      }
       scene.add(lines);
       objectsById[trace.id] = lines;
       return lines;
@@ -4120,6 +4147,11 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       }
       const points = new THREE.Points(geo, mat);
       points.name = trace.id;
+      if (trace.data.window_radii) {
+        points.userData.originalPositions = pts.slice();
+        points.userData.windowRadii = trace.data.window_radii;
+        points.userData.windowFilterKind = "window_points";
+      }
       scene.add(points);
       objectsById[trace.id] = points;
       return points;
@@ -4559,6 +4591,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     setVisibleIfPresent("labelShowPeriodicWindows", hasStaticOrFrameTrace(t => t.id === "windows_periodic"));
     setVisibleIfPresent("labelShowInternalConnections", hasStaticOrFrameTrace(t => t.id === "connections_internal" || t.id === "connections_internal_nodes" || t.id === "maxima_internal"));
     setVisibleIfPresent("labelShowPeriodicConnections", hasStaticOrFrameTrace(t => t.id === "connections_periodic" || t.id === "connections_periodic_nodes" || t.id === "maxima_outside"));
+    setVisibleIfPresent("labelWindowMinThreshold", hasStaticOrFrameTrace(t => t.id === "connections_internal" || t.id === "connections_periodic" || t.id === "windows_internal" || t.id === "windows_periodic"));
 
     // Populate dynamic group checkboxes from DATA.groups
     const groupChecksDiv = document.getElementById("groupChecks");
@@ -5121,6 +5154,58 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       }
     }
 
+    function readWindowMinThreshold() {
+      if (!windowMinThresholdInput) return null;
+      const raw = (windowMinThresholdInput.value || "").trim();
+      if (!raw) return null;
+      const v = parseFloat(raw);
+      return Number.isFinite(v) ? v : null;
+    }
+    function connectionPassesWindowThreshold(segmentRadii, threshold) {
+      if (threshold === null) return true;
+      if (!segmentRadii || !segmentRadii.length) return true;
+      return !segmentRadii.every(function(r) { return r < threshold; });
+    }
+    function rebuildLineSegmentsForThreshold(traceId) {
+      const obj = objectsById[traceId];
+      if (!obj || !obj.userData.originalPositions) return;
+      const threshold = readWindowMinThreshold();
+      const orig = obj.userData.originalPositions;
+      const radii = obj.userData.segmentWindowRadii || [];
+      const nSeg = radii.length || Math.floor(orig.length / 6);
+      const filtered = [];
+      for (let i = 0; i < nSeg; i++) {
+        const segRadii = radii[i] || [];
+        if (!connectionPassesWindowThreshold(segRadii, threshold)) continue;
+        const base = i * 6;
+        for (let j = 0; j < 6; j++) filtered.push(orig[base + j]);
+      }
+      const geo = obj.geometry;
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(filtered), 3));
+      if (obj.material && obj.material.dashSize !== undefined) obj.computeLineDistances();
+    }
+    function rebuildPointsForThreshold(traceId) {
+      const obj = objectsById[traceId];
+      if (!obj || !obj.userData.originalPositions) return;
+      const threshold = readWindowMinThreshold();
+      const orig = obj.userData.originalPositions;
+      const radii = obj.userData.windowRadii || [];
+      const nPts = radii.length || Math.floor(orig.length / 3);
+      const filtered = [];
+      for (let i = 0; i < nPts; i++) {
+        const r = radii[i];
+        if (threshold !== null && Number.isFinite(r) && r < threshold) continue;
+        const base = i * 3;
+        filtered.push(orig[base], orig[base + 1], orig[base + 2]);
+      }
+      const geo = obj.geometry;
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(filtered), 3));
+    }
+    function applyWindowThresholdFilter() {
+      ["connections_internal", "connections_periodic"].forEach(rebuildLineSegmentsForThreshold);
+      ["windows_internal", "windows_periodic"].forEach(rebuildPointsForThreshold);
+    }
+
     showWindows.addEventListener("change", () => {
       const obj = objectsById["windows_internal"];
       if (obj) obj.visible = showWindows.checked;
@@ -5149,6 +5234,14 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       if (maxObj) maxObj.visible = showPeriodicConnections.checked;
       updateCellCopyVisibility();
     });
+    if (windowMinThresholdInput) {
+      const onWindowThresholdChange = () => {
+        applyWindowThresholdFilter();
+      };
+      windowMinThresholdInput.addEventListener("input", onWindowThresholdChange);
+      windowMinThresholdInput.addEventListener("change", onWindowThresholdChange);
+    }
+    applyWindowThresholdFilter();
     pivotSceneBtn.addEventListener("click", () => {
       controls.target.copy(sceneCenter);
       controls.update();

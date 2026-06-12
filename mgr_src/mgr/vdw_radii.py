@@ -494,6 +494,16 @@ def alvarez_vdw_radii_angstrom(ase_atoms) -> np.ndarray:
     return vdw_radii_angstrom(ase_atoms, radii_set='alvarez')
 
 
+def typing_vdw_radii_angstrom(ase_atoms) -> np.ndarray:
+    """Stable VDW radii for pocket typing (Bondi + CRC/Mendeleev fill for missing symbols)."""
+    bondi = bondi_vdw_radii_angstrom(ase_atoms).astype(float, copy=True)
+    if np.all(np.isfinite(bondi)):
+        return bondi
+    mend = mendeleev_vdw_radii_angstrom(ase_atoms)
+    bondi[~np.isfinite(bondi)] = mend[~np.isfinite(bondi)]
+    return bondi
+
+
 def vdw_radii_table_pm(radii_set: str) -> pd.Series:
     key = _normalize_radii_set_key(radii_set)
     if key == 'bondi':

@@ -15,9 +15,9 @@ use rand_pcg::Pcg64;
 use rstar::primitives::GeomWithData;
 use rstar::RTree;
 
-mod aromatic;
-mod bonds;
 mod cif;
+mod bonds;
+mod aromatic;
 mod dgrid_exp;
 
 // #[pyfunction]
@@ -68,6 +68,8 @@ mod dgrid_exp;
 //     Ok(result.1)
 // }
 
+// Legacy brute-force 27-image MIC (replaced by dgrid_exp::dgrid_from_atoms).
+/*
 #[pyfunction]
 
 #[pyo3(text_signature = "(fpoints, cell, radii, nx, ny, nz)")]
@@ -98,7 +100,22 @@ fn dgrid_from_atoms(
     let c21 = cell[[2, 1]];
     let c22 = cell[[2, 2]];
 
-    // Parallel computation across all grid points.
+    // Precompute the 27 fractional offset vectors for correct PBC handling.
+    // Per-component wrapping (dx -= dx.round()) is only exact for orthogonal cells.
+    // For non-orthogonal cells, the nearest Cartesian image may differ from the
+    // nearest fractional image due to off-diagonal cell coupling.
+    // Checking all 27 images guarantees the correct minimum Cartesian distance.
+    let offsets_27: Vec<[f64; 3]> = (-1..=1)
+        .flat_map(|tx| {
+            (-1..=1).flat_map(move |ty| {
+                (-1..=1).map(move |tz| {
+                    [tx as f64, ty as f64, tz as f64]
+                })
+            })
+        })
+        .collect();
+
+    // Parallel computation across all grid points (rayon).
     let buffer: Vec<f32> = (0..total_points)
         .into_par_iter()
         .map(|idx| {
@@ -116,25 +133,40 @@ fn dgrid_from_atoms(
             let mut min_dist = f64::MAX;
 
             for (atom_idx, atom_frac) in fpoints.outer_iter().enumerate() {
-                // Apply minimum-image convention in fractional space.
-                let mut dx = x_frac - atom_frac[0];
-                let mut dy = y_frac - atom_frac[1];
-                let mut dz = z_frac - atom_frac[2];
+                let r_atom = radii[atom_idx];
 
-                dx -= dx.round();
-                dy -= dy.round();
-                dz -= dz.round();
+                // Raw fractional difference (no wrapping).
+                let raw_dx = x_frac - atom_frac[0];
+                let raw_dy = y_frac - atom_frac[1];
+                let raw_dz = z_frac - atom_frac[2];
 
-                // Convert to Cartesian coordinates: r = cell · diff
-                let cart_x = c00 * dx + c01 * dy + c02 * dz;
-                let cart_y = c10 * dx + c11 * dy + c12 * dz;
-                let cart_z = c20 * dx + c21 * dy + c22 * dz;
+                for &[otx, oty, otz] in &offsets_27 {
+                    let dx = raw_dx + otx;
+                    let dy = raw_dy + oty;
+                    let dz = raw_dz + otz;
 
-                let dist = (cart_x * cart_x + cart_y * cart_y + cart_z * cart_z).sqrt()
-                    - radii[atom_idx];
+                    // Convert to Cartesian: r = cell · diff
+                    let cart_x = c00 * dx + c01 * dy + c02 * dz;
+                    let cart_y = c10 * dx + c11 * dy + c12 * dz;
+                    let cart_z = c20 * dx + c21 * dy + c22 * dz;
 
-                if dist < min_dist {
-                    min_dist = dist;
+                    // Compare squared distances to avoid sqrt until necessary.
+                    let sq_dist = cart_x * cart_x + cart_y * cart_y + cart_z * cart_z;
+                    let _r_sq = r_atom * r_atom;
+
+                    // Fast path: if this atom is clearly not the closest, skip sqrt.
+                    // We need dist = sqrt(sq_dist) - r_atom < min_dist
+                    //   => sqrt(sq_dist) < min_dist + r_atom
+                    //   => sq_dist < (min_dist + r_atom)^2
+                    let threshold = min_dist + r_atom;
+                    if threshold > 0.0 && sq_dist >= threshold * threshold {
+                        continue;
+                    }
+
+                    let dist = sq_dist.sqrt() - r_atom;
+                    if dist < min_dist {
+                        min_dist = dist;
+                    }
                 }
             }
 
@@ -150,6 +182,9 @@ fn dgrid_from_atoms(
     // Convert to a NumPy array owned by Python and return.
     Ok(PyArray3::from_owned_array(py, array).to_owned())
 }
+
+*/
+
 
 #[pyfunction]
 #[pyo3(signature = (fpoints, cell, nx, ny, nz, radii=None, n_neighbors=10))]
@@ -915,7 +950,6 @@ fn seeded_watershed_bucket(
 ) -> PyResult<Py<PyArray3<u32>>> {
     let img = image.as_array();
     let seeds_arr = seeds.as_array();
-
     if img.dim() != seeds_arr.dim() {
         return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
             "`image` and `seeds` must have identical shapes",
@@ -928,7 +962,6 @@ fn seeded_watershed_bucket(
             ));
         }
     }
-
     if let Some(n) = n_threads {
         rayon::ThreadPoolBuilder::new()
             .num_threads(n)
@@ -936,48 +969,18 @@ fn seeded_watershed_bucket(
             .ok();
     }
 
-    // Determine min and max of the image to scale into 0..65535
-    let (mut min_val, mut max_val) = (f32::MAX, f32::MIN);
-    img.iter().for_each(|&v| {
-        if v < min_val {
-            min_val = v;
-        }
-        if v > max_val {
-            max_val = v;
-        }
-    });
-    // avoid div-by-zero
-    let range = if (max_val - min_val).abs() < 1e-12 {
-        1.0
-    } else {
-        max_val - min_val
-    };
-
-    let to_bucket = |v: f32| -> usize {
-        let norm = ((v - min_val) / range * (BUCKETS as f32 - 1.0)).round() as usize;
-        norm
-    };
-
-    // Precompute bucket index for every voxel to avoid recalculating
-    let bucket_idx_vec: Vec<usize> = img
-        .iter()
-        .map(|&v| to_bucket(v))
-        .collect();
+    // --- Monotone bucket watershed: bucketized version of heap-based flooding on -image ---
 
     let (nx, ny, nz) = img.dim();
     let total_voxels = nx * ny * nz;
 
     use std::sync::atomic::{AtomicU32, Ordering};
 
+    // Labels array (0 = background/unlabeled)
     let labels: Vec<AtomicU32> = (0..total_voxels).map(|_| AtomicU32::new(0)).collect();
 
-    let buckets: Arc<Vec<Mutex<Vec<usize>>>> = Arc::new(
-        (0..BUCKETS).map(|_| Mutex::new(Vec::<usize>::new())).collect(),
-    );
-
-    let to_flat = |i: usize, j: usize, k: usize| -> usize { i * ny * nz + j * nz + k };
-
     // Materialise mask (if any) into a flat Vec<bool> that is Sync/Send.
+    let to_flat = |i: usize, j: usize, k: usize| -> usize { i * ny * nz + j * nz + k };
     let mask_vec: Option<Vec<bool>> = mask.as_ref().map(|m| {
         m.as_array()
             .iter()
@@ -985,78 +988,237 @@ fn seeded_watershed_bucket(
             .collect::<Vec<bool>>()
     });
 
-    // Initialise with seeds
+    // Define the scalar image used for priority ordering: here we use -dgrid so that
+    // "lower is better" (minima flood first), matching scikit's use of -distance.
+    let mut min_img = f32::MAX;
+    let mut max_img = f32::MIN;
+    img.iter().for_each(|&v| {
+        let f = -v;
+        if f < min_img {
+            min_img = f;
+        }
+        if f > max_img {
+            max_img = f;
+        }
+    });
+
+    // Avoid div-by-zero; if the image is constant, treat the range as 1.
+    let range = if (max_img - min_img).abs() < 1e-12 {
+        1.0
+    } else {
+        max_img - min_img
+    };
+
+    let to_bucket = |p: f32| -> usize {
+        // Clamp to [min_img, max_img] before scaling into bucket range.
+        let p_clamped = if p < min_img {
+            min_img
+        } else if p > max_img {
+            max_img
+        } else {
+            p
+        };
+        let norm = ((p_clamped - min_img) / range * (BUCKETS as f32 - 1.0)).round();
+        norm as usize
+    };
+
+    // Map each voxel's raw image value f = -dgrid to its base bucket index.
+    let bucket_from_image: Vec<usize> = img
+        .iter()
+        .map(|&v| {
+            let f = -v;
+            to_bucket(f)
+        })
+        .collect();
+
+    // Buckets of frontiers keyed by discretised priority (bucket index).
+    let buckets: Arc<Vec<Mutex<Vec<usize>>>> = Arc::new(
+        (0..BUCKETS)
+            .map(|_| Mutex::new(Vec::<usize>::new()))
+            .collect(),
+    );
+
+    // Neighbourhood (26-connectivity as before).
+    let neighbor_offsets: &[(isize, isize, isize)] = &[
+        (-1, -1, -1),
+        (-1, -1, 0),
+        (-1, -1, 1),
+        (-1, 0, -1),
+        (-1, 0, 0),
+        (-1, 0, 1),
+        (-1, 1, -1),
+        (-1, 1, 0),
+        (-1, 1, 1),
+        (0, -1, -1),
+        (0, -1, 0),
+        (0, -1, 1),
+        (0, 0, -1),
+        (0, 0, 1),
+        (0, 1, -1),
+        (0, 1, 0),
+        (0, 1, 1),
+        (1, -1, -1),
+        (1, -1, 0),
+        (1, -1, 1),
+        (1, 0, -1),
+        (1, 0, 0),
+        (1, 0, 1),
+        (1, 1, -1),
+        (1, 1, 0),
+        (1, 1, 1),
+    ];
+
+    // Seed initial labels and priorities.
     for ((i, j, k), &label) in seeds_arr.indexed_iter() {
         if label == 0 {
             continue;
         }
+        let idx = to_flat(i, j, k);
         if let Some(ref mask_v) = mask_vec {
-            if !mask_v[to_flat(i, j, k)] {
+            if !mask_v[idx] {
                 return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
                     "Seed label found in location where mask==0",
                 ));
             }
         }
-        let idx = to_flat(i, j, k);
+
         labels[idx].store(label, Ordering::Relaxed);
-        let b = bucket_idx_vec[idx];
+
+        // Initial bucket for this seed is determined solely by its local image value.
+        let b = bucket_from_image[idx];
         buckets[b].lock().push(idx);
     }
 
-    let neighbor_offsets: &[(isize, isize, isize)] = &[
-        (-1, -1, -1), (-1, -1, 0), (-1, -1, 1),
-        (-1, 0, -1), (-1, 0, 0), (-1, 0, 1),
-        (-1, 1, -1), (-1, 1, 0), (-1, 1, 1),
-        (0, -1, -1), (0, -1, 0), (0, -1, 1),
-        (0, 0, -1),                 (0, 0, 1),
-        (0, 1, -1), (0, 1, 0), (0, 1, 1),
-        (1, -1, -1), (1, -1, 0), (1, -1, 1),
-        (1, 0, -1), (1, 0, 0), (1, 0, 1),
-        (1, 1, -1), (1, 1, 0), (1, 1, 1),
-    ];
+    // Main flooding loop: process buckets in ascending priority order. Because we always
+    // assign neighbour priorities as new_prio = max(f_n, current_prio), where f_n is the
+    // raw image at the neighbour, new_prio is monotonically non-decreasing along any
+    // path. Therefore, any voxel pushed during processing of level L will have a bucket
+    // index >= L, and we never need a separate "late buckets" pass.
+    for level in 0..BUCKETS {
+        loop {
+            let frontier: Vec<usize> = {
+                let mut guard = buckets[level].lock();
+                std::mem::take(&mut *guard)
+            };
+            if frontier.is_empty() {
+                break;
+            }
 
-    // Main flooding loop from highest bucket downwards
-    for level in (0..BUCKETS).rev() {
-        let frontier: Vec<usize> = {
-            let mut guard = buckets[level].lock();
-            std::mem::take(&mut *guard)
-        };
-        if frontier.is_empty() {
-            continue;
-        }
-
-        frontier.par_iter().for_each(|&idx| {
-            let current_label = labels[idx].load(Ordering::Relaxed);
-            let i = idx / (ny * nz);
-            let j = (idx / nz) % ny;
-            let k = idx % nz;
-
-            for &(dx, dy, dz) in neighbor_offsets {
-                let ni = i as isize + dx;
-                let nj = j as isize + dy;
-                let nk = k as isize + dz;
-                if ni < 0 || nj < 0 || nk < 0 {
-                    continue;
+            frontier.par_iter().for_each(|&idx| {
+                let current_label = labels[idx].load(Ordering::Relaxed);
+                if current_label == 0 {
+                    return;
                 }
-                let (ni_u, nj_u, nk_u) = (ni as usize, nj as usize, nk as usize);
-                if ni_u >= nx || nj_u >= ny || nk_u >= nz {
-                    continue;
-                }
-                if let Some(ref mask_v) = mask_vec {
-                    if !mask_v[to_flat(ni_u, nj_u, nk_u)] {
+
+                let i = idx / (ny * nz);
+                let j = (idx / nz) % ny;
+                let k = idx % nz;
+
+                for &(dx, dy, dz) in neighbor_offsets {
+                    let ni = i as isize + dx;
+                    let nj = j as isize + dy;
+                    let nk = k as isize + dz;
+                    if ni < 0 || nj < 0 || nk < 0 {
                         continue;
                     }
+                    let (ni_u, nj_u, nk_u) = (ni as usize, nj as usize, nk as usize);
+                    if ni_u >= nx || nj_u >= ny || nk_u >= nz {
+                        continue;
+                    }
+
+                    let nidx = to_flat(ni_u, nj_u, nk_u);
+                    if let Some(ref mask_v) = mask_vec {
+                        if !mask_v[nidx] {
+                            continue;
+                        }
+                    }
+
+                    // Try to claim an unlabeled neighbour.
+                    if labels[nidx]
+                        .compare_exchange(
+                            0,
+                            current_label,
+                            Ordering::Relaxed,
+                            Ordering::Relaxed,
+                        )
+                        .is_ok()
+                    {
+                        // Base bucket index from the raw image at this voxel.
+                        let b0 = bucket_from_image[nidx];
+                        // Path-based priority: bucket index is non-decreasing along any path.
+                        let b = if b0 > level { b0 } else { level };
+                        buckets[b].lock().push(nidx);
+                    }
                 }
-                let nidx = to_flat(ni_u, nj_u, nk_u);
-                if labels[nidx]
-                    .compare_exchange(0, current_label, Ordering::Relaxed, Ordering::Relaxed)
-                    .is_ok()
-                {
-                    let b = bucket_idx_vec[nidx];
-                    buckets[b].lock().push(nidx);
+            });
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    if let Some(ref mask_v) = mask_vec {
+        // Count masked voxels with label==0.
+        let total_unlabeled: usize = (0..total_voxels)
+            .filter(|&idx| mask_v[idx] && labels[idx].load(Ordering::Relaxed) == 0)
+            .count();
+
+        // Also count the subset that have at least one labeled neighbour inside the
+        // mask. These correspond to "interior" background voxels (true bug) as
+        // opposed to isolated or unreachable masked cells (e.g. padding-only).
+        let mut interior_unlabeled: usize = 0;
+        for i in 0..nx {
+            for j in 0..ny {
+                for k in 0..nz {
+                    let idx = to_flat(i, j, k);
+                    if !mask_v[idx] || labels[idx].load(Ordering::Relaxed) != 0 {
+                        continue;
+                    }
+                    // 6-neighbourhood is enough for this diagnostic.
+                    let neigh6: &[(isize, isize, isize)] = &[
+                        (-1, 0, 0),
+                        (1, 0, 0),
+                        (0, -1, 0),
+                        (0, 1, 0),
+                        (0, 0, -1),
+                        (0, 0, 1),
+                    ];
+                    let mut has_labeled_neigh = false;
+                    for &(dx, dy, dz) in neigh6 {
+                        let ni = i as isize + dx;
+                        let nj = j as isize + dy;
+                        let nk = k as isize + dz;
+                        if ni < 0 || nj < 0 || nk < 0 {
+                            continue;
+                        }
+                        let (ni_u, nj_u, nk_u) = (ni as usize, nj as usize, nk as usize);
+                        if ni_u >= nx || nj_u >= ny || nk_u >= nz {
+                            continue;
+                        }
+                        let nidx = to_flat(ni_u, nj_u, nk_u);
+                        if mask_v[nidx] && labels[nidx].load(Ordering::Relaxed) != 0 {
+                            has_labeled_neigh = true;
+                            break;
+                        }
+                    }
+                    if has_labeled_neigh {
+                        interior_unlabeled += 1;
+                    }
                 }
             }
-        });
+        }
+
+        if interior_unlabeled > 0 {
+            eprintln!(
+                "[seeded_watershed_bucket] WARNING: {} masked voxels unlabeled with at least one labeled neighbour (bug), total masked unlabeled = {}",
+                interior_unlabeled, total_unlabeled
+            );
+        } else if total_unlabeled > 0 {
+            eprintln!(
+                "[seeded_watershed_bucket] NOTE: {} masked voxels unlabeled but without labeled neighbours (likely isolated/padding)",
+                total_unlabeled
+            );
+        } else {
+            eprintln!("[seeded_watershed_bucket] OK: no masked voxels left unlabeled");
+        }
     }
 
     // Convert labels into ndarray
@@ -1072,10 +1234,25 @@ fn seeded_watershed_bucket(
     Ok(PyArray3::from_owned_array(py, out_arr).to_owned())
 }
 
+// 26-neighbor offsets in the same order used by all watershed backends.
+const NEIGHBOR_OFFSETS_26: &[(isize, isize, isize)] = &[
+    (-1, -1, -1), (-1, -1, 0), (-1, -1, 1),
+    (-1, 0, -1), (-1, 0, 0), (-1, 0, 1),
+    (-1, 1, -1), (-1, 1, 0), (-1, 1, 1),
+    (0, -1, -1), (0, -1, 0), (0, -1, 1),
+    (0, 0, -1),                 (0, 0, 1),
+    (0, 1, -1), (0, 1, 0), (0, 1, 1),
+    (1, -1, -1), (1, -1, 0), (1, -1, 1),
+    (1, 0, -1), (1, 0, 0), (1, 0, 1),
+    (1, 1, -1), (1, 1, 0), (1, 1, 1),
+];
+
 // ============================================================================
 // Deterministic heap-based watershed with optional mask
 // ----------------------------------------------------------------------------
-// Thin wrapper around heap_watershed_impl for skimage-parity (single-threaded).
+// This is a thin, explicit wrapper around the original heap_watershed_impl
+// that exposes an optional mask argument from Python. It is single-threaded
+// but bitwise deterministic and intended as the skimage-parity backend.
 // ============================================================================
 
 #[pyfunction]
@@ -1090,9 +1267,12 @@ fn seeded_watershed_det(
 }
 
 // ============================================================================
-// Deterministic level-synchronous parallel watershed
+// Deterministic level-synchronous parallel watershed (experimental backend)
 // ----------------------------------------------------------------------------
-// Matches heap-based seeded_watershed_det while scaling better on large grids.
+// This backend performs a level-synchronous multi-source flood over unique
+// intensity levels in the image, using parallel frontier scans and a
+// deterministic two-phase commit. It is designed to match the behavior of the
+// heap-based seeded_watershed_det while scaling better on large grids.
 // ============================================================================
 
 #[pyfunction]
@@ -1126,6 +1306,7 @@ fn seeded_watershed_det_parallel(
 
     let to_flat = |i: usize, j: usize, k: usize| -> usize { i * ny * nz + j * nz + k };
 
+    // Flatten image and optional mask
     let img_flat: Vec<f32> = img.iter().copied().collect();
     let mask_vec: Option<Vec<bool>> = mask.as_ref().map(|m| {
         m.as_array()
@@ -1134,7 +1315,7 @@ fn seeded_watershed_det_parallel(
             .collect::<Vec<bool>>()
     });
 
-    // Bucketization on f = -dgrid, identical to seeded_watershed_bucket priority semantics
+    // Prepare bucketization on f = -dgrid, identical to seeded_watershed_bucket
     let mut min_img = f32::MAX;
     let mut max_img = f32::MIN;
     for &v in img.iter() {
@@ -1164,6 +1345,7 @@ fn seeded_watershed_det_parallel(
         norm as usize
     };
 
+    // Map each voxel's raw image value f = -dgrid to its base bucket index.
     let bucket_from_image: Vec<usize> = img_flat
         .iter()
         .map(|&v| {
@@ -1172,9 +1354,11 @@ fn seeded_watershed_det_parallel(
         })
         .collect();
 
+    // Labels (0 = unlabeled) and non-atomic buckets
     let mut labels: Vec<u32> = vec![0; total_voxels];
     let mut buckets: Vec<Vec<usize>> = vec![Vec::new(); BUCKETS];
 
+    // Seed initial labels and priorities
     for ((i, j, k), &label) in seeds_arr.indexed_iter() {
         if label == 0 {
             continue;
@@ -1192,12 +1376,14 @@ fn seeded_watershed_det_parallel(
         buckets[b].push(idx);
     }
 
+    // Early exit if no seeds
     if labels.iter().all(|&v| v == 0) {
         let out_arr =
             Array3::from_shape_vec((nx, ny, nz), labels).expect("shape mismatch");
         return Ok(PyArray3::from_owned_array(py, out_arr).to_owned());
     }
 
+    // 26-neighbour offsets (same as bucket implementation)
     let neighbor_offsets: &[(isize, isize, isize)] = &[
         (-1, -1, -1),
         (-1, -1, 0),
@@ -1227,6 +1413,10 @@ fn seeded_watershed_det_parallel(
         (1, 1, 1),
     ];
 
+    use std::sync::Mutex;
+
+    // Main flooding loop: process buckets in ascending priority order,
+    // but in a deterministic two-phase fashion.
     for level in 0..BUCKETS {
         loop {
             let frontier: Vec<usize> = std::mem::take(&mut buckets[level]);
@@ -1234,6 +1424,8 @@ fn seeded_watershed_det_parallel(
                 break;
             }
 
+            // Per-thread assignment buffers to avoid contention, followed by a
+            // single deterministic merge + sort in the main thread.
             let assignments = std::sync::Mutex::new(Vec::<(usize, u32, usize)>::new());
 
             frontier.par_iter().for_each(|&idx| {
@@ -1283,6 +1475,7 @@ fn seeded_watershed_det_parallel(
                 continue;
             }
 
+            // Deterministic: sort by index, then label, then bucket index
             assignments_vec.sort_unstable_by(|a, b| {
                 match a.0.cmp(&b.0) {
                     std::cmp::Ordering::Equal => match a.1.cmp(&b.1) {
@@ -1293,6 +1486,7 @@ fn seeded_watershed_det_parallel(
                 }
             });
 
+            // Two-phase commit: sequentially assign labels if still unlabeled
             for (nidx, lab, b) in assignments_vec {
                 if labels[nidx] == 0 {
                     labels[nidx] = lab;
@@ -1359,28 +1553,39 @@ fn heap_watershed_impl(
     let (nx, ny, nz) = img.dim();
     let total_voxels = nx * ny * nz;
 
+    // Flattened image and optional mask for fast inner-loop access
+    let img_flat: Vec<f32> = img.iter().copied().collect();
+    let mask_flat: Option<Vec<u8>> = mask.as_ref().map(|m| {
+        m.as_array()
+            .iter()
+            .map(|&v| if v != 0 { 1u8 } else { 0u8 })
+            .collect()
+    });
+
     // Flattened labels
     let mut labels: Vec<u32> = vec![0; total_voxels];
     let to_flat = |i: usize, j: usize, k: usize| -> usize { i * ny * nz + j * nz + k };
 
     use std::collections::BinaryHeap;
-    let mut heap: BinaryHeap<(NotNan<f32>, usize)> = BinaryHeap::new();
+    // Reserve a reasonable capacity to avoid frequent reallocations
+    let mut heap: BinaryHeap<(NotNan<f32>, usize)> =
+        BinaryHeap::with_capacity(std::cmp::max(1, total_voxels / 8));
 
     // Seed initialisation
     for ((i, j, k), &label) in seeds_arr.indexed_iter() {
         if label == 0 {
             continue;
         }
-        if let Some(ref m) = mask {
-            if m.as_array()[[i, j, k]] == 0 {
+        let idx = to_flat(i, j, k);
+        if let Some(ref m_flat) = mask_flat {
+            if m_flat[idx] == 0 {
                 return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
                     "Seed label found in location where mask==0",
                 ));
             }
         }
-        let idx = to_flat(i, j, k);
         labels[idx] = label;
-        let priority = NotNan::new(img[[i, j, k]]).unwrap();
+        let priority = NotNan::new(img_flat[idx]).unwrap();
         heap.push((priority, idx));
     }
 
@@ -1414,15 +1619,15 @@ fn heap_watershed_impl(
             if ni_u >= nx || nj_u >= ny || nk_u >= nz {
                 continue;
             }
-            if let Some(ref m) = mask {
-                if m.as_array()[[ni_u, nj_u, nk_u]] == 0 {
+            let nidx = to_flat(ni_u, nj_u, nk_u);
+            if let Some(ref m_flat) = mask_flat {
+                if m_flat[nidx] == 0 {
                     continue;
                 }
             }
-            let nidx = to_flat(ni_u, nj_u, nk_u);
             if labels[nidx] == 0 {
                 labels[nidx] = current_label;
-                let priority = NotNan::new(img[[ni_u, nj_u, nk_u]]).unwrap();
+                let priority = NotNan::new(img_flat[nidx]).unwrap();
                 heap.push((priority, nidx));
             }
         }
@@ -3209,6 +3414,7 @@ fn detect_maxima_adaptive_geometry(
     ))
 }
 
+
 /// Per-axis voxel extent in Å (fractional grid step along each lattice direction).
 type VoxelLengths = (f32, f32, f32);
 
@@ -3309,7 +3515,8 @@ fn selective_gaussian_at(
 /// Parameters:
 /// - preserve_threshold: dgrid value below which features are preserved (default 4.0 Å)
 /// - smooth_threshold: dgrid value above which heavy smoothing is applied (default 6.0 Å)  
-/// - max_smooth_radius: maximum smoothing radius in grid units (default 2.0)
+/// - max_smooth_radius: max smoothing factor (default 2.0); with voxel_lengths, σ_Å = factor × min(lx,ly,lz)
+/// - voxel_lengths: optional (lx, ly, lz) in Å per fractional grid step
 /// - h: single h parameter for maxima detection after smoothing (default 0.2)
 /// - cell: REQUIRED for merging - unit cell matrix for distance calculations
 /// - min_distance: merge distance in Å (default 1.0) - set to 0.0 to disable merging
@@ -5943,9 +6150,9 @@ fn mgrcli_rust(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(window_connections, m)?)?;
     m.add_function(wrap_pyfunction!(periodic_gaussian_filter, m)?)?;
     m.add_function(wrap_pyfunction!(seeded_watershed_bucket, m)?)?;
+    m.add_function(wrap_pyfunction!(seeded_watershed, m)?)?;
     m.add_function(wrap_pyfunction!(seeded_watershed_det, m)?)?;
     m.add_function(wrap_pyfunction!(seeded_watershed_det_parallel, m)?)?;
-    m.add_function(wrap_pyfunction!(seeded_watershed, m)?)?;
     m.add_function(wrap_pyfunction!(seeded_watershed_masked, m)?)?;
     m.add_function(wrap_pyfunction!(detect_maxima_h_morph, m)?)?;
     m.add_function(wrap_pyfunction!(detect_maxima_h_morph_opening, m)?)?;
@@ -5971,7 +6178,7 @@ fn mgrcli_rust(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bonds::covalent_bonds, m)?)?;
     m.add_function(wrap_pyfunction!(cif::read_cif, m)?)?;
     m.add_function(wrap_pyfunction!(aromatic::expand_aromatic_cycle_embeddings, m)?)?;
-    m.add("__all__", ["dgrid_from_atoms", "dgrid_from_atoms_aabb", "dgrid_from_atoms_aabb_interp", "egrid_from_atoms", "window_connections", "periodic_gaussian_filter", "seeded_watershed_bucket", "seeded_watershed_det", "seeded_watershed_det_parallel", "seeded_watershed", "seeded_watershed_masked", "compute_pore_sizes_uniform","compute_pore_sizes_for_psd_pocketwise",  "detect_maxima_h_morph", "detect_maxima_h_morph_opening", "move_maxima_to_peaks", "detect_maxima_h_morph2", "detect_maxima_h_morph_simple", "detect_maxima_h_morph_no_spacing", "detect_maxima_adaptive_geometry", "detect_maxima_selective_smoothing", "detect_maxima_selective_smoothing_parallel", "detect_maxima_selective_smoothing_parallel2", "detect_maxima_percolation_guided", "detect_maxima_voronoi_based", "detect_maxima_multiscale_log", "detect_maxima_adaptive_h", "find_pore_limiting_radius", "rayon_num_threads", "covalent_bonds", "read_cif", "expand_aromatic_cycle_embeddings"])?;
+
 
     // By returning Ok(()), the module initialization is successful.
     Ok(())
@@ -6284,66 +6491,11 @@ fn find_pore_limiting_radius(
             right = mid - 1; // No percolation, try a smaller threshold
         }
     }
-
+    
     // The pore limiting radius is the last threshold that allowed percolation
     if right < unique_values.len() {
         Ok(Some(unique_values[right]))
     } else {
         Ok(None)
     }
-}
-
-
-#[pymodule]
-fn mcli_rust(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
-    // Enable better error reporting when the module is imported from Python.
-    pyo3_log::init();
-
-    m.add_function(wrap_pyfunction!(dgrid_exp::dgrid_from_atoms, m)?)?;
-    m.add_function(wrap_pyfunction!(dgrid_from_atoms_aabb, m)?)?;
-    m.add_function(wrap_pyfunction!(dgrid_from_atoms_aabb_interp, m)?)?;
-    m.add_function(wrap_pyfunction!(egrid_from_atoms, m)?)?;
-    m.add_function(wrap_pyfunction!(window_connections, m)?)?;
-    m.add_function(wrap_pyfunction!(periodic_gaussian_filter, m)?)?;
-    m.add_function(wrap_pyfunction!(seeded_watershed_bucket, m)?)?;
-    m.add_function(wrap_pyfunction!(seeded_watershed_det, m)?)?;
-    m.add_function(wrap_pyfunction!(seeded_watershed_det_parallel, m)?)?;
-    m.add_function(wrap_pyfunction!(seeded_watershed, m)?)?;
-    m.add_function(wrap_pyfunction!(seeded_watershed_masked, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_h_morph, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_h_morph_opening, m)?)?;
-    m.add_function(wrap_pyfunction!(move_maxima_to_peaks, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_h_morph2, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_h_morph_simple, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_h_morph_no_spacing, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_adaptive_geometry, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_selective_smoothing, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_selective_smoothing_parallel, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_selective_smoothing_parallel2, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_percolation_guided, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_voronoi_based, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_multiscale_log, m)?)?;
-    m.add_function(wrap_pyfunction!(compute_pore_sizes_for_psd_pocketwise, m)?)?;
-    m.add_function(wrap_pyfunction!(compute_pore_sizes_uniform, m)?)?;
-    m.add_function(wrap_pyfunction!(detect_maxima_adaptive_h, m)?)?;
-    // Helper to inspect Rayon thread pool
-    m.add_function(wrap_pyfunction!(rayon_num_threads, m)?)?;
-    // m.add_function(wrap_pyfunction!(find_local_maxima_pbc, m)?)?;
-    // m.add_function(wrap_pyfunction!(find_local_maxima_cart, m)?)?;
-    m.add_function(wrap_pyfunction!(find_pore_limiting_radius, m)?)?;
-    // m.add_function(wrap_pyfunction!(find_end_channel_pairs, m)?);
-    m.add("__all__", vec![
-        "dgrid_from_atoms", "dgrid_from_atoms_aabb", "dgrid_from_atoms_aabb_interp", "egrid_from_atoms", "window_connections", "periodic_gaussian_filter",
-        "seeded_watershed_bucket", "seeded_watershed_det", "seeded_watershed_det_parallel", "seeded_watershed", "seeded_watershed_masked",
-        "compute_pore_sizes_uniform", "compute_pore_sizes_for_psd_pocketwise",
-        "detect_maxima_h_morph", "detect_maxima_h_morph_opening", "move_maxima_to_peaks",
-        "detect_maxima_h_morph2", "detect_maxima_h_morph_simple", "detect_maxima_h_morph_no_spacing",
-        "detect_maxima_adaptive_geometry", "detect_maxima_selective_smoothing",
-        "detect_maxima_selective_smoothing_parallel", "detect_maxima_selective_smoothing_parallel2",
-        "detect_maxima_percolation_guided", "detect_maxima_voronoi_based", "detect_maxima_multiscale_log",
-        "detect_maxima_adaptive_h", "find_pore_limiting_radius", "rayon_num_threads"
-    ])?;
-
-    // By returning Ok(()), the module initialization is successful.
-    Ok(())
 }

@@ -9136,6 +9136,38 @@ def _unique_percolated_clusters_from_components(components) -> dict:
     return out
 
 
+def normalize_pbc_groups_by_regions_pbc(pbc_groups, regions, regions_pbc):
+    """Map PBC fragment groups to ``regions_pbc`` representative ids (visualization labels).
+
+    Segmentation stores ``pbc_groups`` as a list of sets of *non-PBC* ``regions`` ids.
+    The UI colours pockets by ``regions_pbc`` (1..N).  Keys like ``pocket_10`` are
+    list indices and do not match surface-trace labels — this helper rekeys by the
+    majority ``regions_pbc`` label covering each group's fragments.
+    """
+    import numpy as np
+    from collections import Counter
+
+    if pbc_groups is None:
+        return {}
+    regions = np.asarray(regions)
+    regions_pbc = np.asarray(regions_pbc)
+    groups_iter = pbc_groups.values() if isinstance(pbc_groups, dict) else pbc_groups
+    out = {}
+    for g in groups_iter:
+        gset = {int(x) for x in g}
+        labels = []
+        for rid in gset:
+            mask = regions == rid
+            if not np.any(mask):
+                continue
+            labs = regions_pbc[mask]
+            labs = labs[labs != 0]
+            labels.extend(int(x) for x in labs)
+        rep = int(Counter(labels).most_common(1)[0][0]) if labels else min(gset)
+        out[rep] = gset
+    return out
+
+
 def _accessible_percolating_region_labels(
     results_dict,
     probe_radius,
@@ -9213,9 +9245,8 @@ def compute_point_probe_reference(results_dict, mat_atoms):
     pbc_groups = results_dict['pbc_groups']
     regions_pbc = results_dict['regions_pbc']
     
-    # Convert pbc_groups to dictionary format if it's a list
-    if isinstance(pbc_groups, list):
-        pbc_groups = {f"pocket_{i}": group_set for i, group_set in enumerate(pbc_groups)}
+    regions = results_dict.get('regions')
+    pbc_groups = normalize_pbc_groups_by_regions_pbc(pbc_groups, regions, regions_pbc)
     
     # Calculate mass for normalization
     mass_g = mat_atoms.get_masses().sum() * _amu * 1000  # grams
@@ -9302,10 +9333,9 @@ def compute_surface_area_from_results_mc(
 
     pbc_groups = results_dict["pbc_groups"]
     regions_pbc = results_dict["regions_pbc"]
+    regions = results_dict.get("regions")
 
-    # Convert pbc_groups to dictionary format if it's a list (from Rust backend)
-    if isinstance(pbc_groups, list):
-        pbc_groups = {f"pocket_{i}": group_set for i, group_set in enumerate(pbc_groups)}
+    pbc_groups = normalize_pbc_groups_by_regions_pbc(pbc_groups, regions, regions_pbc)
 
     # Set probe radius
     if probe_radius is None:
@@ -9539,9 +9569,8 @@ def compute_surface_area_from_results(
     if regions is None:
         raise ValueError("Surface area analysis requires 'regions' in results_dict.")
 
-    # Convert pbc_groups to dictionary format if it's a list (from Rust backend)
-    if isinstance(pbc_groups, list):
-        pbc_groups = {f"pocket_{i}": group_set for i, group_set in enumerate(pbc_groups)}
+    # Key pockets by regions_pbc label (matches visualization), not list index pocket_N
+    pbc_groups = normalize_pbc_groups_by_regions_pbc(pbc_groups, regions, regions_pbc)
 
     # Set probe radius
     if probe_radius is None:
@@ -9603,6 +9632,14 @@ def compute_surface_area_from_results(
     accessible_region_areas = {}
     region_ids = np.unique(regions)[1:]  # Skip background (0)
 
+    percolating_pbc_reps = set()
+    if regions_pbc is not None:
+        for pocket_rep, fragment_set in pbc_groups.items():
+            if fragment_set.intersection(percolating_regions):
+                percolating_pbc_reps.add(int(pocket_rep))
+
+    pbc_region_areas = {}
+    pbc_accessible_region_areas = {}
     for i, region_id in enumerate(region_ids):
         if i < len(submeshes):
             # Check if submesh is a valid trimesh object with area attribute
@@ -9611,6 +9648,18 @@ def compute_surface_area_from_results(
                 region_areas[region_id] = area
                 if region_id in percolating_regions:
                     accessible_region_areas[region_id] = area
+                if regions_pbc is not None:
+                    mask = regions == region_id
+                    labs = regions_pbc[mask]
+                    labs = labs[labs != 0]
+                    if len(labs):
+                        from collections import Counter
+                        rep = int(Counter(labs).most_common(1)[0][0])
+                        pbc_region_areas[rep] = pbc_region_areas.get(rep, 0.0) + area
+                        if region_id in percolating_regions or rep in percolating_pbc_reps:
+                            pbc_accessible_region_areas[rep] = (
+                                pbc_accessible_region_areas.get(rep, 0.0) + area
+                            )
             else:
                 print(f"Warning: Submesh {i} for region {region_id} is not a valid trimesh object, skipping area calculation")
                 region_areas[region_id] = 0.0
@@ -9701,7 +9750,8 @@ def compute_surface_area_from_results(
     results = {
         'total_surface_area': total_surface_area,
         'accessible_surface_area': accessible_surface_area,
-        'by_region': accessible_region_areas,
+        'by_region': pbc_accessible_region_areas if regions_pbc is not None else accessible_region_areas,
+        'by_region_fragments': accessible_region_areas,
         'by_pocket': accessible_pocket_areas,
         'by_percolated_cluster': percolated_cluster_areas,
         'accessible_fraction': accessible_surface_area / total_surface_area if total_surface_area > 0 else 0,
@@ -9800,9 +9850,8 @@ def compute_void_volume_from_results(
     if regions is None:
         raise ValueError("Void volume analysis requires 'regions' in results_dict.")
 
-    # Convert pbc_groups to dictionary format if it's a list (from Rust backend)
-    if isinstance(pbc_groups, list):
-        pbc_groups = {f"pocket_{i}": group_set for i, group_set in enumerate(pbc_groups)}
+    # Key pockets by regions_pbc label (matches visualization), not list index pocket_N
+    pbc_groups = normalize_pbc_groups_by_regions_pbc(pbc_groups, regions, regions_pbc)
 
     # Set probe radius
     if probe_radius is None:
@@ -9855,34 +9904,59 @@ def compute_void_volume_from_results(
                 components = c
                 break
 
-    # Step 4: Calculate void volume by individual region
-    # Create boolean mask for regions
-    region_ids = np.unique(regions)[1:]  # Skip background (0)
+    # Step 4: Calculate void volume by regions_pbc pocket (matches visualization labels)
+    region_ids = np.unique(regions_pbc)[1:] if regions_pbc is not None else np.unique(regions)[1:]
     region_volumes = {}
     accessible_region_volumes = {}
+    fragment_region_volumes = {}
+
+    percolating_pbc_reps = set()
+    if regions_pbc is not None:
+        for pocket_rep, fragment_set in pbc_groups.items():
+            if fragment_set.intersection(percolating_regions):
+                percolating_pbc_reps.add(int(pocket_rep))
 
     for region_id in region_ids:
-        # Mask for this specific region
-        region_mask = (regions == region_id)
+        if regions_pbc is not None:
+            region_mask = regions_pbc == region_id
+        else:
+            region_mask = regions == region_id
 
-        # Calculate void volume for this region
         region_void_mask = region_mask & (distance_grid > probe_radius)
         region_void_count = np.sum(region_void_mask)
         region_volume = region_void_count * voxel_volume * 1e-24 / mass_g  # cm³/g
 
         region_volumes[region_id] = region_volume
 
-        # Check if this region is accessible
-        if region_id in percolating_regions:
+        if regions_pbc is not None:
+            if int(region_id) in percolating_pbc_reps:
+                accessible_region_volumes[region_id] = region_volume
+        elif region_id in percolating_regions:
             accessible_region_volumes[region_id] = region_volume
+
+    if regions is not None and regions_pbc is not None:
+        for frag_id in np.unique(regions)[1:]:
+            frag_mask = regions == frag_id
+            frag_void_count = np.sum(frag_mask & (distance_grid > probe_radius))
+            fragment_region_volumes[int(frag_id)] = (
+                frag_void_count * voxel_volume * 1e-24 / mass_g
+            )
 
     # Step 5: Calculate void volume by complete pocket
     pocket_volumes = {}
     accessible_pocket_volumes = {}
 
+    frag_vol_lookup = fragment_region_volumes if fragment_region_volumes else region_volumes
+    frag_acc_vol_lookup = (
+        {k: v for k, v in fragment_region_volumes.items() if k in percolating_regions}
+        if fragment_region_volumes
+        else accessible_region_volumes
+    )
     for pocket_id, region_set in pbc_groups.items():
-        total_pocket_volume = sum(region_volumes.get(region_id, 0) for region_id in region_set)
-        accessible_pocket_volume = sum(accessible_region_volumes.get(region_id, 0) for region_id in region_set)
+        total_pocket_volume = sum(frag_vol_lookup.get(region_id, 0) for region_id in region_set)
+        accessible_pocket_volume = sum(
+            frag_acc_vol_lookup.get(region_id, 0) for region_id in region_set
+        )
 
         pocket_volumes[pocket_id] = total_pocket_volume
         if accessible_pocket_volume > 0:
@@ -9901,7 +9975,7 @@ def compute_void_volume_from_results(
     # Calculate void volume by percolated cluster
     percolated_cluster_volumes = {}
     for cluster_id, region_set in percolated_clusters.items():
-        cluster_volume = sum(accessible_region_volumes.get(region_id, 0) for region_id in region_set)
+        cluster_volume = sum(frag_acc_vol_lookup.get(region_id, 0) for region_id in region_set)
         if cluster_volume > 0:
             percolated_cluster_volumes[cluster_id] = cluster_volume
 
@@ -9961,6 +10035,9 @@ def compute_void_volume_from_results(
         'total_void_volume': total_void_volume,
         'accessible_void_volume': accessible_void_volume,
         'by_region': accessible_region_volumes,
+        'by_region_fragments': {
+            k: v for k, v in fragment_region_volumes.items() if k in percolating_regions
+        } if fragment_region_volumes else {},
         'by_pocket': accessible_pocket_volumes,
         'by_percolated_cluster': percolated_cluster_volumes,
         'accessible_fraction': accessible_void_volume / total_void_volume if total_void_volume > 0 else 0,
