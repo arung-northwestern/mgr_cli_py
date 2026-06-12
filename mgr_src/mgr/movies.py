@@ -184,6 +184,7 @@ DEFAULT_STYLES: dict[str, dict[str, Any]] = {
     "periodic_maxima": {
         "color": [0.85, 0.85, 0.85],
         "size": 5.0,
+        "symbol": "ring",
     },
     "internal_windows": {
         "color": 0xFFE600,
@@ -208,8 +209,8 @@ DEFAULT_STYLES: dict[str, dict[str, Any]] = {
         "size": 5.0,
     },
     "periodic_nodes": {
-        "color": 0xFF9966,
-        "size": 2.20,
+        "size": 5.0,
+        "symbol": "ring",
     },
     "aromatic_rings": {
         "color": 0xFFFFFF,
@@ -713,7 +714,7 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
     outside_nodes = periodic_nodes - internal_nodes
     inside_nodes = {i + 1 for i in range(len(maxima)) if (i + 1) not in outside_nodes}
 
-    def _pack(ids: set[int]):
+    def _pack(ids: set[int], *, periodic_display: bool = False):
         if not ids:
             return [], [], [], [], 0
         n_m = int(len(maxima))
@@ -723,7 +724,18 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
         idx = np.asarray([i - 1 for i in valid_ids], dtype=int)
         p = pos[idx]
         s = np.asarray(sizes, dtype=float)[idx]
-        c = np.asarray(colors, dtype=float)[idx]
+        if periodic_display:
+            c = np.asarray(
+                [
+                    _periodic_node_display_color(
+                        int(node_id), n_m, maxima_info, maxima_pbc_dict_raw
+                    )
+                    for node_id in valid_ids
+                ],
+                dtype=float,
+            )
+        else:
+            c = np.asarray(colors, dtype=float)[idx]
         h = [hover[int(i)] for i in idx]
         return p.reshape(-1).tolist(), s.tolist(), c.reshape(-1).tolist(), h, int(len(valid_ids))
 
@@ -765,7 +777,7 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
         pbc_n = int(len(maxima_pbc))
 
     in_pos, in_sizes, in_cols, in_hover, in_n = _pack(inside_nodes)
-    out_pos, out_sizes, out_cols, out_hover, out_n = _pack(outside_nodes)
+    out_pos, out_sizes, out_cols, out_hover, out_n = _pack(outside_nodes, periodic_display=True)
     return {
         "internal_positions": in_pos,
         "internal_sizes": in_sizes,
@@ -879,6 +891,70 @@ def _serialize_windows_trace(
     return out
 
 
+def _hex_or_rgb_to_unit_rgb(color: str) -> list[float]:
+    import re
+
+    c = str(color).strip()
+    if c.startswith("#") and len(c) >= 7:
+        return [
+            int(c[1:3], 16) / 255.0,
+            int(c[3:5], 16) / 255.0,
+            int(c[5:7], 16) / 255.0,
+        ]
+    m = re.match(r"rgba?\(([^)]+)\)", c)
+    if m:
+        parts = [float(x.strip()) for x in m.group(1).split(",")[:3]]
+        if max(parts) > 1.0:
+            parts = [p / 255.0 for p in parts]
+        return parts[:3]
+    return [0.85, 0.85, 0.85]
+
+
+def _plotly_node_color(node_id: int, n_nodes: int) -> list[float]:
+    """Match Plotly pore-graph node colors (Turbo colorscale on node index)."""
+    import plotly.express as px
+
+    if n_nodes <= 1:
+        t = 0.0
+    else:
+        t = (int(node_id) - 1) / max(n_nodes - 1, 1)
+    hex_c = px.colors.sample_colorscale(px.colors.sequential.Turbo, t)[0]
+    return _hex_or_rgb_to_unit_rgb(hex_c)
+
+
+def _lookup_pbc_label_for_node(
+    node_id: int,
+    maxima_info: np.ndarray,
+    maxima_pbc_dict_raw: dict,
+) -> int | None:
+    idx = int(node_id) - 1
+    if maxima_info.ndim != 2 or maxima_info.shape[1] < 7 or idx < 0 or idx >= maxima_info.shape[0]:
+        return None
+    row = maxima_info[idx]
+    base_coord = (int(row[1]), int(row[2]), int(row[3]))
+    if base_coord in maxima_pbc_dict_raw:
+        return int(maxima_pbc_dict_raw[base_coord])
+    key_csv = f"{base_coord[0]},{base_coord[1]},{base_coord[2]}"
+    if key_csv in maxima_pbc_dict_raw:
+        return int(maxima_pbc_dict_raw[key_csv])
+    key_tuple_str = str(base_coord)
+    if key_tuple_str in maxima_pbc_dict_raw:
+        return int(maxima_pbc_dict_raw[key_tuple_str])
+    return None
+
+
+def _periodic_node_display_color(
+    node_id: int,
+    n_nodes: int,
+    maxima_info: np.ndarray,
+    maxima_pbc_dict_raw: dict,
+) -> list[float]:
+    """Color periodic nodes by their in-cell PBC representative (Plotly parity)."""
+    pbc_label = _lookup_pbc_label_for_node(node_id, maxima_info, maxima_pbc_dict_raw)
+    color_node = int(pbc_label) if pbc_label is not None else int(node_id)
+    return _plotly_node_color(color_node, n_nodes)
+
+
 def _serialize_connection_traces(
     seg: dict[str, Any], atoms: Atoms
 ) -> dict[str, Any]:
@@ -894,11 +970,27 @@ def _serialize_connection_traces(
             "periodic_segment_window_radii": [],
             "internal_points": [],
             "internal_points_hover": [],
+            "internal_point_colors": [],
+            "internal_point_sizes": [],
             "periodic_points": [],
             "periodic_points_hover": [],
+            "periodic_point_colors": [],
+            "periodic_point_sizes": [],
         }
     shape = np.maximum(np.asarray(seg["dgrid"].shape, dtype=float) - 1.0, 1.0)
     cell = atoms.get_cell().array.T
+    dgrid = np.asarray(seg["dgrid"])
+    maxima_wrapped = np.mod(maxima, np.asarray(dgrid.shape, dtype=int)).astype(int)
+    cage_radii = dgrid[tuple(maxima_wrapped.T)]
+    vals = np.asarray(cage_radii, dtype=float)
+    vmin = float(vals.min()) if len(vals) else 0.0
+    vmax = float(vals.max()) if len(vals) else 1.0
+    denom = max(vmax - vmin, 1e-12)
+    norm = (vals - vmin) / denom
+    maxima_sizes = (3.0 + 2.5 * norm).astype(float)
+    maxima_info = np.asarray(seg.get("maxima_info", []), dtype=int)
+    maxima_pbc_dict_raw = seg.get("maxima_pbc_dict", {}) or {}
+    n_maxima = int(len(maxima))
     node_positions: dict[int, np.ndarray] = {}
     nodes: set[int] = set()
     for c in conns:
@@ -957,11 +1049,18 @@ def _serialize_connection_traces(
                 txt += f"\nwindow radius: {wr_vals[0]:.3f} A"
             periodic_hover.append(txt)
 
-    def _pack_nodes(node_ids: set[int], label: str) -> tuple[list[float], list[str]]:
+    def _pack_nodes(
+        node_ids: set[int],
+        label: str,
+        *,
+        periodic_style: bool = False,
+    ) -> tuple[list[float], list[str], list[float], list[float]]:
         if not node_ids:
-            return [], []
+            return [], [], [], []
         arr: list[np.ndarray] = []
         hv: list[str] = []
+        cols: list[float] = []
+        sizes: list[float] = []
         for n in sorted(node_ids):
             p = node_positions.get(n)
             if p is None:
@@ -972,13 +1071,29 @@ def _serialize_connection_traces(
                 f"node: {n}\n"
                 f"xyz: ({float(p[0]):.3f}, {float(p[1]):.3f}, {float(p[2]):.3f})"
             )
+            idx = int(n) - 1
+            if 0 <= idx < len(maxima_sizes):
+                sizes.append(float(maxima_sizes[idx]))
+            else:
+                sizes.append(5.0)
+            if periodic_style:
+                rgb = _periodic_node_display_color(
+                    n, n_maxima, maxima_info, maxima_pbc_dict_raw
+                )
+                cols.extend(rgb)
+            else:
+                cols.extend([0.4, 0.8, 1.0])
         if not arr:
-            return [], []
+            return [], [], [], []
         a = np.vstack(arr)
-        return a.reshape(-1).tolist(), hv
+        return a.reshape(-1).tolist(), hv, cols, sizes
 
-    internal_points, internal_points_hover = _pack_nodes(internal_nodes, "internal maxima")
-    periodic_points, periodic_points_hover = _pack_nodes(periodic_nodes, "periodic maxima")
+    internal_points, internal_points_hover, internal_point_colors, internal_point_sizes = _pack_nodes(
+        internal_nodes, "internal maxima"
+    )
+    periodic_points, periodic_points_hover, periodic_point_colors, periodic_point_sizes = _pack_nodes(
+        periodic_nodes, "periodic maxima", periodic_style=True
+    )
     return {
         "internal_segments": (
             np.asarray(internal_segments, dtype=float).reshape(-1).tolist()
@@ -994,8 +1109,12 @@ def _serialize_connection_traces(
         "periodic_segment_window_radii": periodic_segment_window_radii,
         "internal_points": internal_points,
         "internal_points_hover": internal_points_hover,
+        "internal_point_colors": internal_point_colors,
+        "internal_point_sizes": internal_point_sizes,
         "periodic_points": periodic_points,
         "periodic_points_hover": periodic_points_hover,
+        "periodic_point_colors": periodic_point_colors,
+        "periodic_point_sizes": periodic_point_sizes,
     }
 
 
@@ -1995,6 +2114,8 @@ def make_connections_trace(
         name=f"{name} internal nodes",
         data={
             "positions": payload["internal_points"],
+            "colors": payload["internal_point_colors"],
+            "sizes": payload["internal_point_sizes"],
             "n_points": len(payload["internal_points"]) // 3,
         },
         style="internal_nodes",
@@ -2007,6 +2128,8 @@ def make_connections_trace(
         name=f"{name} periodic nodes",
         data={
             "positions": payload["periodic_points"],
+            "colors": payload["periodic_point_colors"],
+            "sizes": payload["periodic_point_sizes"],
             "n_points": len(payload["periodic_points"]) // 3,
         },
         style="periodic_nodes",
@@ -4105,6 +4228,8 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       if (trace.data.segment_window_radii) {
         lines.userData.originalPositions = pts.slice();
         lines.userData.segmentWindowRadii = trace.data.segment_window_radii;
+        lines.userData.originalHover = trace.hover ? trace.hover.slice() : [];
+        lines.userData.activeHover = lines.userData.originalHover.slice();
         lines.userData.windowFilterKind = "connection_lines";
       }
       scene.add(lines);
@@ -4150,6 +4275,8 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       if (trace.data.window_radii) {
         points.userData.originalPositions = pts.slice();
         points.userData.windowRadii = trace.data.window_radii;
+        points.userData.originalHover = trace.hover ? trace.hover.slice() : [];
+        points.userData.activeHover = points.userData.originalHover.slice();
         points.userData.windowFilterKind = "window_points";
       }
       scene.add(points);
@@ -5172,16 +5299,20 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const threshold = readWindowMinThreshold();
       const orig = obj.userData.originalPositions;
       const radii = obj.userData.segmentWindowRadii || [];
+      const origHover = obj.userData.originalHover || [];
       const nSeg = radii.length || Math.floor(orig.length / 6);
       const filtered = [];
+      const filteredHover = [];
       for (let i = 0; i < nSeg; i++) {
         const segRadii = radii[i] || [];
         if (!connectionPassesWindowThreshold(segRadii, threshold)) continue;
         const base = i * 6;
         for (let j = 0; j < 6; j++) filtered.push(orig[base + j]);
+        if (origHover[i] !== undefined) filteredHover.push(origHover[i]);
       }
       const geo = obj.geometry;
       geo.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(filtered), 3));
+      obj.userData.activeHover = filteredHover;
       if (obj.material && obj.material.dashSize !== undefined) obj.computeLineDistances();
     }
     function rebuildPointsForThreshold(traceId) {
@@ -5190,16 +5321,20 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const threshold = readWindowMinThreshold();
       const orig = obj.userData.originalPositions;
       const radii = obj.userData.windowRadii || [];
+      const origHover = obj.userData.originalHover || [];
       const nPts = radii.length || Math.floor(orig.length / 3);
       const filtered = [];
+      const filteredHover = [];
       for (let i = 0; i < nPts; i++) {
         const r = radii[i];
         if (threshold !== null && Number.isFinite(r) && r < threshold) continue;
         const base = i * 3;
         filtered.push(orig[base], orig[base + 1], orig[base + 2]);
+        if (origHover[i] !== undefined) filteredHover.push(origHover[i]);
       }
       const geo = obj.geometry;
       geo.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(filtered), 3));
+      obj.userData.activeHover = filteredHover;
     }
     function applyWindowThresholdFilter() {
       ["connections_internal", "connections_periodic"].forEach(rebuildLineSegmentsForThreshold);
@@ -5563,11 +5698,21 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           const hoverTxt = (vi >= 0 && vi < trace.hover.length) ? trace.hover[vi] : "";
           const traceName = trace.name || hit.object.name;
           txt = `trace: ${traceName}\n${hoverTxt}\nxyz: (${hit.point.x.toFixed(3)}, ${hit.point.y.toFixed(3)}, ${hit.point.z.toFixed(3)})`;
-        } else if (trace && trace.hover && hit.index != null && hit.index >= 0 && hit.index < trace.hover.length) {
-          txt = trace.hover[hit.index];
-        } else if (hit.object instanceof THREE.LineSegments && trace && trace.hover && hit.index != null) {
+        } else if (trace && hit.index != null && hit.index >= 0) {
+          const activeHover = hit.object.userData && hit.object.userData.activeHover;
+          if (activeHover && hit.index < activeHover.length) {
+            txt = activeHover[hit.index];
+          } else if (trace.hover && hit.index < trace.hover.length) {
+            txt = trace.hover[hit.index];
+          }
+        } else if (hit.object instanceof THREE.LineSegments && trace && hit.index != null) {
           const segIdx = Math.floor(hit.index / 2);
-          if (segIdx >= 0 && segIdx < trace.hover.length) txt = trace.hover[segIdx];
+          const activeHover = hit.object.userData && hit.object.userData.activeHover;
+          if (activeHover && segIdx >= 0 && segIdx < activeHover.length) {
+            txt = activeHover[segIdx];
+          } else if (trace.hover && segIdx >= 0 && segIdx < trace.hover.length) {
+            txt = trace.hover[segIdx];
+          }
         } else if (hit.face) {
           const traceName = trace ? (trace.name || hit.object.name) : hit.object.name;
           txt = `trace: ${traceName}\nxyz: (${hit.point.x.toFixed(3)}, ${hit.point.y.toFixed(3)}, ${hit.point.z.toFixed(3)})`;
