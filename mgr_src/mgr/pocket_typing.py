@@ -242,11 +242,17 @@ def _build_periodic_pocket_adjacency(
 
 
 def _import_mgr():
-    """RAG/PSD helpers from mgr.compute and mgr.rust_fun."""
+    """RAG/PSD helpers from mgr.compute and mgr.rust_fun.
+
+    mgr.__init__ does ``from .compute import *``, which shadows the ``compute``
+    submodule with the top-level ``compute()`` function on the package. Use
+    importlib to load the real submodule.
+    """
+    import importlib
     import types
 
-    from . import compute as _compute
-    from . import rust_fun as _rust_fun
+    _compute = importlib.import_module("mgr.compute")
+    _rust_fun = importlib.import_module("mgr.rust_fun")
 
     ns = types.SimpleNamespace()
     ns.rag_from_connections = _compute.rag_from_connections
@@ -262,9 +268,10 @@ def _import_mgr():
 
 
 def _import_get_pbc_groups():
-    from mgr.compute import get_pbc_groups
+    import importlib
 
-    return get_pbc_groups
+    _compute = importlib.import_module("mgr.compute")
+    return _compute.get_pbc_groups
 
 
 def _bonds_from_atoms(atoms) -> Tuple[List, List]:
