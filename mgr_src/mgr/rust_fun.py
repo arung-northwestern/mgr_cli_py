@@ -1546,6 +1546,7 @@ def compute_accessible_psd_from_results(
     from .winding_percolation import percolation_all_axes_winding
 
     regions_pbc = np.asarray(results["regions_pbc"])
+    regions = np.asarray(results["regions"])
     dgrid = np.asarray(results.get("dgrid", None))
     if dgrid is None:
         raise ValueError("results does not include 'dgrid'; rerun segmentation with return_dgrid=True or supply dgrid.")
@@ -1576,9 +1577,9 @@ def compute_accessible_psd_from_results(
             "accessible_region_ids": [],
         }
 
-    # Mask regions to accessible only
-    mask = np.isin(regions_pbc, list(accessible_region_ids))
-    regions_accessible = np.where(mask, regions_pbc, 0)
+    # Mask to accessible fragment labels (regions); winding metadata uses regions ids.
+    mask = np.isin(regions, list(accessible_region_ids))
+    regions_accessible = np.where(mask, regions, 0)
     if enforce_probe_center_occupiable:
         probe_center_min_radius = float(probe_radius)
     if probe_center_min_radius is not None and float(probe_center_min_radius) > 0:

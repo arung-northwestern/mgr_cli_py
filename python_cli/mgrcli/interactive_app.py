@@ -1966,9 +1966,12 @@ def _hts_one_material(
                 if "distance_grid" not in modified_results:
                     modified_results["distance_grid"] = modified_results.get("dgrid")
                 probe = float(options.get("probe_radius_sa_vol", 1.2))
-                from mgr.compute import compute_surface_area_from_results, compute_void_volume_from_results
-                sa_results = compute_surface_area_from_results(modified_results, atoms, probe)
-                vol_results = compute_void_volume_from_results(modified_results, atoms, probe)
+                from mgr.compute import (
+                    compute_surface_area_mesh_winding,
+                    compute_void_volume_from_results_winding,
+                )
+                sa_results = compute_surface_area_mesh_winding(modified_results, atoms, probe)
+                vol_results = compute_void_volume_from_results_winding(modified_results, atoms, probe)
                 if options.get("save_sa_vol_csv"):
                     if sa_results:
                         save_surface_area_csv(sa_results, material_folder / material_name)
@@ -4506,22 +4509,24 @@ def main() -> None:
                 st.session_state.pop("vol_results", None)
                 st.session_state["last_probe_key"] = current_probe_key
 
-            window_fp_for_accessible = st.checkbox(
+            window_fp = st.checkbox(
                 "Window fingerprint for accessible SA / void volume",
                 value=True,
-                help="Use winding percolation plus window-fingerprint bridging when computing accessible metrics.",
+                help="Winding percolation plus window-fingerprint bridging for accessible metrics.",
             )
             st.info(
                 "When enabled, accessible surface area and void volume use winding percolation at the "
-                "probe radius and a window-fingerprint check on PLD-critical windows. This tolerates "
-                "small grid-sampling gaps: physically connected sub-probe windows can be merged into the "
-                "accessible cluster. Disable to use the legacy percolation-history threshold only."
+                "probe radius and window-fingerprint bridging on sub-probe graph windows. "
+                "Disable for strict winding percolation only (no fingerprint rescue)."
             )
 
             st.markdown("### Surface Area & Void Volume Analysis")
             if st.button("Compute Surface Area & Void Volume", key="compute_sa_vol"):
                 try:
-                    from mgr.compute import compute_surface_area_from_results, compute_void_volume_from_results
+                    from mgr.compute import (
+                        compute_surface_area_mesh_winding,
+                        compute_void_volume_from_results_winding,
+                    )
 
                     # First, ensure we have percolation analysis data
                     analysis_key = st.session_state.get("analysis_key")
@@ -4564,20 +4569,20 @@ def main() -> None:
                         with st.spinner("Computing surface area analysis..."):
                             print(f"Computing surface area with probe radius: {probe_radius:.3f} Å")
                             print(f"Results keys available: {list(modified_results.keys())}")
-                            sa_results = compute_surface_area_from_results(
+                            sa_results = compute_surface_area_mesh_winding(
                                 modified_results,
                                 atoms,
                                 probe_radius,
-                                window_fp_for_accessible=window_fp_for_accessible,
+                                window_fp=window_fp,
                             )
                             print(f"Surface area results: {sa_results}")
                         with st.spinner("Computing void volume analysis..."):
                             print(f"Computing void volume with probe radius: {probe_radius:.3f} Å")
-                            vol_results = compute_void_volume_from_results(
+                            vol_results = compute_void_volume_from_results_winding(
                                 modified_results,
                                 atoms,
                                 probe_radius,
-                                window_fp_for_accessible=window_fp_for_accessible,
+                                window_fp=window_fp,
                             )
                             print(f"Void volume results: {vol_results}")
 

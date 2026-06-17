@@ -3,8 +3,8 @@
 # when deploying to HF Spaces (see scripts/deploy_to_hf_space.sh).
 
 # Cache-busting: change this timestamp to force a full Docker rebuild on HF Spaces.
-# Last updated: 2026-05-23 (mgr_src/mgrcli_rust: CIF parity + orbit candidate)
-ARG BUILD_DATE=2026-05-23
+# Last updated: 2026-06-15 (mgr_src/mgrcli_rust release rebuild + latest mgr_src)
+ARG BUILD_DATE=2026-06-15
 
 FROM python:3.11-slim AS builder
 
@@ -44,7 +44,7 @@ ENV PYTHONUNBUFFERED=1 \
     MGR_DASK_DASHBOARD_PORT=8787 \
     MGR_DASK_DASHBOARD_HOST_PORT=8787 \
     MGR_DEPLOYMENT=spaces \
-    MGRCLI_BUILD=6
+    MGRCLI_BUILD=7
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

@@ -563,7 +563,7 @@ def compute_surface_area_analysis(
     results_dict,
     mat_atoms,
     probe_radius=None,
-    window_fp_for_accessible=True,
+    window_fp=True,
     winding_kwargs=None,
 ):
     """
@@ -584,13 +584,13 @@ def compute_surface_area_analysis(
         if 'dgrid' in modified_results:
             modified_results['distance_grid'] = modified_results['dgrid']
 
-        from mgr.compute import compute_surface_area_from_results
+        from mgr.compute import compute_surface_area_mesh_winding
 
-        return compute_surface_area_from_results(
+        return compute_surface_area_mesh_winding(
             modified_results,
             mat_atoms,
             probe_radius,
-            window_fp_for_accessible=window_fp_for_accessible,
+            window_fp=window_fp,
             winding_kwargs=winding_kwargs,
         )
     except ImportError:
@@ -611,7 +611,7 @@ def compute_void_volume_analysis(
     results_dict,
     mat_atoms,
     probe_radius=None,
-    window_fp_for_accessible=True,
+    window_fp=True,
     winding_kwargs=None,
 ):
     """
@@ -632,13 +632,13 @@ def compute_void_volume_analysis(
         if 'dgrid' in modified_results:
             modified_results['distance_grid'] = modified_results['dgrid']
 
-        from mgr.compute import compute_void_volume_from_results
+        from mgr.compute import compute_void_volume_from_results_winding
 
-        return compute_void_volume_from_results(
+        return compute_void_volume_from_results_winding(
             modified_results,
             mat_atoms,
             probe_radius,
-            window_fp_for_accessible=window_fp_for_accessible,
+            window_fp=window_fp,
             winding_kwargs=winding_kwargs,
         )
     except ImportError:

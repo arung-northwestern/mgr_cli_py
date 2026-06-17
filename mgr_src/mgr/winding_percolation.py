@@ -34,19 +34,9 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 import networkx as nx
 import numpy as np
-from . import compute as mgr_compute
-from . import rust_fun as mgr_rust_fun
 
-class _MgrShim:
-    @staticmethod
-    def dgrid_from_atoms_cpu(*args, **kwargs):
-        return mgr_compute.dgrid_from_atoms_cpu(*args, **kwargs)
-
-    @staticmethod
-    def do_periodic_segmentation_rust(*args, **kwargs):
-        return mgr_rust_fun.do_periodic_segmentation_rust(*args, **kwargs)
-
-mgr = _MgrShim()
+from .compute import dgrid_from_atoms_cpu
+from .rust_fun import do_periodic_segmentation_rust
 
 Offset = Tuple[int, int, int]
 
@@ -1249,7 +1239,9 @@ def update_results_with_percolation_history_winding(
         expand_components=expand_components,
     )
     if plr is None:
-        results["percolation_history"] = []
+        from .percolation_results import store_percolation_history
+
+        store_percolation_history(results, "winding", [])
         results["pld_locations"] = np.empty((0, 3), dtype=int)
         results.setdefault("plr_clusters_winding", {})
         return results
@@ -1271,12 +1263,14 @@ def update_results_with_percolation_history_winding(
         )
         if any(axis_clusters[axis] for axis in axis_clusters):
             history.append((float(threshold), axis_clusters))
-    results["percolation_history"] = history
     if results.get("dgrid") is not None:
         dgrid = np.asarray(results["dgrid"])
         pld_locations = np.argwhere(np.isclose(dgrid, plr, atol=1e-10))
     else:
         pld_locations = np.empty((0, 3), dtype=int)
+    from .percolation_results import store_percolation_history
+
+    store_percolation_history(results, "winding", history, pld_locations=pld_locations)
     results["pld_locations"] = pld_locations
     return results
 
@@ -1295,8 +1289,12 @@ def compute_percolation_history_winding(
         expand_components=expand_components,
         **kwargs,
     )
-    percolation_history = results["percolation_history"]
-    pld_locations = results["pld_locations"]
+    from .percolation_results import get_percolation_history
+
+    percolation_history = get_percolation_history(results, "winding")
+    pld_locations = results.get("pld_locations")
+    if pld_locations is None:
+        pld_locations = results.get("pld_locations_winding", np.empty((0, 3), dtype=int))
     final_clusters = results.get("plr_clusters_winding", {})
     return percolation_history, pld_locations, final_clusters
 
@@ -1317,8 +1315,8 @@ def get_pore_dia_mgr_winding(
         if dgrid is None:
             if mat_atoms is None:
                 raise ValueError("mat_atoms or results must be provided.")
-            dgrid = mgr.dgrid_from_atoms_cpu(mat_atoms, spacing=spacing, block_size=50000)
-        results = mgr.do_periodic_segmentation_rust(
+            dgrid = dgrid_from_atoms_cpu(mat_atoms, spacing=spacing, block_size=50000)
+        results = do_periodic_segmentation_rust(
             dgrid,
             mat_atoms,
             mask_thickness=kwargs.get("mask_thickness", 1.5),
@@ -1488,8 +1486,8 @@ def get_pore_dia_mgr_winding2(
         if dgrid is None:
             if mat_atoms is None:
                 raise ValueError("mat_atoms or results must be provided.")
-            dgrid = mgr.dgrid_from_atoms_cpu(mat_atoms, spacing=spacing, block_size=50000)
-        results = mgr.do_periodic_segmentation_rust(
+            dgrid = dgrid_from_atoms_cpu(mat_atoms, spacing=spacing, block_size=50000)
+        results = do_periodic_segmentation_rust(
             dgrid,
             mat_atoms,
             mask_thickness=kwargs.get("mask_thickness", 1.5),
@@ -1559,7 +1557,7 @@ def get_pore_dia_mgr_winding2(
                     backend, mask,
                 )
 
-                guard_results = mgr.do_periodic_segmentation_rust(
+                guard_results = do_periodic_segmentation_rust(
                     dgrid_for_rerun,
                     atoms,
                     mask_thickness=1.5,
@@ -1668,6 +1666,16 @@ def get_pore_dia_mgr_winding2(
         if mask.any():
             dfsd = float(dgrid[mask].max() * 2)
 
+    from .percolation_results import store_pore_dia
+
+    store_pore_dia(
+        results,
+        "winding",
+        lcd,
+        pld,
+        dfsd,
+        extra={"plr": float(plr)},
+    )
     return lcd, pld, dfsd, dgrid
 
 
@@ -1801,8 +1809,8 @@ def get_pore_dia_mgr_winding3(
         if dgrid is None:
             if mat_atoms is None:
                 raise ValueError("mat_atoms or results must be provided.")
-            dgrid = mgr.dgrid_from_atoms_cpu(mat_atoms, spacing=spacing, block_size=50000)
-        results = mgr.do_periodic_segmentation_rust(
+            dgrid = dgrid_from_atoms_cpu(mat_atoms, spacing=spacing, block_size=50000)
+        results = do_periodic_segmentation_rust(
             dgrid,
             mat_atoms,
             mask_thickness=kwargs.get("mask_thickness", 0.05),

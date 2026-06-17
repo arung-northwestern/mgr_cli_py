@@ -15,6 +15,11 @@
 import numpy as np 
 import ase
 import logging
+from scipy.ndimage import label, generate_binary_structure
+from dask import delayed, compute
+from dask.diagnostics import ProgressBar
+from types import CellType
+
 logger = logging.getLogger(__name__)
 
 def gpd_aabb(grid_points, ase_atoms, radii, n_neighbors=10, probe_radius=0.0):
@@ -332,11 +337,11 @@ def dgrid_from_atoms_cpu_no_aabb(ase_atoms, radii=None, spacing=0.2, block_size=
 def dgrid_from_atoms(
     ase_atoms,
     radii=None,
-    spacing=0.25,
+
+spacing=0.25,
     block_size=50000,
     n_neighbors=10,
     probe_radius=0,
-    progress_callback=None,
 ):
     """
     The function `dgrid_from_atoms` generates a distance grid over atoms using Dask arrays and computes
@@ -509,34 +514,18 @@ def dgrid_from_atoms(
         radii = vdw_radii[ase_atoms.get_chemical_symbols()].values / 100.0
 
     # for block in track(gpoints.blocks, description='Computing distance grid', total=gpoints.npartitions):
-    total_blocks = gpoints.npartitions
-    block_iter = enumerate(gpoints.blocks, start=1)
-    if progress_callback is not None:
-        for i, block in block_iter:
-            progress_callback(i, total_blocks, "Distance grid (AABB)")
-            dgrid.append(
-                gpd_aabb(
-                    block.compute(),
-                    ase_atoms,
-                    radii,
-                    n_neighbors=n_neighbors,
-                    probe_radius=probe_radius,
-                )
+    for block in tqdm(
+        gpoints.blocks, desc="Computing distance grid", total=gpoints.npartitions
+    ):
+        dgrid.append(
+            gpd_aabb(
+                block.compute(),
+                ase_atoms,
+                radii,
+                n_neighbors=n_neighbors,
+                probe_radius=probe_radius,
             )
-    else:
-        for i, block in tqdm(
-            block_iter, desc="Computing distance grid", total=total_blocks
-        ):
-            # i is already 1-based from enumerate
-            dgrid.append(
-                gpd_aabb(
-                    block.compute(),
-                    ase_atoms,
-                    radii,
-                    n_neighbors=n_neighbors,
-                    probe_radius=probe_radius,
-                )
-            )  # compute grid
+        )  # compute grid
     return (
         da.hstack(dgrid).rechunk(chunks=block_size).reshape(shape)
     )  # return in correct shape
@@ -3372,6 +3361,7 @@ def add_centroids_to_rag_with_pbc(rag, props, pbc_groups, ase_atoms, shape):
 
     G = copy.deepcopy(rag)
     prop_labels = np.array([prop["label"] for prop in props])
+
     for group in pbc_groups: 
         prop_indices = [np.where(prop_labels == g)[0][0] for g in group]
         # print(group, prop_indices)
@@ -3454,6 +3444,66 @@ def add_csd_to_rag_with_pbc(rag, props, pbc_groups, bins, ase_atoms, shape):
     return G
 
 
+def pbc_groups_from_segmentation(segmentation):
+    """PBC pocket groups (excluding background label 0) from segmentation outputs."""
+    unique_regions = segmentation["unique_regions"]
+    maxima_info = segmentation["maxima_info"]
+    return [
+        v
+        for v in get_pbc_groups(unique_regions, maxima_info).values()
+        if 0 not in v
+    ]
+
+
+def add_pocket_psds_to_rag_from_segmentation(
+    rag,
+    segmentation,
+    atoms,
+    *,
+    pocket_psds=None,
+    props=None,
+    pbc_groups=None,
+    probe_radius_psd=None,
+    **kwargs,
+):
+    """Attach probe pocket PSDs to a RAG built from segmentation.
+
+    Uses ``segmentation['pocket_psds']`` when present (see
+    :func:`~mgr.workflow.enrich_segmentation_with_pocket_psds`);
+    otherwise runs :func:`~mgr.rust_fun.compute_pocket_psds_for_segmentation`.
+
+    Node keys written: ``pocket_psd_x_pbc`` / ``pocket_psd_y_pbc``.
+    """
+    from skimage.measure import regionprops
+    import numpy as np
+
+    regions = np.asarray(segmentation["regions"])
+    if props is None:
+        props = regionprops(regions)
+    if pbc_groups is None:
+        pbc_groups = pbc_groups_from_segmentation(segmentation)
+
+    if pocket_psds is None:
+        pocket_psds = segmentation.get("pocket_psds")
+    if pocket_psds is None:
+        from .rust_fun import compute_pocket_psds_for_segmentation
+        from .pocket_typing import DEFAULT_PROBE_RADIUS_PSD_A
+
+        pr = (
+            float(probe_radius_psd)
+            if probe_radius_psd is not None
+            else DEFAULT_PROBE_RADIUS_PSD_A
+        )
+        pocket_psds = compute_pocket_psds_for_segmentation(
+            segmentation,
+            atoms,
+            probe_center_min_radius=pr,
+            **kwargs,
+        )
+
+    return add_pocket_psd_to_rag_with_pbc(rag, props, pbc_groups, pocket_psds)
+
+
 def add_pocket_psd_to_rag_with_pbc(rag, props, pbc_groups, pocket_psds):
     """
     Attach probe-occupiable pocket PSD histograms (Rust pocket-wise sampler) to RAG nodes.
@@ -3511,11 +3561,8 @@ def add_psd_to_rag_with_pbc(rag, props, pbc_groups, bins, ase_atoms, shape, pock
     return rag
 
 
-
-
 def add_clustering_to_rag_geometry_js(
-    rag, props, pbc_groups, ase_atoms, shape, use_pbc=True, js_threshold=0.15,
-    psd_source="geometry"
+    rag, props, pbc_groups, ase_atoms, shape, use_pbc=True, js_threshold=0.15
 ):
     """
     Adds cluster information to a region adjacency graph (RAG) by calculating the Jensen-Shannon distance between two histograms of distances.
@@ -3528,10 +3575,6 @@ def add_clustering_to_rag_geometry_js(
         shape (tuple): shape of the region
         use_pbc (bool): whether to use PBC or not
         js_threshold (float): the threshold for the Jensen-Shannon distance
-        psd_source (str): "geometry" (default) uses centroid-distance histograms computed from
-            region coordinates. "pocket_psd" uses probe-occupiable pocket PSD vectors on RAG nodes
-            (``pocket_psd_y_pbc`` / ``pocket_psd_x_pbc`` when use_pbc=True). If those vectors
-            are not available, falls back to geometry mode.
 
     Returns:
         networkx.Graph: the RAG with cluster information added under keys 'cluster_geom_pbc' or 'cluster_geom_nopbc' depending on whether 'use_pbc' is True or False
@@ -3579,18 +3622,6 @@ def add_clustering_to_rag_geometry_js(
         d1_hist, bins = np.histogram(d1, bins=bins)
         d2_hist, bins = np.histogram(d2, bins=bins)
         return jensenshannon(d1_hist, d2_hist)
-
-    def _safe_js_vectors(v1, v2):
-        """JS distance between two histogram vectors, robust to NaN/inf/zero."""
-        a = np.asarray(v1, dtype=float).ravel()
-        b = np.asarray(v2, dtype=float).ravel()
-        # Replace NaN/inf with 0
-        a = np.where(np.isfinite(a), a, 0.0)
-        b = np.where(np.isfinite(b), b, 0.0)
-        # If either is all-zero, JS is undefined → return inf (treat as maximally dissimilar)
-        if np.sum(a) == 0 or np.sum(b) == 0:
-            return float("inf")
-        return float(jensenshannon(a, b))
 
     from scipy import stats
     import numpy as np
@@ -3663,369 +3694,7 @@ def add_clustering_to_rag_geometry_js(
             distances = get_pbc_distances(coords, centroid, ase_atoms)
             distances_list.append(distances)
 
-    # Determine whether to use pocket-PSD vectors instead of geometry distances
-    _use_pocket_psd = (psd_source == "pocket_psd")
-    _psd_vectors = []  # one vector per group (pbc) or per node (non-pbc)
-    _psd_bin_centers = []  # bin_centers corresponding to each histogram vector
-    _psd_key = "pocket_psd_y_pbc" if use_pbc else "pocket_psd_y"
-    _psd_x_key = "pocket_psd_x_pbc" if use_pbc else "pocket_psd_x"
-
-    if _use_pocket_psd:
-        if use_pbc:
-            for group in pbc_groups:
-                vec = None
-                bcs = None
-                for g in group:
-                    v = rag.nodes[g].get(_psd_key)
-                    b = rag.nodes[g].get(_psd_x_key)
-                    if v is not None:
-                        vec = np.asarray(v, dtype=float).ravel()
-                        bcs = np.asarray(b, dtype=float).ravel() if b is not None else None
-                        break
-                if vec is not None and bcs is not None:
-                    _psd_vectors.append(vec)
-                    _psd_bin_centers.append(bcs)
-                else:
-                    _use_pocket_psd = False
-                    break
-        else:
-            for node in rag.nodes:
-                v = rag.nodes[node].get(_psd_key)
-                b = rag.nodes[node].get(_psd_x_key)
-                if v is not None and b is not None:
-                    _psd_vectors.append(np.asarray(v, dtype=float).ravel())
-                    _psd_bin_centers.append(np.asarray(b, dtype=float).ravel())
-                else:
-                    _use_pocket_psd = False
-                    break
-
-    if not _use_pocket_psd:
-        _psd_vectors = []
-        _psd_bin_centers = []
-
-    # Region volume features (cheap: from props areas)
-    _region_volumes = {prop["label"]: int(prop["area"]) for prop in props}
-
-    def _group_volumes(groups_local):
-        """Compute per-group voxel counts from region volumes."""
-        return [sum(_region_volumes.get(r, 0) for r in grp) for grp in groups_local]
-
-    # Material-level tolerances for peak-first clustering
-    _bw = 0.0
-    if _use_pocket_psd and _psd_bin_centers:
-        _bw = float(abs(_psd_bin_centers[0][1] - _psd_bin_centers[0][0]))
-        tau_peak = max(1.5 * _bw, 0.35)
-        tau_med = max(2 * _bw, 0.40)
-    else:
-        tau_peak = 0.50
-        tau_med = 0.50
-
-
-    def _pbc_group_peak_radius(i, h, bc, groups_local, rag, bw):
-        """PSD argmax peak radius, corrected by cavity maxima when bins are coarse."""
-        mi = int(np.argmax(h))
-        pk = float(bc[mi])
-        if rag is None or not groups_local[i]:
-            return pk
-        rep = min(groups_local[i])
-        mr = rag.nodes.get(rep, {}).get("maxima_radii")
-        if mr is None:
-            return pk
-        mr = float(mr)
-        tol = max(0.12, 0.45 * bw) if bw > 0 else 0.12
-        if mr < pk - tol:
-            return mr
-        return pk
-
-    def _major_window_count_rag(rag, nodes, lo=1.3, hi=1.5, tiny=1.0):
-        """Count windows in [lo, hi] Å on direct (path_weight==1) edges, ignoring tiny radii."""
-        if rag is None:
-            return 0
-        node_set = set(nodes)
-        n_major = 0
-        for u, v, data in rag.edges(data=True):
-            if u not in node_set and v not in node_set:
-                continue
-            if data.get("path_weight", 0) != 1:
-                continue
-            winfo = data.get("window_info")
-            if not winfo:
-                continue
-            wr = winfo.get("window_radii")
-            if wr is None:
-                continue
-            for r in np.asarray(wr).ravel():
-                r = float(r)
-                if r >= tiny and lo <= r <= hi:
-                    n_major += 1
-        return n_major
-
-    def _refine_midband_by_windows(peak_groups, peak_ds, groups_local, rag, bw):
-        """Split merged mid-band peak groups using major-window connectivity (ZIF-20 style)."""
-        if rag is None:
-            return peak_groups
-        _mid_lo, _mid_hi = 2.45, 2.95
-        refined = []
-        for grp in peak_groups:
-            pks = [peak_ds[i] for i in grp]
-            if len(grp) < 2 or not any(_mid_lo <= p <= _mid_hi for p in pks):
-                refined.append(grp)
-                continue
-            buckets = {}
-            for i in grp:
-                pk = peak_ds[i]
-                mw = _major_window_count_rag(rag, groups_local[i])
-                if 2.48 <= pk < 2.62 or mw >= 3:
-                    key = "multiwin"
-                elif pk >= 2.74:
-                    key = "high_mid"
-                else:
-                    key = "one_major"
-                buckets.setdefault(key, []).append(i)
-            if len(buckets) >= 2:
-                refined.extend(buckets[k] for k in sorted(buckets))
-            else:
-                refined.append(grp)
-        return refined
-
-    # ── Peak-first pocket clustering helper (with singleton absorb + volume) ──
-    def _peak_first_cluster(hists, bin_centers_list, groups_local,
-                            group_vols=None, bw=0.0, rag=None):
-        """Cluster pockets by dominant PSD peak (adjacent-link rule + singleton absorb)."""
-        n = len(hists)
-        if n == 0:
-            return [], []
-        if n == 1:
-            vol = group_vols[0] if group_vols else 0
-            return [set(groups_local[0])], [{
-                "peak_spread": 0, "median_check": "PASS",
-                "pockets": list(groups_local[0]),
-                "volume": vol,
-            }]
-
-        peak_ds = []
-        median_ds = []
-        for i in range(n):
-            h, bc = hists[i], bin_centers_list[i]
-            peak_ds.append(
-                _pbc_group_peak_radius(i, h, bc, groups_local, rag, bw)
-            )
-            cum, total = 0.0, h.sum()
-            md = float(bc[-1])
-            for j in range(len(h)):
-                cum += h[j]
-                if cum >= 0.5 * total:
-                    md = float(bc[j])
-                    break
-            median_ds.append(md)
-
-        order = sorted(range(n), key=lambda i: peak_ds[i])
-        peak_groups = []
-        cur = [order[0]]
-        for k in range(1, len(order)):
-            if abs(peak_ds[order[k]] - peak_ds[cur[-1]]) < tau_peak:
-                cur.append(order[k])
-            else:
-                peak_groups.append(cur)
-                cur = [order[k]]
-        peak_groups.append(cur)
-
-        # ── Singleton absorb refinement ──
-        absorb_gap = max(0.8, 3.0 * bw)
-        absorb_info = {}  # original_cluster_idx -> [merge_details]
-
-        if group_vols is not None and len(peak_groups) > 1:
-            log_vols = [np.log1p(float(v)) if v > 0 else 0.0 for v in group_vols]
-            merged = set()
-
-            for ci in range(len(peak_groups)):
-                grp = peak_groups[ci]
-                if len(grp) != 1 or ci in merged:
-                    continue
-                si = grp[0]
-                best_cj, best_gap = None, float('inf')
-                for cj in range(len(peak_groups)):
-                    if cj == ci or cj in merged:
-                        continue
-                    gap = min(abs(peak_ds[si] - peak_ds[m]) for m in peak_groups[cj])
-                    if gap < best_gap:
-                        best_gap = gap
-                        best_cj = cj
-                if best_cj is None or best_gap > absorb_gap:
-                    continue
-                # Median closeness
-                target_meds = [median_ds[m] for m in peak_groups[best_cj]]
-                target_med_center = float(np.median(target_meds))
-                med_dev = abs(median_ds[si] - target_med_center)
-                med_tol = (max(tau_med, max(target_meds) - min(target_meds))
-                           if len(target_meds) > 1 else tau_med)
-                if med_dev > med_tol:
-                    continue
-                # Log-volume closeness
-                target_lvs = [log_vols[m] for m in peak_groups[best_cj]]
-                target_lv_center = float(np.median(target_lvs))
-                lv_dev = abs(log_vols[si] - target_lv_center)
-                lv_tol = (max(1.0, max(target_lvs) - min(target_lvs))
-                          if len(target_lvs) > 1 else 1.0)
-                if lv_dev > lv_tol:
-                    continue
-                # Merge: absorb singleton into target
-                merged.add(ci)
-                peak_groups[best_cj] = peak_groups[best_cj] + grp
-                if best_cj not in absorb_info:
-                    absorb_info[best_cj] = []
-                absorb_info[best_cj].append({
-                    "absorbed_pocket_group": si,
-                    "peak_gap": round(best_gap, 4),
-                    "median_dev": round(med_dev, 4),
-                    "logvol_dev": round(lv_dev, 4),
-                    "reason": "singleton_absorb",
-                })
-
-            # Remove absorbed clusters, remap absorb_info to new indices
-            surviving = [(ci, pg) for ci, pg in enumerate(peak_groups) if ci not in merged]
-            orig_to_new = {ci: ni for ni, (ci, _) in enumerate(surviving)}
-            peak_groups = [pg for _, pg in surviving]
-            absorb_info = {orig_to_new[k]: v for k, v in absorb_info.items() if k in orig_to_new}
-
-        # ── Minor-group absorb refinement (prevents over-splitting of tiny adjacent groups) ──
-        if len(peak_groups) > 1:
-            _minor_gap = max(0.55, 2.2 * bw)
-            _minor_med_tol = max(0.65, tau_med + 0.10)
-            changed = True
-            while changed and len(peak_groups) > 1:
-                changed = False
-                k = 0
-                while k < len(peak_groups) - 1:
-                    g1 = peak_groups[k]
-                    g2 = peak_groups[k + 1]
-                    if min(len(g1), len(g2)) > 2:
-                        k += 1
-                        continue
-                    gap = min(abs(peak_ds[i] - peak_ds[j]) for i in g1 for j in g2)
-                    if gap > _minor_gap:
-                        k += 1
-                        continue
-                    m1 = float(np.median([median_ds[i] for i in g1]))
-                    m2 = float(np.median([median_ds[i] for i in g2]))
-                    if abs(m1 - m2) > _minor_med_tol:
-                        k += 1
-                        continue
-                    # Merge adjacent small group into neighbor
-                    peak_groups[k] = g1 + g2
-                    del peak_groups[k + 1]
-                    absorb_info.setdefault(k, []).append({
-                        "absorbed_group_size": int(min(len(g1), len(g2))),
-                        "peak_gap": round(gap, 4),
-                        "median_gap": round(abs(m1 - m2), 4),
-                        "reason": "minor_group_absorb",
-                    })
-                    # Reindex absorb_info after deletion
-                    _new_abs = {}
-                    for idx, val in absorb_info.items():
-                        ni = idx - 1 if idx > k else idx
-                        _new_abs.setdefault(ni, []).extend(val)
-                    absorb_info = _new_abs
-                    changed = True
-
-        # ── Absorb rare high-peak satellites into main cage band (e.g. 7.3 Å → 3.3 Å) ──
-        if len(peak_groups) > 1:
-            _hi_peak_lo = 5.0
-            _cage_lo, _cage_hi = 2.5, 4.5
-            _absorb_hi = set()
-            for ci, grp in enumerate(peak_groups):
-                if ci in _absorb_hi:
-                    continue
-                cpk = float(np.median([peak_ds[i] for i in grp]))
-                if cpk < _hi_peak_lo:
-                    continue
-                best_cj, best_gap = None, float("inf")
-                for cj, other in enumerate(peak_groups):
-                    if cj == ci or cj in _absorb_hi:
-                        continue
-                    opk = float(np.median([peak_ds[i] for i in other]))
-                    if not (_cage_lo <= opk <= _cage_hi):
-                        continue
-                    gap = abs(cpk - opk)
-                    if gap < best_gap:
-                        best_gap = gap
-                        best_cj = cj
-                if best_cj is None:
-                    continue
-                # Only absorb true PSD satellites (peak within ~3 bins of cage),
-                # not genuine supercages (e.g. ZIF-20 at 7.31 vs 7.56 vs 3.31 Å).
-                if best_gap > absorb_gap:
-                    continue
-                peak_groups[best_cj] = peak_groups[best_cj] + grp
-                _absorb_hi.add(ci)
-                absorb_info.setdefault(best_cj, []).append({
-                    "reason": "high_peak_absorb",
-                    "absorbed_peak": round(cpk, 4),
-                    "peak_gap": round(best_gap, 4),
-                })
-            if _absorb_hi:
-                surviving_hi = [
-                    (ci, pg) for ci, pg in enumerate(peak_groups) if ci not in _absorb_hi
-                ]
-                orig_to_new_hi = {ci: ni for ni, (ci, _) in enumerate(surviving_hi)}
-                peak_groups = [pg for _, pg in surviving_hi]
-                absorb_info = {
-                    orig_to_new_hi[k]: v
-                    for k, v in absorb_info.items()
-                    if k in orig_to_new_hi
-                }
-
-        # ── Split groups that merged distinct PSD peaks (gap-based, avoids 2.69/2.81 bin collision) ──
-        _peak_split_min = max(0.08, 0.35 * bw) if bw > 0 else 0.08
-        _split_groups = []
-        for grp in peak_groups:
-            pks = [peak_ds[i] for i in grp]
-            pk_spread = max(pks) - min(pks)
-            if pk_spread < _peak_split_min or len(grp) < 2:
-                _split_groups.append(grp)
-                continue
-            ordered = sorted(grp, key=lambda i: peak_ds[i])
-            sub_lists = [[ordered[0]]]
-            for idx in ordered[1:]:
-                if peak_ds[idx] - peak_ds[sub_lists[-1][-1]] >= _peak_split_min:
-                    sub_lists.append([idx])
-                else:
-                    sub_lists[-1].append(idx)
-            if len(sub_lists) >= 2:
-                _split_groups.extend(sub_lists)
-            else:
-                _split_groups.append(grp)
-        peak_groups = _split_groups
-        peak_groups = _refine_midband_by_windows(
-            peak_groups, peak_ds, groups_local, rag, bw,
-        )
-
-        # Build diagnostics with volume info
-        diags = []
-        for gi, grp in enumerate(peak_groups):
-            meds = [median_ds[i] for i in grp]
-            pks = [peak_ds[i] for i in grp]
-            ms = max(meds) - min(meds)
-            grp_vol = sum(group_vols[i] if group_vols else 0 for i in grp)
-            d = {
-                "peak_range": (min(pks), max(pks)),
-                "peak_spread": max(pks) - min(pks),
-                "median_spread": ms,
-                "median_check": "PASS" if ms <= tau_med else "REVIEW",
-                "pockets": [int(p) for idx in grp for p in groups_local[idx]],
-                "volume": grp_vol,
-            }
-            if gi in absorb_info:
-                d["absorbed_singletons"] = absorb_info[gi]
-            diags.append(d)
-
-        eg = [set() for _ in peak_groups]
-        for gi, grp in enumerate(peak_groups):
-            for idx in grp:
-                eg[gi].update(groups_local[idx])
-        return eg, diags
-
-    # * now compute the clustering
+    # * now copute the js graph
     if use_pbc:
         # if pbc_groups is None:
         #     raise ValueError('pbc_groups must be provided if use_pbc=True')
@@ -4043,38 +3712,43 @@ def add_clustering_to_rag_geometry_js(
         # * let's add edges between the pbc groups based on teh JS distance
         iterlist = list(itertools.combinations(range(len(pbc_groups)), 2))
 
-        if _use_pocket_psd:
-            # Peak-first clustering (replaces JS for pocketwise PSDs)
-            _pbc_grp_vols = _group_volumes(pbc_groups)
-            energy_groups, peak_diags = _peak_first_cluster(
-                _psd_vectors, _psd_bin_centers, pbc_groups,
-                group_vols=_pbc_grp_vols, bw=_bw, rag=G,
-            )
-            print(f"Peak-first clustering: {len(energy_groups)} types, diagnostics: {peak_diags}")
-            G.graph['peak_clustering_diagnostics'] = peak_diags
-        else:
-            js_graph = nx.Graph()
-            js_graph.add_nodes_from(range(len(pbc_groups)))
-            iterlist = list(itertools.combinations(range(len(pbc_groups)), 2))
-            js_dist = [
-                get_js_dist_geom(t[0], t[1])
-                for t in tqdm(iterlist, desc="comp. dist. for clustering")
-            ]
-            print(js_dist)
-            add_these_edges = [
-                iterlist[k] for k in range(len(js_dist)) if js_dist[k] < js_threshold
-            ]
-            js_graph.add_edges_from(add_these_edges)
-            conn = list(nx.connected_components(js_graph))
-            energy_groups = [
-                set(itertools.chain.from_iterable(np.array(pbc_groups)[list(c)]))
-                for c in conn
-            ]
+        js_dist = [
+            get_js_dist_geom(t[0], t[1])
+            for t in tqdm(iterlist, desc="comp. dist. for clustering")
+        ]
+        # for t in iterlist:
+        #     js_dist.append(delayed(get_js_dist_geom)(t[0], t[1]))
+        # js_dist = dask.compute(js_dist)
+        # print(js_dist)
+        # js_dist = db.from_sequence(iterlist).map(get_js_dist_geom).compute()
+        # * print the the JS distances between regions
+        # print(js_dist)
+        # * check wher teh JS distance is less than the threshold and add edges from iterlist
+        add_these_edges = [
+            iterlist[k] for k in range(len(js_dist)) if js_dist[k] < js_threshold
+        ]
+        # print('adding these edges: ', add_these_edges)
+        js_graph.add_edges_from(add_these_edges)
+        # for k, (i, j) in enumerate(iterlist):
+        #     # js = get_js_dist(i, j)
+        #     js = js_dist[k]
+        #     print(
+        #         f'Jensen-Shannon distance for {i}:{pbc_groups[i]} and {j}:{pbc_groups[j]} is {js}')
+        #     if js < js_threshold:
+        #         js_graph.add_edge(i, j)
+        conn = list(nx.connected_components(js_graph))
+
+        # print('connected components are: ', conn)
+        energy_groups = [
+            set(itertools.chain.from_iterable(np.array(pbc_groups)[list(c)]))
+            for c in conn
+        ]
 
         # * add the cluster info to the rag
         for i in G.nodes():
-            matches = np.where([i in g for g in energy_groups])[0]
-            G.nodes[i]["cluster_geom_pbc"] = str(matches[0]) if len(matches) > 0 else "-1"
+            G.nodes[i]["cluster_geom_pbc"] = str(
+                np.where([i in g for g in energy_groups])[0][0]
+            )
     elif use_pbc == False:
         # * we will be working with the actual nodes (regions)
         # energies_list = [get_energies_for_group2(
@@ -4092,38 +3766,28 @@ def add_clustering_to_rag_geometry_js(
         # * let's add edges between the pbc groups based on teh JS distance
         iterlist = list(itertools.combinations(range(len(G.nodes())), 2))
 
-        if _use_pocket_psd:
-            # Peak-first clustering for non-PBC (each node is its own "group")
-            node_list = list(G.nodes())
-            node_groups = [{n} for n in node_list]
-            _nopbc_grp_vols = _group_volumes(node_groups)
-            energy_groups_nopbc, peak_diags_nopbc = _peak_first_cluster(
-                _psd_vectors, _psd_bin_centers, node_groups,
-                group_vols=_nopbc_grp_vols, bw=_bw, rag=G,
+        js_dist = [
+            get_js_dist_geom(t[0], t[1])
+            for t in tqdm(iterlist, desc="comp. dist. for clustering")
+        ]
+        add_these_edges = [
+            iterlist[k] for k in range(len(iterlist)) if js_dist[k] < js_threshold
+        ]
+        # print('adding these edges: ', add_these_edges)
+
+        js_graph.add_edges_from(add_these_edges)
+
+        # for i, j in itertools.combinations(len(rag.nodes()), 2):
+        #     js = get_js_dist(i,j)
+        #     if js < js_threshold:
+        #         js_graph.add_edge(i, j)
+        conn = list(nx.connected_components(js_graph))
+        # print('connected components are: ', conn)
+        # * add the clustering info  to the rag
+        for i in G.nodes():
+            G.nodes[i]["cluster_geom_nopbc"] = str(
+                np.where([i in g for g in conn])[0][0]
             )
-            print(f"Peak-first clustering (non-pbc): {len(energy_groups_nopbc)} types")
-            G.graph['peak_clustering_diagnostics'] = peak_diags_nopbc
-            for i in G.nodes():
-                G.nodes[i]["cluster_geom_nopbc"] = str(
-                    np.where([i in g for g in energy_groups_nopbc])[0][0]
-                )
-        else:
-            js_graph = nx.Graph()
-            js_graph.add_nodes_from(range(len(G.nodes())))
-            iterlist = list(itertools.combinations(range(len(G.nodes())), 2))
-            js_dist = [
-                get_js_dist_geom(t[0], t[1])
-                for t in tqdm(iterlist, desc="comp. dist. for clustering")
-            ]
-            add_these_edges = [
-                iterlist[k] for k in range(len(iterlist)) if js_dist[k] < js_threshold
-            ]
-            js_graph.add_edges_from(add_these_edges)
-            conn = list(nx.connected_components(js_graph))
-            for i in G.nodes():
-                G.nodes[i]["cluster_geom_nopbc"] = str(
-                    np.where([i in g for g in conn])[0][0]
-                )
 
     return G
 
@@ -4158,7 +3822,7 @@ def add_clustering_to_rag(rag2, return_cluster_obj=False, no_pbc=False, **kwargs
     else:
         X = np.vstack(
             list(
-                dict(sorted(nx.get_node_attributes(rag2, "psd_y_pbc").items())).values()
+                dict(sorted(nx.get_node_attributes(rag2, "csd_y_pbc").items())).values()
             )
         )
 
@@ -4208,7 +3872,7 @@ def add_clustering_to_rag(rag2, return_cluster_obj=False, no_pbc=False, **kwargs
         return rag2
     else:
         raise ValueError(
-            "No CSD with PBC data in the RAG (pore graph). Call add_csd_to_rag_with_pbc() first."
+            "No PSD with PBC data in the RAG (pore graph). Call add_psd_to_rag_with_pbc() first."
         )
 
 
@@ -4258,7 +3922,7 @@ def add_clustering_to_rag_pca(
     else:
         X = np.vstack(
             list(
-                dict(sorted(nx.get_node_attributes(rag2, "psd_y_pbc").items())).values()
+                dict(sorted(nx.get_node_attributes(rag2, "csd_y_pbc").items())).values()
             )
         )
 
@@ -5578,6 +5242,77 @@ def clustering_grid_from_regions(regions, rag2, cluster_key="cluster"):
     return regions_cluster
 
 
+CLUSTER_ENV_PBC = "cluster_env_pbc"
+
+
+def add_pocket_types_to_rag(
+    rag,
+    rep_to_type,
+    pbc_groups=None,
+    *,
+    cluster_key: str = CLUSTER_ENV_PBC,
+    as_string: bool = True,
+):
+    """Stamp pocket-type labels on RAG nodes (parallel to ``cluster_geom_pbc``).
+
+    After :func:`~mgr.workflow.assign_pocket_types` with ``env_cluster``,
+    use ``cluster_key="cluster_env_pbc"`` with :func:`clustering_grid_from_regions`
+    and :func:`~mgr.visualize.plot_pocket_psds_on_rag`.
+
+    :param rag: Region adjacency graph (NetworkX).
+    :param rep_to_type: ``{pbc_rep_region_id: type_id}`` (0-based), e.g.
+        ``typed.rep_to_type``.
+    :param pbc_groups: PBC fragment groups; when given, every periodic copy of a
+        pocket receives the representative's type.
+    :param cluster_key: Node attribute name (default ``cluster_env_pbc``).
+    :param as_string: Store labels as strings like ``cluster_geom_pbc``.
+    :returns: Deep-copied RAG with ``cluster_key`` on nodes.
+    """
+    import copy
+    from typing import Mapping, Sequence
+
+    G = copy.deepcopy(rag)
+    rep_to_type = {int(k): int(v) for k, v in dict(rep_to_type).items()}
+
+    def _store(node, type_id: int) -> None:
+        G.nodes[node][cluster_key] = str(type_id) if as_string else int(type_id)
+
+    if pbc_groups is not None:
+        from .pocket_typing import build_fragment_label_to_rep
+
+        label_to_rep = build_fragment_label_to_rep(pbc_groups)
+        for node in G.nodes:
+            rep = label_to_rep.get(int(node), int(node))
+            if rep in rep_to_type:
+                _store(node, rep_to_type[rep])
+    else:
+        for node in G.nodes:
+            nid = int(node)
+            if nid in rep_to_type:
+                _store(node, rep_to_type[nid])
+    return G
+
+
+def add_env_cluster_pocket_types_to_rag(
+    rag,
+    typed,
+    pbc_groups=None,
+    *,
+    cluster_key: str = CLUSTER_ENV_PBC,
+    as_string: bool = True,
+):
+    """Convenience wrapper: stamp ``env_cluster`` types from :class:`PocketTypingResult`."""
+    if not getattr(typed, "ok", False):
+        raise ValueError(getattr(typed, "error", "pocket typing failed"))
+    return add_pocket_types_to_rag(
+        rag,
+        typed.rep_to_type,
+        pbc_groups,
+        cluster_key=cluster_key,
+        as_string=as_string,
+    )
+
+
 # region  # * Energy grid functions
 #######################################################
 ############################
@@ -6728,6 +6463,60 @@ def add_best_optuna_trial_to_rag(
         for node, trial in zip(rag.nodes, best_trials):
             rag.nodes[node]["best_trial_{}".format(molecule_name)] = trial
     return rag
+
+
+def add_best_optuna_trial_to_rag_serial(
+    rag,
+    ref_coords,
+    energy_interpolator,
+    molecule_name,
+    cluster_key="cluster_energy_pbc",
+    one_per_cluster=True,
+    n_trials=50,
+    n_jobs=1,
+    random_seed=42,
+):
+    """Like :func:`add_best_optuna_trial_to_rag` but without ``dask.bag``.
+
+    Use this when the caller already parallelizes over materials (e.g. Dask
+    ``Client``).  Avoids nested schedulers and per-pocket task fragmentation.
+    """
+    import networkx as nx
+    import numpy as np
+
+    if one_per_cluster:
+        cluster_dict = nx.get_node_attributes(rag, cluster_key)
+        keys_list = np.array(list(cluster_dict.keys()))
+        _, unique_indices, _ = np.unique(
+            list(cluster_dict.values()), return_index=True, return_inverse=True
+        )
+        nodes_to_test_at = keys_list[unique_indices]
+        for node in nodes_to_test_at:
+            trial = optimize_molecule_at_node(
+                node,
+                rag=rag,
+                ref_coords=ref_coords,
+                energy_interpolator=energy_interpolator,
+                n_trials=n_trials,
+                n_jobs=n_jobs,
+                random_seed=random_seed,
+            )
+            rag.nodes[node][f"best_trial_{molecule_name}"] = trial
+    else:
+        for node in rag.nodes:
+            if rag.nodes[node]["maxima_radii"] <= 1.5:
+                continue
+            trial = optimize_molecule_at_node(
+                node,
+                rag=rag,
+                ref_coords=ref_coords,
+                energy_interpolator=energy_interpolator,
+                n_trials=n_trials,
+                n_jobs=n_jobs,
+                random_seed=random_seed,
+            )
+            rag.nodes[node][f"best_trial_{molecule_name}"] = trial
+    return rag
 def pad_periodic(arr):
     import numpy as np
     """Pad array with periodic boundaries."""
@@ -6863,17 +6652,34 @@ def get_pore_dia_mgr(mat_atoms, dgrid= None, kwargs={}):
     
     return lcd, pld, dfsd, distance_grid
 
-def compute_percolation_history_from_results(results):
+def compute_percolation_history_from_results(results, variant="v1"):
+    """Attach lattice percolation history (v1 by default; prefer v2 via variant='v2')."""
+    from .percolation_results import store_percolation_history
+
+    if str(variant) == "v2":
+        return compute_percolation_history_from_results2(results)
     dgrid = results['dgrid']
     regions = results['regions']
-    # maxima_info = results['maxima_info']
     all_maxima = results['all_maxima']
     maxima = all_maxima[:regions.max()]
-    percolation_history, pld_locations, _, _,_ = compute_percolation_history(dgrid, regions, maxima)
-    results['percolation_history'] = percolation_history
+    percolation_history, pld_locations, _, _, _ = compute_percolation_history(
+        dgrid, regions, maxima
+    )
+    store_percolation_history(
+        results, "lattice", percolation_history, lattice_variant="v1", pld_locations=pld_locations
+    )
     results['pld_locations'] = pld_locations
-    # results['']
     return results
+
+
+def compute_percolation_history_from_results_lattice(results, variant="v2"):
+    """Attach lattice percolation history under ``percolation_history_lattice``."""
+    variant = str(variant)
+    if variant == "v2":
+        return compute_percolation_history_from_results2(results)
+    if variant == "v1":
+        return compute_percolation_history_from_results(results, variant="v1")
+    raise ValueError(f"Unknown lattice variant {variant!r}; use 'v1' or 'v2'.")
     
 def compute_percolation_history(distance_grid=None, regions=None, maxima=None, path_to_cif=None, kwargs={}):
     """
@@ -9048,18 +8854,17 @@ def do_periodic_segmentation_basic(
         outputs['dgrid'] = dgrid
     return outputs
 
-
 def select_percolation_threshold(percolation_history, probe_radius):
     """
     Select the appropriate threshold for percolation analysis with proper warning logging.
-    
+
     Parameters:
     -----------
     percolation_history : list
         List of (threshold, components) tuples from compute_percolation_history
     probe_radius : float
         Requested probe radius in Angstroms
-        
+
     Returns:
     --------
     tuple
@@ -9067,35 +8872,35 @@ def select_percolation_threshold(percolation_history, probe_radius):
     """
     import logging
     logger = logging.getLogger(__name__)
-    
+
     if not percolation_history:
         return None, None, False, "No percolation history available"
-    
+
     available_thresholds = [t for t, c in percolation_history]
     max_threshold = max(available_thresholds)
-    
+
     # Case 1: Probe radius exceeds PLD (no percolation)
     if probe_radius > max_threshold:
         return None, None, False, f"Probe radius {probe_radius:.3f} Å exceeds PLD {max_threshold:.3f} Å - no percolation"
-    
+
     # Case 2: Exact match found
     exact_matches = [(t, c) for t, c in percolation_history if abs(t - probe_radius) < 1e-10]
     if exact_matches:
         threshold, components = exact_matches[0]
         return threshold, components, True, f"Exact threshold match: {threshold:.3f} Å"
-    
+
     # Case 3: Use largest threshold <= probe_radius with WARNING
     valid_thresholds = [(t, c) for t, c in percolation_history if t <= probe_radius]
     threshold, components = max(valid_thresholds, key=lambda x: x[0])
-    
+
     nearest_threshold = min(available_thresholds, key=lambda t: abs(t - probe_radius))
     warning_msg = (f"Probe radius {probe_radius:.3f} Å not available in percolation history. "
                   f"Using threshold {threshold:.3f} Å (nearest available: {nearest_threshold:.3f} Å). "
                   f"Threshold step size is 0.05 Å - consider using available thresholds for exact results.")
-    
+
     # Log warning for threshold approximation
     logger.warning(warning_msg)
-    
+
     message = f"Using threshold {threshold:.3f} Å for probe radius {probe_radius:.3f} Å (approximated)"
     return threshold, components, False, message
 
@@ -9116,34 +8921,8 @@ def _merge_winding_kwargs(
     return merged
 
 
-def _unique_percolated_clusters_from_components(components) -> dict:
-    """Collapse duplicate per-axis components that share the same region set."""
-    if not components:
-        return {}
-    seen: set = set()
-    out: dict = {}
-    idx = 0
-    for _axis, comp_list in components.items():
-        if not comp_list:
-            continue
-        for comp in comp_list:
-            key = frozenset(int(r) for r in comp)
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            out[f"cluster_{idx}"] = set(key)
-            idx += 1
-    return out
-
-
 def normalize_pbc_groups_by_regions_pbc(pbc_groups, regions, regions_pbc):
-    """Map PBC fragment groups to ``regions_pbc`` representative ids (visualization labels).
-
-    Segmentation stores ``pbc_groups`` as a list of sets of *non-PBC* ``regions`` ids.
-    The UI colours pockets by ``regions_pbc`` (1..N).  Keys like ``pocket_10`` are
-    list indices and do not match surface-trace labels — this helper rekeys by the
-    majority ``regions_pbc`` label covering each group's fragments.
-    """
+    """Map PBC fragment groups to ``regions_pbc`` representative ids (visualization labels)."""
     import numpy as np
     from collections import Counter
 
@@ -9168,40 +8947,38 @@ def normalize_pbc_groups_by_regions_pbc(pbc_groups, regions, regions_pbc):
     return out
 
 
-def _accessible_percolating_region_labels(
+def _accessible_percolating_region_labels_winding(
+    results_dict,
+    probe_radius,
+    mat_atoms=None,
+    window_fp=True,
+    winding_kwargs=None,
+):
+    """Winding graph accessibility; *window_fp* toggles fingerprint rescue only."""
+    from .winding_percolation import percolating_region_labels_at_probe_winding
+
+    kwargs = _merge_winding_kwargs(results_dict, bool(window_fp), winding_kwargs)
+    atoms = results_dict.get("mat_atoms") or mat_atoms
+    labels = percolating_region_labels_at_probe_winding(
+        results_dict,
+        float(probe_radius),
+        kwargs=kwargs,
+        atoms=atoms,
+    )
+    fp_note = " + window FP" if bool(window_fp) else ""
+    return labels, float(probe_radius), True, (
+        f"Winding accessible labels{fp_note}: {len(labels)} regions at probe "
+        f"{float(probe_radius):.3f} Å"
+    )
+
+
+def _accessible_percolating_region_labels_lattice(
     results_dict,
     probe_radius,
     percolation_history,
-    mat_atoms=None,
-    window_fp_for_accessible=True,
-    winding_kwargs=None,
+    lattice_variant="v2",
 ):
-    """
-    Region labels treated as probe-accessible for SA / void volume.
-
-    When *window_fp_for_accessible* is True (default), runs winding percolation
-    at the requested probe and applies window-fingerprint bridging for sub-probe
-    graph windows (grid-sampling correction when percolation exists).  When
-    False, falls back to the legacy percolation-history component union.
-    """
-    if bool(window_fp_for_accessible):
-        from .winding_percolation import percolating_region_labels_at_probe_winding
-
-        kwargs = _merge_winding_kwargs(
-            results_dict, window_fp_for_accessible, winding_kwargs
-        )
-        atoms = results_dict.get("mat_atoms") or mat_atoms
-        labels = percolating_region_labels_at_probe_winding(
-            results_dict,
-            float(probe_radius),
-            kwargs=kwargs,
-            atoms=atoms,
-        )
-        return labels, float(probe_radius), True, (
-            f"Winding accessible labels (+ window FP): {len(labels)} regions at probe "
-            f"{float(probe_radius):.3f} Å"
-        )
-
+    """Lattice voxel-history accessibility (Zeo++-style); no window FP."""
     threshold, components, exact_match, message = select_percolation_threshold(
         percolation_history, probe_radius
     )
@@ -9213,21 +8990,176 @@ def _accessible_percolating_region_labels(
     return percolating_regions, threshold, exact_match, message
 
 
+def _accessible_percolating_region_labels(
+    results_dict,
+    probe_radius,
+    percolation_history,
+    mat_atoms=None,
+    window_fp_for_accessible=True,
+    winding_kwargs=None,
+):
+    """Backward-compatible alias: always uses winding (window_fp controls FP only)."""
+    return _accessible_percolating_region_labels_winding(
+        results_dict,
+        probe_radius,
+        mat_atoms=mat_atoms,
+        window_fp=window_fp_for_accessible,
+        winding_kwargs=winding_kwargs,
+    )
+
+
+def _ensure_winding_history(results_dict, winding_kwargs=None):
+    from .percolation_results import get_percolation_history, has_percolation_history
+    from .winding_percolation import update_results_with_percolation_history_winding
+
+    if has_percolation_history(results_dict, "winding"):
+        return results_dict
+
+    logger.info(
+        "Winding percolation history not found; computing percolation_history_winding..."
+    )
+    history_kw = {}
+    if isinstance(winding_kwargs, dict):
+        for key in (
+            "step",
+            "min_threshold",
+            "max_threshold",
+            "thresholds",
+            "include_dangling",
+            "expand_components",
+            "graph",
+            "base_region_labels",
+        ):
+            if key in winding_kwargs:
+                history_kw[key] = winding_kwargs[key]
+    results_dict = update_results_with_percolation_history_winding(
+        results_dict,
+        **history_kw,
+    )
+    logger.info(
+        "Stored percolation_history_winding (%d entries)",
+        len(get_percolation_history(results_dict, "winding")),
+    )
+    return results_dict
+
+
+def _ensure_lattice_history(results_dict, lattice_variant="v2"):
+    from .percolation_results import get_percolation_history, has_percolation_history
+
+    if has_percolation_history(results_dict, "lattice"):
+        return results_dict
+
+    logger.info(
+        "Lattice percolation history not found; computing percolation_history_lattice (%s)...",
+        lattice_variant,
+    )
+    results_dict = compute_percolation_history_from_results_lattice(
+        results_dict, variant=lattice_variant
+    )
+    logger.info(
+        "Stored percolation_history_lattice (%d entries)",
+        len(get_percolation_history(results_dict, "lattice")),
+    )
+    return results_dict
+
+
+def _ensure_percolation_history_for_accessibility(
+    results_dict,
+    window_fp_for_accessible=True,
+    winding_kwargs=None,
+):
+    """Deprecated: use ``_ensure_winding_history`` or ``_ensure_lattice_history``."""
+    return _ensure_winding_history(results_dict, winding_kwargs=winding_kwargs)
+
+
+def _percolated_cluster_components_winding(results_dict, probe_radius):
+    from .winding_percolation import (
+        _prepare_graph_and_labels,
+        percolation_all_axes_winding,
+    )
+
+    graph, base_region_labels = _prepare_graph_and_labels(results_dict, None, None)
+    axis_clusters, _, _ = percolation_all_axes_winding(
+        results_dict,
+        float(probe_radius),
+        graph=graph,
+        base_region_labels=base_region_labels,
+        include_dangling=True,
+        expand_components=True,
+    )
+    if not any(axis_clusters.get(axis) for axis in axis_clusters):
+        return float(probe_radius), None
+    return float(probe_radius), axis_clusters
+
+
+def _percolated_cluster_components_lattice(
+    percolation_history,
+    probe_radius,
+    threshold=None,
+):
+    components = None
+    if threshold is not None and percolation_history:
+        for t, components_candidate in percolation_history:
+            if abs(t - threshold) < 1e-10:
+                components = components_candidate
+                break
+    if components is None and percolation_history:
+        threshold, components, _, _ = select_percolation_threshold(
+            percolation_history, probe_radius
+        )
+    return threshold, components
+
+
+def _percolated_cluster_components(
+    results_dict,
+    probe_radius,
+    percolation_history,
+    *,
+    threshold=None,
+    window_fp_for_accessible=True,
+    winding_kwargs=None,
+    mat_atoms=None,
+    accessibility_method="winding",
+):
+    if str(accessibility_method).lower() == "lattice":
+        return _percolated_cluster_components_lattice(
+            percolation_history, probe_radius, threshold=threshold
+        )
+    return _percolated_cluster_components_winding(results_dict, probe_radius)
+
+
+def _percolated_clusters_dict(components):
+    """Build cluster_id -> fragment-region set from percolation components."""
+    if not components:
+        return {}
+    percolated_clusters = {}
+    cluster_id = 0
+    for axis, comp_list in components.items():
+        if not comp_list:
+            continue
+        for comp in comp_list:
+            cluster_regions = set(comp)
+            if cluster_regions:
+                percolated_clusters[f"axis_{axis}_cluster_{cluster_id}"] = cluster_regions
+                cluster_id += 1
+    return percolated_clusters
+
+
 def compute_point_probe_reference(results_dict, mat_atoms):
     """
     Compute point probe (probe_radius = 0) surface area and void volume as reference.
-    
-    This function calculates the total accessible surface area and void volume 
-    for a point probe (radius = 0), representing the maximum possible 
+
+    This function calculates the total accessible surface area and void volume
+    for a point probe (radius = 0), representing the maximum possible
     accessibility in the structure.
-    
+
     Parameters:
     -----------
     results_dict : dict
         Results dictionary containing distance_grid, pbc_groups, regions_pbc
     mat_atoms : ase.Atoms
         Atomic structure for mass calculation
-        
+
     Returns:
     --------
     dict
@@ -9239,29 +9171,29 @@ def compute_point_probe_reference(results_dict, mat_atoms):
     from ase.data import vdw_radii
     from ase.units import _amu
     from .visualize import get_isosurface_mesh, get_isosurface_submeshes
-    
+
     # Extract required data
-    distance_grid = results_dict['distance_grid']
+    distance_grid = results_dict['dgrid']
     pbc_groups = results_dict['pbc_groups']
     regions_pbc = results_dict['regions_pbc']
-    
     regions = results_dict.get('regions')
+
     pbc_groups = normalize_pbc_groups_by_regions_pbc(pbc_groups, regions, regions_pbc)
-    
+
     # Calculate mass for normalization
     mass_g = mat_atoms.get_masses().sum() * _amu * 1000  # grams
-    
+
     # Calculate voxel volume
     voxel_volume = mat_atoms.get_volume() / distance_grid.size  # Å³
-    
+
     # Point probe surface area calculation (dgrid > 0)
     point_probe_mesh = get_isosurface_mesh(distance_grid, 0.0, mat_atoms)
     point_probe_surface_area = point_probe_mesh.area * 1e-20 / mass_g  # m²/g
-    
+
     # Point probe void volume calculation (dgrid > 0)
     point_probe_void_fraction = np.sum(distance_grid > 0) / distance_grid.size
     point_probe_void_volume = point_probe_void_fraction * mat_atoms.get_volume() * 1e-24 / mass_g  # cm³/g
-    
+
     return {
         'surface_area': point_probe_surface_area,
         'void_volume': point_probe_void_volume
@@ -9269,258 +9201,15 @@ def compute_point_probe_reference(results_dict, mat_atoms):
 
 
 
-def compute_surface_area_from_results_mc(
-    results_dict,
-    mat_atoms,
-    probe_radius=None,
-    n_samples=20000,
-    shell_thickness=0.5,
-    return_details=False,
-    window_fp_for_accessible=True,
-    winding_kwargs=None,
-):
-    """
-    Monte Carlo shell-based surface area estimator.
-
-    Reuses the existing distance grid, region labels, and percolation history
-    to estimate total and accessible surface area at a given probe radius by
-    sampling points in a thin shell around the isosurface f(x) = probe_radius.
-
-    Parameters
-    ----------
-    results_dict : dict
-        Results dictionary containing at minimum:
-        - 'dgrid' or 'distance_grid': Distance grid array
-        - 'pbc_groups': PBC groups dictionary
-        - 'regions_pbc': Periodic regions array
-        - Optional: 'percolation_history' from compute_percolation_history
-    mat_atoms : ase.Atoms
-        Atomic structure for mass calculation and coordinate transformations.
-    probe_radius : float, optional
-        Probe radius for surface area calculation. If None, uses helium radius.
-    n_samples : int, optional
-        Number of Monte Carlo samples per structure.
-    shell_thickness : float, optional
-        Thickness of the shell around probe_radius used for the estimator.
-    return_details : bool, optional
-        If True, returns additional diagnostic information.
-
-    Returns
-    -------
-    dict
-        Dictionary with:
-        - 'total_surface_area': Total SA (m²/g), MC estimate
-        - 'accessible_surface_area': Accessible SA (percolated regions) (m²/g)
-        - 'accessible_fraction': Accessible / total
-        - 'probe_radius': Probe radius used
-        - 'by_region': per-region ACCESSIBLE SA (percolating only)
-        - 'by_pocket': per-pocket ACCESSIBLE SA (percolating only)
-        - 'by_percolated_cluster': per-cluster accessible SA
-        - 'total_by_region': per-region TOTAL SA (all regions)
-        - 'total_by_pocket': per-pocket TOTAL SA (all pockets)
-        - 'sa_mc_diagnostics': Dict with sampling diagnostics
-        - 'sa_method': 'monte_carlo'
-    """
-    import numpy as np
-    from ase.data import vdw_radii
-    from ase.units import _amu
-    from scipy.ndimage import map_coordinates
-
-    # Extract required data from results
-    distance_grid = results_dict.get("dgrid", results_dict.get("distance_grid"))
-    if distance_grid is None:
-        raise KeyError("results_dict must contain 'dgrid' or 'distance_grid'")
-
-    pbc_groups = results_dict["pbc_groups"]
-    regions_pbc = results_dict["regions_pbc"]
-    regions = results_dict.get("regions")
-
-    pbc_groups = normalize_pbc_groups_by_regions_pbc(pbc_groups, regions, regions_pbc)
-
-    # Set probe radius
-    if probe_radius is None:
-        probe_radius = vdw_radii[2]  # helium radius
-
-    # Calculate mass for normalization
-    mass_g = mat_atoms.get_masses().sum() * _amu * 1000  # grams
-
-    # Ensure percolation history is available
-    if "percolation_history" not in results_dict:
-        logger.info("Percolation history not found in results. Computing it now for MC SA...")
-        results_dict = compute_percolation_history_from_results(results_dict)
-        logger.info(f"Computed percolation history with {len(results_dict['percolation_history'])} entries")
-
-    percolation_history = results_dict.get("percolation_history", [])
-
-    percolating_regions, threshold, exact_match, message = _accessible_percolating_region_labels(
-        results_dict,
-        probe_radius,
-        percolation_history,
-        mat_atoms=mat_atoms,
-        window_fp_for_accessible=window_fp_for_accessible,
-        winding_kwargs=winding_kwargs,
-    )
-    logger.info(message)
-    if not percolating_regions:
-        logger.info(
-            f"MC SA: No percolation at probe radius {probe_radius:.3f} Å - accessible surface area will be zero"
-        )
-    elif threshold is not None and not exact_match:
-        logger.warning(
-            f"MC SA: Using approximated threshold for probe radius {probe_radius:.3f} Å - results may be approximate"
-        )
-    components = None
-    if threshold is not None and percolation_history:
-        for t, c in percolation_history:
-            if abs(t - threshold) < 1e-10:
-                components = c
-                break
-
-    shape = distance_grid.shape
-    # Sample random fractional coordinates in [0,1)^3
-    u = np.random.rand(n_samples, 3)
-    coords = np.vstack(
-        [
-            u[:, 0] * (shape[0] - 1),
-            u[:, 1] * (shape[1] - 1),
-            u[:, 2] * (shape[2] - 1),
-        ]
-    )
-
-    # Interpolate distance and region labels at sample points
-    d_samples = map_coordinates(distance_grid, coords, order=1, mode="wrap")
-    region_field = results_dict.get("regions", regions_pbc)
-    reg_samples = map_coordinates(
-        np.asarray(region_field, dtype=float), coords, order=0, mode="wrap"
-    ).astype(int)
-
-    half_delta = shell_thickness / 2.0
-    shell_mask = np.abs(d_samples - probe_radius) <= half_delta
-    n_shell_total = int(shell_mask.sum())
-
-    if percolating_regions:
-        acc_region_mask = np.isin(reg_samples, list(percolating_regions))
-        shell_acc_mask = shell_mask & acc_region_mask
-    else:
-        acc_region_mask = np.zeros_like(shell_mask, dtype=bool)
-        shell_acc_mask = shell_mask & acc_region_mask
-    n_shell_acc = int(shell_acc_mask.sum())
-
-    volume_cell = mat_atoms.get_volume()  # Å³
-
-    if n_samples == 0 or shell_thickness <= 0.0:
-        total_surface_area = 0.0
-        accessible_surface_area = 0.0
-        by_region_mc = {}
-        by_pocket_mc = {}
-        by_cluster_mc = {}
-        total_by_region_mc = {}
-        total_by_pocket_mc = {}
-    else:
-        p_shell_total = n_shell_total / float(n_samples)
-        p_shell_acc = n_shell_acc / float(n_samples)
-
-        # V_cell [Å³] / delta [Å] -> Å²; convert Å² -> m²/g
-        total_surface_area = volume_cell * p_shell_total / shell_thickness * 1e-20 / mass_g
-        accessible_surface_area = volume_cell * p_shell_acc / shell_thickness * 1e-20 / mass_g
-
-        # --- Per-region ACCESSIBLE SA (MC) (percolating regions only) ---
-        by_region_mc = {}
-        if n_shell_acc > 0 and percolating_regions:
-            reg_shell_acc = reg_samples[shell_acc_mask]
-            unique_regions, counts = np.unique(reg_shell_acc, return_counts=True)
-            for rid, hit_count in zip(unique_regions, counts):
-                if rid not in percolating_regions:
-                    continue
-                p_shell_r = hit_count / float(n_samples)
-                sa_r = volume_cell * p_shell_r / shell_thickness * 1e-20 / mass_g
-                by_region_mc[int(rid)] = sa_r
-
-        # --- Per-pocket (PBC group) ACCESSIBLE SA (MC) ---
-        by_pocket_mc = {}
-        if by_region_mc:
-            for pocket_id, region_set in pbc_groups.items():
-                pocket_area = sum(by_region_mc.get(int(r), 0.0) for r in region_set)
-                if pocket_area > 0:
-                    by_pocket_mc[pocket_id] = pocket_area
-
-        # --- Per-percolated-cluster accessible SA (MC) ---
-        by_cluster_mc = {}
-        if threshold is not None and components and percolating_regions:
-            percolated_clusters = _unique_percolated_clusters_from_components(components)
-            for cid, region_set in percolated_clusters.items():
-                cluster_area = sum(by_region_mc.get(int(r), 0.0) for r in region_set)
-                if cluster_area > 0:
-                    by_cluster_mc[cid] = cluster_area
-
-        # --- Per-region TOTAL SA (MC) (ALL regions, not just percolating) ---
-        total_by_region_mc = {}
-        if n_shell_total > 0:
-            reg_shell_all = reg_samples[shell_mask]
-            unique_regions_all, counts_all = np.unique(reg_shell_all, return_counts=True)
-            for rid, hit_count in zip(unique_regions_all, counts_all):
-                p_shell_r = hit_count / float(n_samples)
-                sa_r = volume_cell * p_shell_r / shell_thickness * 1e-20 / mass_g
-                total_by_region_mc[int(rid)] = sa_r
-
-        # --- Per-pocket TOTAL SA (MC) ---
-        total_by_pocket_mc = {}
-        if total_by_region_mc:
-            for pocket_id, region_set in pbc_groups.items():
-                pocket_area = sum(total_by_region_mc.get(int(r), 0.0) for r in region_set)
-                if pocket_area > 0:
-                    total_by_pocket_mc[pocket_id] = pocket_area
-
-    sa_mc_diag = {
-        "n_samples": int(n_samples),
-        "shell_thickness": float(shell_thickness),
-        "n_shell_hits_total": n_shell_total,
-        "n_shell_hits_accessible": n_shell_acc,
-    }
-
-    results = {
-        "total_surface_area": total_surface_area,
-        "accessible_surface_area": accessible_surface_area,
-        "accessible_fraction": (
-            accessible_surface_area / total_surface_area if total_surface_area > 0 else 0
-        ),
-        "probe_radius": probe_radius,
-        "by_region": by_region_mc,
-        "by_pocket": by_pocket_mc,
-        "by_percolated_cluster": by_cluster_mc,
-        "total_by_region": total_by_region_mc,
-        "total_by_pocket": total_by_pocket_mc,
-        "sa_mc_diagnostics": sa_mc_diag,
-        "sa_method": "monte_carlo",
-    }
-
-    # Add point probe reference
-    point_probe_ref = compute_point_probe_reference(results_dict, mat_atoms)
-    results['point_probe_reference'] = {
-        'surface_area': point_probe_ref['surface_area'],
-        'void_volume': point_probe_ref['void_volume'],
-        'surface_area_fraction': accessible_surface_area / point_probe_ref['surface_area'] if point_probe_ref['surface_area'] > 0 else 0
-    }
-
-    if return_details:
-        results.update(
-            {
-                "percolating_regions": percolating_regions,
-                "percolation_history": percolation_history,
-            }
-        )
-
-    return results
-
-
-
-def compute_surface_area_from_results(
+def compute_surface_area_mesh(
     results_dict,
     mat_atoms,
     probe_radius=None,
     return_details=False,
     window_fp_for_accessible=True,
     winding_kwargs=None,
+    accessibility_method="winding",
+    lattice_variant="v2",
 ):
     """
     Compute surface area analysis from pre-computed results dictionary.
@@ -9542,6 +9231,16 @@ def compute_surface_area_from_results(
         Probe radius for surface area calculation. If None, uses helium radius.
     return_details : bool, optional
         If True, returns detailed intermediate results. Default False.
+    window_fp_for_accessible : bool, optional
+        Winding only: when True, apply window-fingerprint bridging. When False,
+        strict winding percolation without FP. Ignored for lattice.
+    winding_kwargs : dict, optional
+        Extra keyword arguments for winding fingerprint bridging (merged over
+        ``results_dict['winding_kwargs']`` when present).
+    accessibility_method : str, optional
+        ``"winding"`` (default) or ``"lattice"``.
+    lattice_variant : str, optional
+        ``"v2"`` (recommended) or ``"v1"`` for lattice accessibility.
 
     Returns
     -------
@@ -9562,14 +9261,11 @@ def compute_surface_area_from_results(
     from .visualize import get_isosurface_mesh, get_isosurface_submeshes
 
     # Extract required data from results
-    distance_grid = results_dict['distance_grid']
+    distance_grid = results_dict['dgrid']
     pbc_groups = results_dict['pbc_groups']
+    regions_pbc = results_dict['regions_pbc']
     regions = results_dict.get('regions')
-    regions_pbc = results_dict.get('regions_pbc')
-    if regions is None:
-        raise ValueError("Surface area analysis requires 'regions' in results_dict.")
 
-    # Key pockets by regions_pbc label (matches visualization), not list index pocket_N
     pbc_groups = normalize_pbc_groups_by_regions_pbc(pbc_groups, regions, regions_pbc)
 
     # Set probe radius
@@ -9580,49 +9276,68 @@ def compute_surface_area_from_results(
     mass_g = mat_atoms.get_masses().sum() * _amu * 1000  # grams
 
     # Step 1: Compute total surface area of entire structure
-    total_mesh = get_isosurface_mesh(distance_grid, probe_radius, mat_atoms)
-    total_surface_area = total_mesh.area * 1e-20 / mass_g
+    # Check if probe radius is feasible for surface area calculation
+    if probe_radius > distance_grid.max():
+        logger.warning(f"Probe radius {probe_radius:.3f} Å exceeds maximum distance grid value {distance_grid.max():.3f} Å - total surface area will be zero")
+        total_surface_area = 0.0
+    else:
+        try:
+            total_mesh = get_isosurface_mesh(distance_grid, probe_radius, mat_atoms)
+            total_surface_area = total_mesh.area * 1e-20 / mass_g
+        except Exception as e:
+            logger.error(f"Failed to compute total surface area with marching cubes: {e}")
+            logger.warning(f"Setting total surface area to zero for probe radius {probe_radius:.3f} Å")
+            total_surface_area = 0.0
 
-    # Step 2: Ensure percolation history is available
-    if 'percolation_history' not in results_dict:
-        logger.info("Percolation history not found in results. Computing it now...")
-        results_dict = compute_percolation_history_from_results(results_dict)
-        logger.info(f"Computed percolation history with {len(results_dict['percolation_history'])} entries")
+    from .percolation_results import get_percolation_history
 
-    # Step 3: Accessible percolating regions (winding + window FP by default)
-    percolation_history = results_dict.get('percolation_history', [])
+    method = str(accessibility_method).lower()
+    # Step 2: Ensure percolation history for the chosen accessibility method
+    if method == "lattice":
+        results_dict = _ensure_lattice_history(results_dict, lattice_variant=lattice_variant)
+        percolation_history = get_percolation_history(results_dict, "lattice")
+    else:
+        results_dict = _ensure_winding_history(results_dict, winding_kwargs=winding_kwargs)
+        percolation_history = get_percolation_history(results_dict, "winding")
 
-    percolating_regions, selected_threshold, exact_match, message = (
-        _accessible_percolating_region_labels(
-            results_dict,
-            probe_radius,
-            percolation_history,
-            mat_atoms=mat_atoms,
-            window_fp_for_accessible=window_fp_for_accessible,
-            winding_kwargs=winding_kwargs,
+    # Step 3: Accessible fragment labels
+    if method == "lattice":
+        percolating_regions, selected_threshold, exact_match, message = (
+            _accessible_percolating_region_labels_lattice(
+                results_dict,
+                probe_radius,
+                percolation_history,
+                lattice_variant=lattice_variant,
+            )
         )
-    )
+    else:
+        percolating_regions, selected_threshold, exact_match, message = (
+            _accessible_percolating_region_labels_winding(
+                results_dict,
+                probe_radius,
+                mat_atoms=mat_atoms,
+                window_fp=window_fp_for_accessible,
+                winding_kwargs=winding_kwargs,
+            )
+        )
     threshold = selected_threshold
 
     logger.info(message)
 
     if not percolating_regions:
-        logger.info(
-            f"No percolation at probe radius {probe_radius:.3f} Å - accessible surface area will be zero"
-        )
+        logger.info(f"No percolation at probe radius {probe_radius:.3f} Å - accessible surface area will be zero")
     elif threshold is not None and not exact_match:
-        logger.warning(
-            f"Using approximated threshold for probe radius {probe_radius:.3f} Å - results may be approximate"
-        )
+        logger.warning(f"Using approximated threshold for probe radius {probe_radius:.3f} Å - results may be approximate")
 
-    components = None
-    if threshold is not None and percolation_history:
-        for t, c in percolation_history:
-            if abs(t - threshold) < 1e-10:
-                components = c
-                break
+    threshold, components = _percolated_cluster_components(
+        results_dict,
+        probe_radius,
+        percolation_history,
+        threshold=threshold,
+        accessibility_method=method,
+    )
 
-    # Step 3: Get surface area meshes for each region
+    # Step 3: Get surface area meshes for each region (use raw regions; aggregate to PBC reps)
     submeshes = get_isosurface_submeshes(
         distance_grid, probe_radius, mat_atoms, regions
     )
@@ -9678,12 +9393,11 @@ def compute_surface_area_from_results(
         if accessible_pocket_area > 0:
             accessible_pocket_areas[pocket_id] = accessible_pocket_area
 
-    # Step 6: Unique percolated clusters (dedupe identical region sets across axes).
-    percolated_clusters = _unique_percolated_clusters_from_components(components)
+    # Step 6: percolated clusters aligned with the accessibility method.
+    percolated_clusters = _percolated_clusters_dict(components)
     if percolated_clusters:
         logger.info(
-            f"Found {len(percolated_clusters)} unique percolated clusters at threshold "
-            f"{selected_threshold:.3f} Å"
+            f"Found {len(percolated_clusters)} percolated clusters at threshold {threshold:.3f} Å"
         )
     else:
         logger.info("No percolated clusters found - no accessible regions for cluster formation")
@@ -9695,10 +9409,7 @@ def compute_surface_area_from_results(
         if cluster_area > 0:
             percolated_cluster_areas[cluster_id] = cluster_area
 
-    # Step 6b: PBC pocket completeness vs percolation (use percolating_regions, not derived cluster bookkeeping).
-    # Keep Step 5 accessible_pocket_areas: every pocket contributes SA for whichever of its regions are
-    # in percolating_regions (matches percolation-tab union of clusters). Older code cleared Step 5 and
-    # only emitted "complete" pockets vs all_percolated_regions from cluster parsing, hiding small pockets.
+    # Step 6b: pocket completeness vs percolating_regions; retain Step 5 accessible_pocket_areas for by_pocket.
     complete_pockets = {}
     incomplete_pockets = {}
     all_percolated_regions = set(percolating_regions)
@@ -9746,6 +9457,13 @@ def compute_surface_area_from_results(
     # Step 7: Calculate total accessible surface area
     accessible_surface_area = sum(accessible_region_areas.values())
 
+    # Basic diagnostics about area accounting
+    total_region_area = sum(region_areas.values())
+    region_area_loss = max(total_surface_area - total_region_area, 0.0)
+    region_area_loss_fraction = (
+        region_area_loss / total_surface_area if total_surface_area > 0 else 0.0
+    )
+
     # Prepare results
     results = {
         'total_surface_area': total_surface_area,
@@ -9770,7 +9488,13 @@ def compute_surface_area_from_results(
             'complete_pockets': len(complete_pockets),
             'incomplete_pockets': len(incomplete_pockets),
             'completeness_rate': len(complete_pockets) / len(pbc_groups) if pbc_groups else 0
-        }
+        },
+        # Area accounting diagnostics
+        'sa_area_diagnostics': {
+            'total_surface_area_from_regions': total_region_area,
+            'total_surface_area_region_loss': region_area_loss,
+            'total_surface_area_region_loss_fraction': region_area_loss_fraction,
+        },
     }
 
     # Add point probe reference
@@ -9796,6 +9520,239 @@ def compute_surface_area_from_results(
     return results
 
 
+def compute_surface_area_mc(
+    results_dict,
+    mat_atoms,
+    probe_radius=None,
+    n_samples=20000,
+    shell_thickness=0.5,
+    return_details=False,
+    window_fp_for_accessible=True,
+    winding_kwargs=None,
+    accessibility_method="winding",
+    lattice_variant="v2",
+):
+    """
+    Experimental Monte Carlo shell-based surface area estimator.
+
+    This function reuses the existing distance grid, region labels, and
+    percolation history to estimate total and accessible surface area at a
+    given probe radius by sampling points in a thin shell around the
+    isosurface f(x) = probe_radius.
+
+    Parameters
+    ----------
+    results_dict : dict
+        Results dictionary containing at minimum:
+        - 'dgrid' or 'distance_grid': Distance grid array
+        - 'pbc_groups': PBC groups dictionary
+        - 'regions_pbc': Periodic regions array
+        - Optional: 'percolation_history' from compute_percolation_history
+    mat_atoms : ase.Atoms
+        Atomic structure for mass calculation and coordinate transformations.
+    probe_radius : float, optional
+        Probe radius for surface area calculation. If None, uses helium radius.
+    n_samples : int, optional
+        Number of Monte Carlo samples per structure.
+    shell_thickness : float, optional
+        Thickness of the shell around probe_radius used for the estimator.
+    return_details : bool, optional
+        If True, returns additional diagnostic information.
+    window_fp_for_accessible : bool, optional
+        Winding only: window-fingerprint bridging when True; strict winding when False.
+    winding_kwargs : dict, optional
+        Extra keyword arguments for winding fingerprint bridging (merged over
+        ``results_dict['winding_kwargs']`` when present).
+    accessibility_method : str, optional
+        ``"winding"`` (default) or ``"lattice"``.
+    lattice_variant : str, optional
+        ``"v2"`` or ``"v1"`` for lattice accessibility.
+
+    Returns
+    -------
+    dict
+        Dictionary with at least:
+        - 'total_surface_area': Total SA (m²/g), MC estimate
+        - 'accessible_surface_area': Accessible SA (percolated regions) (m²/g)
+        - 'accessible_fraction': Accessible / total
+        - 'probe_radius': Probe radius used
+        - 'sa_mc_diagnostics': Dict with sampling diagnostics
+
+        For now, per-region/pocket/cluster breakdowns are populated only for
+        accessible (percolating) regions, mirroring the semantics of
+        compute_surface_area_mesh (by_region = accessible SA).
+    """
+    import numpy as np
+    from ase.data import vdw_radii
+    from ase.units import _amu
+    from scipy.ndimage import map_coordinates
+
+    # Extract required data from results
+    distance_grid = results_dict.get("dgrid", results_dict.get("distance_grid"))
+    if distance_grid is None:
+        raise KeyError("results_dict must contain 'dgrid' or 'distance_grid'")
+
+    pbc_groups = results_dict["pbc_groups"]
+    regions_pbc = results_dict["regions_pbc"]
+    regions = results_dict.get("regions")
+
+    pbc_groups = normalize_pbc_groups_by_regions_pbc(pbc_groups, regions, regions_pbc)
+
+    if regions is None:
+        raise ValueError("MC surface area requires 'regions' in results_dict.")
+
+    # Set probe radius
+    if probe_radius is None:
+        probe_radius = vdw_radii[2]  # helium radius
+
+    # Calculate mass for normalization
+    mass_g = mat_atoms.get_masses().sum() * _amu * 1000  # grams
+
+    from .percolation_results import get_percolation_history
+
+    method = str(accessibility_method).lower()
+    if method == "lattice":
+        results_dict = _ensure_lattice_history(results_dict, lattice_variant=lattice_variant)
+        percolation_history = get_percolation_history(results_dict, "lattice")
+        percolating_regions, threshold, exact_match, message = (
+            _accessible_percolating_region_labels_lattice(
+                results_dict, probe_radius, percolation_history, lattice_variant=lattice_variant
+            )
+        )
+    else:
+        results_dict = _ensure_winding_history(results_dict, winding_kwargs=winding_kwargs)
+        percolation_history = get_percolation_history(results_dict, "winding")
+        percolating_regions, threshold, exact_match, message = (
+            _accessible_percolating_region_labels_winding(
+                results_dict,
+                probe_radius,
+                mat_atoms=mat_atoms,
+                window_fp=window_fp_for_accessible,
+                winding_kwargs=winding_kwargs,
+            )
+        )
+    logger.info(message)
+    if not percolating_regions:
+        logger.info(
+            f"MC SA: No percolation at probe radius {probe_radius:.3f} Å - accessible surface area will be zero"
+        )
+    elif threshold is not None and not exact_match:
+        logger.warning(
+            f"MC SA: Using approximated threshold for probe radius {probe_radius:.3f} Å - results may be approximate"
+        )
+    threshold, components = _percolated_cluster_components(
+        results_dict,
+        probe_radius,
+        percolation_history,
+        threshold=threshold,
+        accessibility_method=method,
+    )
+
+    shape = distance_grid.shape
+    # Sample random fractional coordinates in [0,1)^3
+    u = np.random.rand(n_samples, 3)
+    coords = np.vstack(
+        [
+            u[:, 0] * (shape[0] - 1),
+            u[:, 1] * (shape[1] - 1),
+            u[:, 2] * (shape[2] - 1),
+        ]
+    )
+
+    # Interpolate distance and region labels at sample points.
+    # percolating_regions are fragment labels (regions); do not sample regions_pbc here.
+    d_samples = map_coordinates(distance_grid, coords, order=1, mode="wrap")
+    reg_samples = map_coordinates(
+        np.asarray(regions, dtype=float), coords, order=0, mode="wrap"
+    ).astype(int)
+
+    half_delta = shell_thickness / 2.0
+    shell_mask = np.abs(d_samples - probe_radius) <= half_delta
+    n_shell_total = int(shell_mask.sum())
+
+    if percolating_regions:
+        acc_region_mask = np.isin(reg_samples, list(percolating_regions))
+        shell_acc_mask = shell_mask & acc_region_mask
+    else:
+        acc_region_mask = np.zeros_like(shell_mask, dtype=bool)
+        shell_acc_mask = shell_mask & acc_region_mask
+    n_shell_acc = int(shell_acc_mask.sum())
+
+    if n_samples == 0 or shell_thickness <= 0.0:
+        total_surface_area = 0.0
+        accessible_surface_area = 0.0
+        by_region_mc = {}
+        by_pocket_mc = {}
+        by_cluster_mc = {}
+    else:
+        p_shell_total = n_shell_total / float(n_samples)
+        p_shell_acc = n_shell_acc / float(n_samples)
+
+        volume_cell = mat_atoms.get_volume()  # Å³
+        # V_cell [Å³] / delta [Å] -> Å²; convert Å² -> m²/g
+        total_surface_area = volume_cell * p_shell_total / shell_thickness * 1e-20 / mass_g
+        accessible_surface_area = volume_cell * p_shell_acc / shell_thickness * 1e-20 / mass_g
+
+        # --- Per-region accessible SA (MC): fragment labels (regions) ---
+        by_region_mc = {}
+        if n_shell_acc > 0 and percolating_regions:
+            reg_shell_acc = reg_samples[shell_acc_mask]
+            unique_regions, counts = np.unique(reg_shell_acc, return_counts=True)
+            for rid, hit_count in zip(unique_regions, counts):
+                if rid not in percolating_regions:
+                    continue
+                p_shell_r = hit_count / float(n_samples)
+                sa_r = volume_cell * p_shell_r / shell_thickness * 1e-20 / mass_g
+                by_region_mc[int(rid)] = sa_r
+
+        # --- Per-pocket accessible SA (MC): sum fragments per PBC pocket (regions_pbc rep keys) ---
+        by_pocket_mc = {}
+        if by_region_mc:
+            for pocket_id, region_set in pbc_groups.items():
+                pocket_area = sum(by_region_mc.get(int(r), 0.0) for r in region_set)
+                if pocket_area > 0:
+                    by_pocket_mc[pocket_id] = pocket_area
+
+        # --- Per-percolated-cluster accessible SA (MC) ---
+        by_cluster_mc = {}
+        percolated_clusters = _percolated_clusters_dict(components)
+        if percolated_clusters and percolating_regions:
+            for cid, region_set in percolated_clusters.items():
+                cluster_area = sum(by_region_mc.get(int(r), 0.0) for r in region_set)
+                if cluster_area > 0:
+                    by_cluster_mc[cid] = cluster_area
+
+    sa_mc_diag = {
+        "n_samples": int(n_samples),
+        "shell_thickness": float(shell_thickness),
+        "n_shell_hits_total": n_shell_total,
+        "n_shell_hits_accessible": n_shell_acc,
+    }
+
+    results = {
+        "total_surface_area": total_surface_area,
+        "accessible_surface_area": accessible_surface_area,
+        "accessible_fraction": (
+            accessible_surface_area / total_surface_area if total_surface_area > 0 else 0
+        ),
+        "probe_radius": probe_radius,
+        "by_region": by_region_mc,
+        "by_pocket": by_pocket_mc,
+        "by_percolated_cluster": by_cluster_mc,
+        "sa_mc_diagnostics": sa_mc_diag,
+    }
+
+    if return_details:
+        results.update(
+            {
+                "percolating_regions": percolating_regions,
+                "percolation_history": percolation_history,
+            }
+        )
+
+    return results
+
+
 def compute_void_volume_from_results(
     results_dict,
     mat_atoms,
@@ -9803,6 +9760,8 @@ def compute_void_volume_from_results(
     return_details=False,
     window_fp_for_accessible=True,
     winding_kwargs=None,
+    accessibility_method="winding",
+    lattice_variant="v2",
 ):
     """
     Compute void volume analysis from pre-computed results dictionary with accessibility concerns.
@@ -9824,6 +9783,15 @@ def compute_void_volume_from_results(
         Probe radius for void volume calculation. If None, uses helium radius.
     return_details : bool, optional
         If True, returns detailed intermediate results. Default False.
+    window_fp_for_accessible : bool, optional
+        Winding only: window-fingerprint bridging when True; strict winding when False.
+    winding_kwargs : dict, optional
+        Extra keyword arguments for winding fingerprint bridging (merged over
+        ``results_dict['winding_kwargs']`` when present).
+    accessibility_method : str, optional
+        ``"winding"`` (default) or ``"lattice"``.
+    lattice_variant : str, optional
+        ``"v2"`` or ``"v1"`` for lattice accessibility.
 
     Returns
     -------
@@ -9843,14 +9811,11 @@ def compute_void_volume_from_results(
     from ase.units import _amu
 
     # Extract required data from results
-    distance_grid = results_dict['distance_grid']
+    distance_grid = results_dict['dgrid']
     pbc_groups = results_dict['pbc_groups']
+    regions_pbc = results_dict['regions_pbc']
     regions = results_dict.get('regions')
-    regions_pbc = results_dict.get('regions_pbc')
-    if regions is None:
-        raise ValueError("Void volume analysis requires 'regions' in results_dict.")
 
-    # Key pockets by regions_pbc label (matches visualization), not list index pocket_N
     pbc_groups = normalize_pbc_groups_by_regions_pbc(pbc_groups, regions, regions_pbc)
 
     # Set probe radius
@@ -9862,79 +9827,77 @@ def compute_void_volume_from_results(
     mass_g = mat_atoms.get_masses().sum() * _amu * 1000  # grams
 
     # Step 1: Compute total void volume of entire structure
-    total_void_fraction = np.sum(distance_grid > probe_radius) / distance_grid.size
-    total_void_volume = total_void_fraction * mat_atoms.get_volume() * 1e-24 / mass_g  # cm³/g
+    # Check if probe radius is feasible for void volume calculation
+    if probe_radius > distance_grid.max():
+        logger.info(f"Probe radius {probe_radius:.3f} Å exceeds maximum distance grid value {distance_grid.max():.3f} Å - total void volume will be zero")
+        total_void_volume = 0.0
+    else:
+        total_void_fraction = np.sum(distance_grid > probe_radius) / distance_grid.size
+        total_void_volume = total_void_fraction * mat_atoms.get_volume() * 1e-24 / mass_g  # cm³/g
 
-    # Step 2: Ensure percolation history is available
-    if 'percolation_history' not in results_dict:
-        logger.info("Percolation history not found in results. Computing it now...")
-        results_dict = compute_percolation_history_from_results(results_dict)
-        logger.info(f"Computed percolation history with {len(results_dict['percolation_history'])} entries")
+    from .percolation_results import get_percolation_history
 
-    # Step 3: Accessible percolating regions (winding + window FP by default)
-    percolation_history = results_dict.get('percolation_history', [])
-
-    percolating_regions, selected_threshold, exact_match, message = (
-        _accessible_percolating_region_labels(
-            results_dict,
-            probe_radius,
-            percolation_history,
-            mat_atoms=mat_atoms,
-            window_fp_for_accessible=window_fp_for_accessible,
-            winding_kwargs=winding_kwargs,
+    method = str(accessibility_method).lower()
+    if method == "lattice":
+        results_dict = _ensure_lattice_history(results_dict, lattice_variant=lattice_variant)
+        percolation_history = get_percolation_history(results_dict, "lattice")
+        percolating_regions, selected_threshold, exact_match, message = (
+            _accessible_percolating_region_labels_lattice(
+                results_dict, probe_radius, percolation_history, lattice_variant=lattice_variant
+            )
         )
-    )
+    else:
+        results_dict = _ensure_winding_history(results_dict, winding_kwargs=winding_kwargs)
+        percolation_history = get_percolation_history(results_dict, "winding")
+        percolating_regions, selected_threshold, exact_match, message = (
+            _accessible_percolating_region_labels_winding(
+                results_dict,
+                probe_radius,
+                mat_atoms=mat_atoms,
+                window_fp=window_fp_for_accessible,
+                winding_kwargs=winding_kwargs,
+            )
+        )
     threshold = selected_threshold
 
     logger.info(message)
 
     if not percolating_regions:
-        logger.info(
-            f"No percolation at probe radius {probe_radius:.3f} Å - accessible void volume will be zero"
-        )
+        logger.info(f"No percolation at probe radius {probe_radius:.3f} Å - accessible void volume will be zero")
     elif threshold is not None and not exact_match:
-        logger.warning(
-            f"Using approximated threshold for probe radius {probe_radius:.3f} Å - results may be approximate"
-        )
+        logger.warning(f"Using approximated threshold for probe radius {probe_radius:.3f} Å - results may be approximate")
 
-    components = None
-    if threshold is not None and percolation_history:
-        for t, c in percolation_history:
-            if abs(t - threshold) < 1e-10:
-                components = c
-                break
+    threshold, components = _percolated_cluster_components(
+        results_dict,
+        probe_radius,
+        percolation_history,
+        threshold=threshold,
+        accessibility_method=method,
+    )
 
     # Step 4: Calculate void volume by regions_pbc pocket (matches visualization labels)
-    region_ids = np.unique(regions_pbc)[1:] if regions_pbc is not None else np.unique(regions)[1:]
+    region_ids = np.unique(regions_pbc)[1:]  # Skip background (0)
     region_volumes = {}
     accessible_region_volumes = {}
     fragment_region_volumes = {}
-
     percolating_pbc_reps = set()
-    if regions_pbc is not None:
+    if regions is not None:
         for pocket_rep, fragment_set in pbc_groups.items():
             if fragment_set.intersection(percolating_regions):
                 percolating_pbc_reps.add(int(pocket_rep))
 
     for region_id in region_ids:
-        if regions_pbc is not None:
-            region_mask = regions_pbc == region_id
-        else:
-            region_mask = regions == region_id
-
+        region_mask = regions_pbc == region_id
         region_void_mask = region_mask & (distance_grid > probe_radius)
         region_void_count = np.sum(region_void_mask)
         region_volume = region_void_count * voxel_volume * 1e-24 / mass_g  # cm³/g
 
         region_volumes[region_id] = region_volume
 
-        if regions_pbc is not None:
-            if int(region_id) in percolating_pbc_reps:
-                accessible_region_volumes[region_id] = region_volume
-        elif region_id in percolating_regions:
+        if int(region_id) in percolating_pbc_reps:
             accessible_region_volumes[region_id] = region_volume
 
-    if regions is not None and regions_pbc is not None:
+    if regions is not None:
         for frag_id in np.unique(regions)[1:]:
             frag_mask = regions == frag_id
             frag_void_count = np.sum(frag_mask & (distance_grid > probe_radius))
@@ -9945,13 +9908,13 @@ def compute_void_volume_from_results(
     # Step 5: Calculate void volume by complete pocket
     pocket_volumes = {}
     accessible_pocket_volumes = {}
-
     frag_vol_lookup = fragment_region_volumes if fragment_region_volumes else region_volumes
     frag_acc_vol_lookup = (
         {k: v for k, v in fragment_region_volumes.items() if k in percolating_regions}
         if fragment_region_volumes
         else accessible_region_volumes
     )
+
     for pocket_id, region_set in pbc_groups.items():
         total_pocket_volume = sum(frag_vol_lookup.get(region_id, 0) for region_id in region_set)
         accessible_pocket_volume = sum(
@@ -9962,24 +9925,28 @@ def compute_void_volume_from_results(
         if accessible_pocket_volume > 0:
             accessible_pocket_volumes[pocket_id] = accessible_pocket_volume
 
-    # Step 5: Unique percolated clusters (dedupe identical region sets across axes).
-    percolated_clusters = _unique_percolated_clusters_from_components(components)
+    # Group percolated clusters from the accessibility method.
+    percolated_clusters = _percolated_clusters_dict(components)
     if percolated_clusters:
         logger.info(
-            f"Found {len(percolated_clusters)} unique percolated clusters at threshold "
-            f"{selected_threshold:.3f} Å"
+            f"Found {len(percolated_clusters)} percolated clusters at threshold {threshold:.3f} Å"
         )
     else:
         logger.info("No percolated clusters found - no accessible regions for cluster formation")
 
-    # Calculate void volume by percolated cluster
+    # Calculate void volume by percolated cluster (fragment labels from winding/lattice clusters)
     percolated_cluster_volumes = {}
+    vol_by_fragment = fragment_region_volumes if fragment_region_volumes else {}
     for cluster_id, region_set in percolated_clusters.items():
-        cluster_volume = sum(frag_acc_vol_lookup.get(region_id, 0) for region_id in region_set)
+        cluster_volume = sum(
+            vol_by_fragment.get(int(region_id), 0.0)
+            for region_id in region_set
+            if int(region_id) in percolating_regions
+        )
         if cluster_volume > 0:
             percolated_cluster_volumes[cluster_id] = cluster_volume
 
-    # Step 6b: completeness vs percolating_regions; retain pocket volumes from accumulation step (partial pockets included).
+    # completeness vs percolating_regions; retain accumulation-step accessible_pocket_volumes for by_pocket.
     complete_pockets = {}
     incomplete_pockets = {}
     all_percolated_regions = set(percolating_regions)
@@ -10035,9 +10002,6 @@ def compute_void_volume_from_results(
         'total_void_volume': total_void_volume,
         'accessible_void_volume': accessible_void_volume,
         'by_region': accessible_region_volumes,
-        'by_region_fragments': {
-            k: v for k, v in fragment_region_volumes.items() if k in percolating_regions
-        } if fragment_region_volumes else {},
         'by_pocket': accessible_pocket_volumes,
         'by_percolated_cluster': percolated_cluster_volumes,
         'accessible_fraction': accessible_void_volume / total_void_volume if total_void_volume > 0 else 0,
@@ -10080,4 +10044,551 @@ def compute_void_volume_from_results(
 
     return results
 
+
+def compute_surface_area_mesh_winding(
+    results_dict,
+    mat_atoms,
+    probe_radius=None,
+    return_details=False,
+    window_fp=True,
+    winding_kwargs=None,
+):
+    """Mesh (marching-cubes) surface area with winding accessibility (optional window FP)."""
+    return compute_surface_area_mesh(
+        results_dict,
+        mat_atoms,
+        probe_radius=probe_radius,
+        return_details=return_details,
+        window_fp_for_accessible=window_fp,
+        winding_kwargs=winding_kwargs,
+        accessibility_method="winding",
+    )
+
+
+def compute_surface_area_mesh_lattice(
+    results_dict,
+    mat_atoms,
+    probe_radius=None,
+    return_details=False,
+    variant="v2",
+):
+    """Mesh (marching-cubes) surface area with lattice (voxel) accessibility — Zeo++-style."""
+    return compute_surface_area_mesh(
+        results_dict,
+        mat_atoms,
+        probe_radius=probe_radius,
+        return_details=return_details,
+        accessibility_method="lattice",
+        lattice_variant=variant,
+    )
+
+
+def compute_surface_area_mc_winding(
+    results_dict,
+    mat_atoms,
+    probe_radius=None,
+    n_samples=20000,
+    shell_thickness=0.5,
+    return_details=False,
+    window_fp=True,
+    winding_kwargs=None,
+):
+    """Monte Carlo shell surface area with winding accessibility (optional window FP)."""
+    return compute_surface_area_mc(
+        results_dict,
+        mat_atoms,
+        probe_radius=probe_radius,
+        n_samples=n_samples,
+        shell_thickness=shell_thickness,
+        return_details=return_details,
+        window_fp_for_accessible=window_fp,
+        winding_kwargs=winding_kwargs,
+        accessibility_method="winding",
+    )
+
+
+def compute_surface_area_mc_lattice(
+    results_dict,
+    mat_atoms,
+    probe_radius=None,
+    n_samples=20000,
+    shell_thickness=0.5,
+    return_details=False,
+    variant="v2",
+):
+    """Monte Carlo shell surface area with lattice accessibility."""
+    return compute_surface_area_mc(
+        results_dict,
+        mat_atoms,
+        probe_radius=probe_radius,
+        n_samples=n_samples,
+        shell_thickness=shell_thickness,
+        return_details=return_details,
+        accessibility_method="lattice",
+        lattice_variant=variant,
+    )
+
+
+def compute_surface_area_from_results_winding(
+    results_dict,
+    mat_atoms,
+    probe_radius=None,
+    return_details=False,
+    window_fp=True,
+    winding_kwargs=None,
+):
+    """Deprecated alias for :func:`compute_surface_area_mesh_winding`."""
+    return compute_surface_area_mesh_winding(
+        results_dict,
+        mat_atoms,
+        probe_radius=probe_radius,
+        return_details=return_details,
+        window_fp=window_fp,
+        winding_kwargs=winding_kwargs,
+    )
+
+
+def compute_surface_area_from_results_lattice(
+    results_dict,
+    mat_atoms,
+    probe_radius=None,
+    return_details=False,
+    variant="v2",
+):
+    """Deprecated alias for :func:`compute_surface_area_mesh_lattice`."""
+    return compute_surface_area_mesh_lattice(
+        results_dict,
+        mat_atoms,
+        probe_radius=probe_radius,
+        return_details=return_details,
+        variant=variant,
+    )
+
+
+def compute_surface_area_from_results_mc_winding(
+    results_dict,
+    mat_atoms,
+    probe_radius=None,
+    n_samples=20000,
+    shell_thickness=0.5,
+    return_details=False,
+    window_fp=True,
+    winding_kwargs=None,
+):
+    """Deprecated alias for :func:`compute_surface_area_mc_winding`."""
+    return compute_surface_area_mc_winding(
+        results_dict,
+        mat_atoms,
+        probe_radius=probe_radius,
+        n_samples=n_samples,
+        shell_thickness=shell_thickness,
+        return_details=return_details,
+        window_fp=window_fp,
+        winding_kwargs=winding_kwargs,
+    )
+
+
+def compute_surface_area_from_results_mc_lattice(
+    results_dict,
+    mat_atoms,
+    probe_radius=None,
+    n_samples=20000,
+    shell_thickness=0.5,
+    return_details=False,
+    variant="v2",
+):
+    """Deprecated alias for :func:`compute_surface_area_mc_lattice`."""
+    return compute_surface_area_mc_lattice(
+        results_dict,
+        mat_atoms,
+        probe_radius=probe_radius,
+        n_samples=n_samples,
+        shell_thickness=shell_thickness,
+        return_details=return_details,
+        variant=variant,
+    )
+
+
+def compute_surface_area_from_results(
+    results_dict,
+    mat_atoms,
+    probe_radius=None,
+    return_details=False,
+    window_fp_for_accessible=True,
+    winding_kwargs=None,
+    accessibility_method="winding",
+    lattice_variant="v2",
+):
+    """Deprecated: use :func:`compute_surface_area_mesh_winding` or ``_mesh_lattice``."""
+    if str(accessibility_method).lower() == "lattice":
+        return compute_surface_area_mesh_lattice(
+            results_dict,
+            mat_atoms,
+            probe_radius=probe_radius,
+            return_details=return_details,
+            variant=lattice_variant,
+        )
+    return compute_surface_area_mesh_winding(
+        results_dict,
+        mat_atoms,
+        probe_radius=probe_radius,
+        return_details=return_details,
+        window_fp=window_fp_for_accessible,
+        winding_kwargs=winding_kwargs,
+    )
+
+
+def compute_surface_area_from_results_mc(
+    results_dict,
+    mat_atoms,
+    probe_radius=None,
+    n_samples=20000,
+    shell_thickness=0.5,
+    return_details=False,
+    window_fp_for_accessible=True,
+    winding_kwargs=None,
+    accessibility_method="winding",
+    lattice_variant="v2",
+):
+    """Deprecated: use :func:`compute_surface_area_mc_winding` or ``_mc_lattice``."""
+    if str(accessibility_method).lower() == "lattice":
+        return compute_surface_area_mc_lattice(
+            results_dict,
+            mat_atoms,
+            probe_radius=probe_radius,
+            n_samples=n_samples,
+            shell_thickness=shell_thickness,
+            return_details=return_details,
+            variant=lattice_variant,
+        )
+    return compute_surface_area_mc_winding(
+        results_dict,
+        mat_atoms,
+        probe_radius=probe_radius,
+        n_samples=n_samples,
+        shell_thickness=shell_thickness,
+        return_details=return_details,
+        window_fp=window_fp_for_accessible,
+        winding_kwargs=winding_kwargs,
+    )
+
+
+def compute_void_volume_from_results_winding(
+    results_dict,
+    mat_atoms,
+    probe_radius=None,
+    return_details=False,
+    window_fp=True,
+    winding_kwargs=None,
+):
+    """Void volume (voxel) with winding accessibility (optional window FP)."""
+    return compute_void_volume_from_results(
+        results_dict,
+        mat_atoms,
+        probe_radius=probe_radius,
+        return_details=return_details,
+        window_fp_for_accessible=window_fp,
+        winding_kwargs=winding_kwargs,
+        accessibility_method="winding",
+    )
+
+
+def compute_void_volume_from_results_lattice(
+    results_dict,
+    mat_atoms,
+    probe_radius=None,
+    return_details=False,
+    variant="v2",
+):
+    """Void volume (voxel) with lattice accessibility."""
+    return compute_void_volume_from_results(
+        results_dict,
+        mat_atoms,
+        probe_radius=probe_radius,
+        return_details=return_details,
+        accessibility_method="lattice",
+        lattice_variant=variant,
+    )
+
+
+def get_pore_dia_lattice(
+    mat_atoms,
+    dgrid=None,
+    results=None,
+    variant="v2",
+    kwargs=None,
+):
+    """Lattice pore diameters; stores ``pore_dia_lattice`` on *results* when provided."""
+    from .percolation_results import store_pore_dia
+
+    if kwargs is None:
+        kwargs = {}
+    variant = str(variant)
+    if variant == "v2":
+        lcd, pld, dfsd, dgrid_out = get_pore_dia_mgr2(mat_atoms, dgrid=dgrid, kwargs=kwargs)
+    elif variant == "v1":
+        lcd, pld, dfsd, dgrid_out = get_pore_dia_mgr(mat_atoms, dgrid=dgrid, kwargs=kwargs)
+    else:
+        raise ValueError(f"Unknown lattice variant {variant!r}; use 'v1' or 'v2'.")
+    store_pore_dia(results, "lattice", lcd, pld, dfsd, lattice_variant=variant)
+    return lcd, pld, dfsd, dgrid_out
+
+
+#**********************************************************
+# This is the updated functions for percolation with correct pbc, for testing
+#********************************************************
+class UnionFind:
+    def __init__(self, n):
+        self.parent = np.arange(n)
+
+    def find(self, x):
+        # Path compression
+        root = x
+        while self.parent[root] != root:
+            root = self.parent[root]
+        while self.parent[x] != x:
+            x, self.parent[x] = self.parent[x], root
+        return root
+
+    def union(self, x, y):
+        xr, yr = self.find(x), self.find(y)
+        if xr != yr:
+            self.parent[yr] = xr
+
+    def union_pairs(self, a, b):
+        """Union matching ids from arrays `a` and `b`."""
+        for x, y in zip(a, b):
+            self.union(int(x), int(y))
+def _merge_periodic_faces(labeled, axis, uf):
+    """Merge labels that touch across periodic faces of `axis`."""
+    if labeled.shape[axis] < 2:
+        return
+    slicer_lo = [slice(None)] * 3
+    slicer_hi = [slice(None)] * 3
+    slicer_lo[axis] = 0
+    slicer_hi[axis] = labeled.shape[axis] - 1
+    face_lo = labeled[tuple(slicer_lo)]
+    face_hi = labeled[tuple(slicer_hi)]
+    mask = (face_lo != 0) & (face_hi != 0)
+    if not np.any(mask):
+        return
+    idx_lo = face_lo[mask]
+    idx_hi = face_hi[mask]
+    if idx_lo.size == 0:
+        return
+    pairs = np.stack((idx_lo, idx_hi), axis=1)
+    unique_pairs = np.unique(pairs, axis=0)
+    uf.union_pairs(unique_pairs[:, 0], unique_pairs[:, 1])
+def percolation_all_axes_periodic(binary):
+    """
+    Check percolation in x/y/z with periodic BCs in transverse directions.
+
+    Parameters:
+    -----------
+    binary : (Nx,Ny,Nz) bool array
+        True = void/accessible, False = solid.
+
+    Returns:
+    --------
+    dict with keys "x", "y", "z":
+        each is a set of component labels that percolate in that axis.
+    unioned_labels_dict: dict
+        For each axis, the label grid after periodic boundary merging.
+    """
+    struct = generate_binary_structure(3, 1)
+    labeled, nlab = label(binary, structure=struct)
+    if nlab == 0:
+        return {"x": set(), "y": set(), "z": set()}, {}
+
+    axes = {"x": 0, "y": 1, "z": 2}
+    results = {}
+    unioned_labels_dict = {}
+
+    for name, axis in axes.items():
+        uf = UnionFind(nlab + 1)
+
+        # Merge only the transverse periodic boundaries
+        for other_axis in range(3):
+            if other_axis == axis:
+                continue
+            _merge_periodic_faces(labeled, other_axis, uf)
+
+        # Remap labels using union-find parents
+        remap = np.arange(nlab + 1)
+        for lbl in range(1, nlab + 1):
+            remap[lbl] = uf.find(lbl)
+        unioned_labels = remap[labeled]
+        unioned_labels_dict[name] = unioned_labels
+
+        # Percolation check along this axis
+        faceA = set(np.unique(np.take(unioned_labels, 0, axis=axis))) - {0}
+        faceB = set(np.unique(np.take(unioned_labels, -1, axis=axis))) - {0}
+        results[name] = faceA.intersection(faceB)
+
+    return results, unioned_labels_dict
+def check_percolation_periodic2(dgrid, threshold):
+    binary = dgrid > threshold
+    results, _ = percolation_all_axes_periodic(binary)
+    return any(len(v) > 0 for v in results.values())
+def find_pore_limiting_radius2(distance_grid):
+    import numpy as np
+    # Sort unique values in the distance grid
+    unique_radii = np.sort(np.unique(distance_grid))
+    unique_radii = unique_radii[unique_radii > 0]  # Consider only positive radii
+
+    # Binary search for the pore limiting diameter
+    left, right = 0, len(unique_radii) - 1
+    while left <= right:
+        mid = (left + right) // 2
+        threshold = unique_radii[mid]
+
+        if check_percolation_periodic2(distance_grid, threshold):
+            left = mid + 1  # Percolation exists, try a larger threshold
+        else:
+            right = mid - 1  # No percolation, try a smaller threshold
+
+    # The pore limiting diameter is the last threshold that allowed percolation
+    return unique_radii[right] if right >= 0 else None
+def compute_percolation_history2(
+        distance_grid=None,
+        regions=None,
+        maxima=None,
+        path_to_cif=None,
+        kwargs={}
+    ):
+    """
+    Compute percolation history using correct periodic percolation logic.
+
+    Returns:
+        percolation_history: list of (threshold, {axis: [region lists]})
+        pld_locations
+        distance_grid, regions, maxima
+    """
+
+    import numpy as np
+
+    spacing       = kwargs.get('spacing', 0.5)
+    mask_thickness = kwargs.get('mask_thickness', 1.5)
+    step          = kwargs.get('step', 0.05)
+
+    # --- Load or generate distance grid
+    if distance_grid is None:
+        if path_to_cif is None:
+            raise ValueError("Either distance_grid or path_to_cif must be provided.")
+        _, _, _, distance_grid = get_pore_dia_mgr(path_to_cif, kwargs)
+
+    # --- Regions and maxima
+    if regions is None or maxima is None:
+        regions, maxima = regions_from_dgrid(distance_grid, mask_thickness=mask_thickness)
+
+    # --- PLD
+    pld = find_pore_limiting_radius2(distance_grid) * 2
+    pld_locations = np.argwhere(np.isclose(distance_grid, pld/2, atol=1e-10))
+
+    percolation_history = []
+
+    # --- Loop thresholds
+    for threshold in np.arange(0, pld/2 + step, step):
+
+        binary = distance_grid > threshold
+
+        results, unioned = percolation_all_axes_periodic(binary)
+
+        if any(len(v)>0 for v in results.values()):
+
+            # Map percolating components → region IDs
+            percolating_components = {"x":[], "y":[], "z":[]}
+
+            for axis, labset in results.items():
+                axis_labels = unioned.get(axis, None)
+                if axis_labels is None:
+                    continue
+                for lab in labset:
+                    mask = (axis_labels == lab)
+                    region_list = np.unique(regions[mask])
+                    region_list = region_list[region_list != 0]
+                    percolating_components[axis].append(region_list.tolist())
+
+            percolation_history.append((threshold, percolating_components))
+
+    return percolation_history, pld_locations, distance_grid, regions, maxima
+# * compute pore diameters using the new periodic percolation algorithm
+def get_pore_dia_mgr2(mat_atoms, dgrid=None, kwargs=None):
+    """
+    Compute pore diameters (LCD/PLD/DFSD) using the periodic-aware percolation solver.
+
+    Parameters
+    ----------
+    mat_atoms : ase.Atoms
+        Atomic structure used to generate the distance grid when `dgrid` is None.
+    dgrid : np.ndarray, optional
+        Precomputed distance grid. When provided, grid generation is skipped.
+    kwargs : dict, optional
+        Additional options:
+            - spacing (float): grid spacing in Å (default 0.5)
+            - block_size (int): dgrid chunk size (default 50000)
+
+    Returns
+    -------
+    tuple
+        (lcd, pld, dfsd, distance_grid)
+    """
+    if kwargs is None:
+        kwargs = {}
+
+    spacing = kwargs.get("spacing", 0.5)
+    block_size = kwargs.get("block_size", 50000)
+
+    if dgrid is None:
+        distance_grid = mgr.dgrid_from_atoms_cpu(
+            mat_atoms, spacing=spacing, block_size=block_size
+        )
+    else:
+        distance_grid = dgrid
+
+    distance_grid = np.asarray(distance_grid)
+
+    lcd = float(distance_grid.max() * 2)
+
+    plr = find_pore_limiting_radius2(distance_grid)
+    if plr is None:
+        pld = 0.0
+    else:
+        pld = float(plr * 2)
+
+    dfsd = 0.0
+    if pld > 0:
+        threshold = pld / 2.0
+        binary_grid = distance_grid > threshold
+        results, unioned_labels = percolation_all_axes_periodic(binary_grid)
+
+        if any(len(v) > 0 for v in results.values()):
+            percolating_mask = np.zeros(distance_grid.shape, dtype=bool)
+            for axis_name, labels in results.items():
+                axis_labels = unioned_labels.get(axis_name)
+                if axis_labels is None:
+                    continue
+                for lab in labels:
+                    percolating_mask |= axis_labels == lab
+
+            if percolating_mask.any():
+                dfsd = float(distance_grid[percolating_mask].max() * 2)
+
+    return lcd, pld, dfsd, distance_grid
+#* compute the percolation history from results dict using the new percolation algorithm
+def compute_percolation_history_from_results2(results):
+    from .percolation_results import store_percolation_history
+
+    dgrid = results['dgrid']
+    regions = results['regions']
+    all_maxima = results['all_maxima']
+    maxima = all_maxima[:regions.max()]
+    percolation_history, pld_locations, _, _, _ = compute_percolation_history2(
+        dgrid, regions, maxima
+    )
+    store_percolation_history(
+        results, "lattice", percolation_history, lattice_variant="v2", pld_locations=pld_locations
+    )
+    results['pld_locations'] = pld_locations
+    return results
 
