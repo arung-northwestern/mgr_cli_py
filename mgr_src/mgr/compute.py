@@ -9981,7 +9981,8 @@ def compute_void_volume_from_results(
     flagged_pocket_volumes = {}
     for pocket_id, pocket_info in incomplete_pockets.items():
         accessible_volume = sum(
-            accessible_region_volumes.get(region_id, 0) for region_id in pocket_info['accessible_regions']
+            frag_acc_vol_lookup.get(int(region_id), 0)
+            for region_id in pocket_info['accessible_regions']
         )
         if accessible_volume > 0:
             flagged_pocket_volumes[pocket_id] = {
