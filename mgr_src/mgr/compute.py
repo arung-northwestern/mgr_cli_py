@@ -9454,7 +9454,7 @@ def compute_surface_area_mesh(
                 f"(completeness: {pocket_info['completeness_fraction']:.2%})"
             )
 
-    # Step 7: Calculate total accessible surface area
+    # Step 7: Calculate total accessible surface area (fragment labels)
     accessible_surface_area = sum(accessible_region_areas.values())
 
     # Basic diagnostics about area accounting
@@ -9468,8 +9468,9 @@ def compute_surface_area_mesh(
     results = {
         'total_surface_area': total_surface_area,
         'accessible_surface_area': accessible_surface_area,
-        'by_region': pbc_accessible_region_areas if regions_pbc is not None else accessible_region_areas,
+        'by_region': accessible_region_areas,
         'by_region_fragments': accessible_region_areas,
+        'by_region_pbc': pbc_accessible_region_areas if regions_pbc is not None else {},
         'by_pocket': accessible_pocket_areas,
         'by_percolated_cluster': percolated_cluster_areas,
         'accessible_fraction': accessible_surface_area / total_surface_area if total_surface_area > 0 else 0,
@@ -9994,20 +9995,29 @@ def compute_void_volume_from_results(
                 f"(completeness: {pocket_info['completeness_fraction']:.2%})"
             )
 
-    # Step 7: Calculate total accessible void volume
-    accessible_void_volume = sum(accessible_region_volumes.values())
+    # Step 7: Calculate total accessible void volume (fragment labels)
+    accessible_fragment_volumes = {}
+    if fragment_region_volumes:
+        for frag_id, vol in fragment_region_volumes.items():
+            if int(frag_id) in percolating_regions:
+                accessible_fragment_volumes[int(frag_id)] = vol
+    else:
+        accessible_fragment_volumes = dict(accessible_region_volumes)
+
+    accessible_void_volume = sum(accessible_fragment_volumes.values())
 
     # Prepare results
     results = {
         'total_void_volume': total_void_volume,
         'accessible_void_volume': accessible_void_volume,
-        'by_region': accessible_region_volumes,
+        'by_region': accessible_fragment_volumes,
+        'by_region_pbc': accessible_region_volumes,
         'by_pocket': accessible_pocket_volumes,
         'by_percolated_cluster': percolated_cluster_volumes,
         'accessible_fraction': accessible_void_volume / total_void_volume if total_void_volume > 0 else 0,
         'probe_radius': probe_radius,
-        'num_regions': len(region_ids),
-        'num_accessible_regions': len(accessible_region_volumes),
+        'num_regions': len(np.unique(regions)[1:]) if regions is not None else len(region_ids),
+        'num_accessible_regions': len(accessible_fragment_volumes),
         'num_pockets': len(pbc_groups),
         'num_accessible_pockets': len(accessible_pocket_volumes),
         'num_percolated_clusters': len(percolated_cluster_volumes),

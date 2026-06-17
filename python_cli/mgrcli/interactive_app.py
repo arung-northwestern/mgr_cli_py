@@ -1981,10 +1981,10 @@ def _hts_one_material(
                     try:
                         import plotly.express as px
                         breakdown_data = []
-                        for region_id, area in sa_results.get("by_region", {}).items():
-                            breakdown_data.append({"Type": "Region (non-PBC)", "Category": "Segmented", "Label": f"region_{region_id}", "Surface Area (m²/g)": area})
+                        for region_id, area in (sa_results.get("by_region", {}) or sa_results.get("by_region_fragments", {})).items():
+                            breakdown_data.append({"Type": "Region (fragment)", "Category": "Segmented", "Label": f"region_{region_id}", "Surface Area (m²/g)": area})
                         for pocket_id, area in sa_results.get("by_pocket", {}).items():
-                            breakdown_data.append({"Type": "Pocket (PBC)", "Category": "Grouped", "Label": str(pocket_id), "Surface Area (m²/g)": area})
+                            breakdown_data.append({"Type": "Pocket (PBC)", "Category": "Grouped", "Label": f"pocket_{pocket_id}", "Surface Area (m²/g)": area})
                         for cluster_id, area in sa_results.get("by_percolated_cluster", {}).items():
                             breakdown_data.append({"Type": "Cluster (percolated)", "Category": "Accessible", "Label": str(cluster_id), "Surface Area (m²/g)": area})
                         if not breakdown_data:
@@ -2005,9 +2005,9 @@ def _hts_one_material(
                         import plotly.express as px
                         breakdown_data = []
                         for region_id, volume in vol_results.get("by_region", {}).items():
-                            breakdown_data.append({"Type": "Region (non-PBC)", "Category": "Segmented", "Label": f"region_{region_id}", "Void Volume (cm³/g)": volume})
+                            breakdown_data.append({"Type": "Region (fragment)", "Category": "Segmented", "Label": f"region_{region_id}", "Void Volume (cm³/g)": volume})
                         for pocket_id, volume in vol_results.get("by_pocket", {}).items():
-                            breakdown_data.append({"Type": "Pocket (PBC)", "Category": "Grouped", "Label": str(pocket_id), "Void Volume (cm³/g)": volume})
+                            breakdown_data.append({"Type": "Pocket (PBC)", "Category": "Grouped", "Label": f"pocket_{pocket_id}", "Void Volume (cm³/g)": volume})
                         for cluster_id, volume in vol_results.get("by_percolated_cluster", {}).items():
                             breakdown_data.append({"Type": "Cluster (percolated)", "Category": "Accessible", "Label": str(cluster_id), "Void Volume (cm³/g)": volume})
                         if not breakdown_data:
@@ -4634,25 +4634,25 @@ def main() -> None:
                 # Create breakdown data
                 breakdown_data = []
 
-                # Region-wise breakdown (non-PBC)
-                by_region = sa_results.get('by_region', {})
+                # Region-wise breakdown (watershed fragment labels from ``regions``)
+                by_region = sa_results.get('by_region', {}) or sa_results.get('by_region_fragments', {})
                 if by_region:
                     for region_id, area in by_region.items():
                         breakdown_data.append({
-                            'Type': 'Region (non-PBC)',
+                            'Type': 'Region (fragment)',
                             'Category': 'Segmented',
                             'Label': f'region_{region_id}',
                             'Surface Area (m²/g)': area
                         })
 
-                # Pocket-wise breakdown (regions_pbc labels — matches visualization)
+                # Pocket-wise breakdown (PBC groups; keys align with ``regions_pbc`` reps)
                 by_pocket = sa_results.get('by_pocket', {})
                 if by_pocket:
                     for pocket_id, area in by_pocket.items():
                         breakdown_data.append({
-                            'Type': 'Pocket (regions_pbc)',
+                            'Type': 'Pocket (PBC)',
                             'Category': 'Grouped',
-                            'Label': str(pocket_id),
+                            'Label': f'pocket_{pocket_id}',
                             'Surface Area (m²/g)': area
                         })
 
@@ -4714,25 +4714,25 @@ def main() -> None:
                 # Create breakdown data
                 breakdown_data = []
 
-                # Region-wise breakdown (non-PBC)
+                # Region-wise breakdown (watershed fragment labels from ``regions``)
                 by_region = vol_results.get('by_region', {})
                 if by_region:
                     for region_id, volume in by_region.items():
                         breakdown_data.append({
-                            'Type': 'Region (non-PBC)',
+                            'Type': 'Region (fragment)',
                             'Category': 'Segmented',
                             'Label': f'region_{region_id}',
                             'Void Volume (cm³/g)': volume
                         })
 
-                # Pocket-wise breakdown (regions_pbc labels — matches visualization)
+                # Pocket-wise breakdown (PBC groups; keys align with ``regions_pbc`` reps)
                 by_pocket = vol_results.get('by_pocket', {})
                 if by_pocket:
                     for pocket_id, volume in by_pocket.items():
                         breakdown_data.append({
-                            'Type': 'Pocket (regions_pbc)',
+                            'Type': 'Pocket (PBC)',
                             'Category': 'Grouped',
-                            'Label': str(pocket_id),
+                            'Label': f'pocket_{pocket_id}',
                             'Void Volume (cm³/g)': volume
                         })
 
