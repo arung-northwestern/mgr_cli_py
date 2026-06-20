@@ -4,7 +4,7 @@
 
 # Cache-busting: change this timestamp to force a full Docker rebuild on HF Spaces.
 # Last updated: 2026-06-20 (percolation parity + clean prod deploy)
-ARG BUILD_DATE=2026-06-20
+ARG BUILD_DATE=2026-06-20b
 
 FROM python:3.11-slim AS builder
 
@@ -44,7 +44,7 @@ ENV PYTHONUNBUFFERED=1 \
     MGR_DASK_DASHBOARD_PORT=8787 \
     MGR_DASK_DASHBOARD_HOST_PORT=8787 \
     MGR_DEPLOYMENT=spaces \
-    MGRCLI_BUILD=11
+    MGRCLI_BUILD=12
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -69,6 +69,9 @@ COPY spaces/.streamlit/config.toml /app/.streamlit/config.toml
 
 RUN uv pip install --system /app/target/wheels/*.whl \
     && chmod +x /app/scripts/docker_entrypoint.sh
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/_stcore/health', timeout=5)"
 
 EXPOSE 7860
 

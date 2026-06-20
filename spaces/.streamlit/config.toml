@@ -2,6 +2,11 @@
 # protection relies on cookies, so file uploads fail with AxiosError 403.
 # See: https://huggingface.co/docs/hub/spaces-cookie-limitations
 [server]
+headless = true
+port = 7860
+address = "0.0.0.0"
+enableCORS = false
 enableXsrfProtection = false
 # Match SPACES_MAX_UPLOAD_BYTES in interactive_app.py (value is megabytes).
 maxUploadSize = 1
+fileWatcherType = "none"
