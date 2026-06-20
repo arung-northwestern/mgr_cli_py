@@ -80,9 +80,44 @@ For users who do not want a local Python/Rust setup, the **Docker** workflow run
 
 ### Prerequisites
 
-* **Python 3.8+**: [Download Python](https://www.python.org/downloads/)
-* **Rust & Cargo**: required so `mgrcli_rust` can compile (PyO3 / maturin)
+* **Python 3.10+** recommended (3.8+ minimum): [Download Python](https://www.python.org/downloads/)
+* **Rust & Cargo** (1.70+): required so `mgrcli_rust` can compile (PyO3 / maturin)
 * **Git**: to clone the repository
+
+### Local install (quick path)
+
+From a fresh clone — one editable install builds the Rust extension and Python packages together:
+
+```bash
+git clone https://github.com/arung-northwestern/mgr_cli_py.git
+cd mgr_cli_py
+
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+
+pip install --upgrade pip
+pip install -e .                   # compiles mgrcli_rust + installs mgrcli + mgr_src
+```
+
+**After changing Rust code** (`src/`, root `Cargo.toml`), reinstall the extension:
+
+```bash
+pip install --force-reinstall -e .
+```
+
+**Verify:**
+
+```bash
+mgrcli --help
+mgrcli process cifs/P1-IRMOF-1.cif -o ./out/ --return-dgrid
+mgrcli interactive --clean         # kill stale Streamlit, then open web UI
+```
+
+> **Note:** `pip install -e .` is the normal path — maturin runs `cargo` for you. You do **not** need a separate manual `cargo build` unless you are debugging the Rust crate in isolation.
+
+**Interactive app:** `mgrcli interactive` runs Streamlit on `python_cli/mgrcli/interactive_app.py`, sets `PYTHONPATH` to the repo root, and forces local mode (`MGR_FORCE_LOCAL=1`). Use **`--clean`** if a previous session left Streamlit running on the same app file.
+
+See also: [CLI ↔ web parity plan](docs/plan_cli_web_parity.md) for aligning batch CLI defaults with the Streamlit app.
 
 ### Step 1: Install Rust (one-time)
 
@@ -398,18 +433,22 @@ mgrcli config-building
 
 ### Analysis Parameters
 
-| Parameter | Short | Default | Description |
-|-----------|-------|---------|-------------|
-| `spacing` | `-s` | 0.5 | Grid spacing in Ångstroms |
-| `h` | `-H` | 0.2 | Minimum difference between pocket sizes in Å |
-| `mask-thickness` | `-mt` | 0.5 | Void space mask thickness in Å |
-| `threshold-abs` | `-ta` | 1.5 | Minimum maxima size in Å |
-| `min-distance` | `-md` | 1.5 | Minimum distance between maxima in Å |
-| `minimum-window-separation` | `-ms` | 1.0 | Minimum separation between windows in Å |
-| `wall-thickness` | `-wt` | 0.08 | Wall thickness percentage (0-1) |
-| `extra-padding` | `-ep` | 1.0 | Additional grid padding in Å |
-| `min-region-size` | `-mrs` | 0.01 | Minimum region size percentage |
-| `js-threshold` | | 0.15 | Jensen-Shannon threshold for pocket type clustering |
+| Parameter | Short | CLI default | Web app default | Description |
+|-----------|-------|-------------|-----------------|-------------|
+| `spacing` | `-s` | 0.5 | 0.5 | Grid spacing in Ångstroms |
+| `h` | `-H` | 0.2 | 0.2 | Minimum difference between pocket sizes in Å |
+| `mask-thickness` | `-mt` | 0.5 | **0.05** | Void space mask thickness in Å |
+| `threshold-abs` | `-ta` | 1.5 | 1.5 | Minimum maxima size in Å |
+| `min-distance` | `-md` | 1.5 | 1.5 | Minimum distance between maxima in Å |
+| `minimum-window-separation` | `-ms` | *(unset)* | **1.0** | Minimum separation between windows in Å |
+| `wall-thickness` | `-wt` | 0.05 | 0.05 | Wall thickness fraction |
+| `extra-padding` | `-ep` | 5.0 | 5.0 | Additional grid padding in Å |
+| `min-region-size` | `-mrs` | 0.001 | 0.001 | Minimum region size fraction |
+| `watershed-backend` | `-b` | **rust_bucket** | **rust_det** | Watershed implementation |
+| `vdw-radii-set` | — | **crc** (implicit) | **bondi** | VDW table for distance grid |
+| `js-threshold` | | 0.15 | — | Jensen–Shannon threshold (`--types` legacy path) |
+
+CLI and web defaults are **not fully aligned yet**; see [docs/plan_cli_web_parity.md](docs/plan_cli_web_parity.md).
 
 ### Analysis Flags
 
@@ -464,6 +503,13 @@ mgrcli interactive [options]
 |--------|-------------|
 | `--port` | Port to serve the Streamlit app (default chosen by Streamlit) |
 | `--no-browser` | Do not automatically open a browser window |
+| `--clean` | Kill stale Streamlit processes for this app before launch (recommended after a crash or port conflict) |
+
+Example:
+
+```bash
+mgrcli interactive --clean --port 8501
+```
 
 ### Global Options
 
