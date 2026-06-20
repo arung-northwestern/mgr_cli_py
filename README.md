@@ -350,13 +350,27 @@ An image built with `docker build -t mgrcli:local .` on an ARM Mac is **linux/ar
 - Open browser to `http://localhost:8501`
 
 ### Hugging Face Spaces (demo deployment)
-To deploy the app as a public demo on [Hugging Face Spaces](https://huggingface.co/spaces) (HTS tab shows a message only; full HTS is for local Docker/pip):
+
+**Private testing** (default for agent deploys): `arung-northwestern/mofography-web-demo-private-testing`
+
+**Production** (public demo): `arung-northwestern/mofography-web-demo` — deploy only after explicit approval.
+
+From repo root, bundle and push to private testing:
+
+```bash
+./scripts/push_hf_space.sh --confirm-push -m "Deploy: MC SA default + textural parity"
+```
+
+This runs `deploy_to_hf_space.sh`, syncs into a local Space clone, commits, and pushes to `main` (triggers rebuild). Without `--confirm-push`, only the bundle is prepared.
+
+Manual alternative:
 
 ```bash
 ./scripts/deploy_to_hf_space.sh
+# push build_space/ to your Space — see spaces/README.md
 ```
 
-Then push the generated **`build_space/`** directory to a new Space (Docker). See **`spaces/README.md`** for step-by-step instructions.
+HTS tab shows a message only on Spaces; full HTS is for local Docker/pip.
 
 ## Quick Start
 
@@ -370,17 +384,28 @@ Copy [`config/web_analysis_template.json`](config/web_analysis_template.json) or
 mgrcli generate-config --profile web -o my_config.json
 ```
 
-Run segmentation plus textural properties (matches web algorithms where noted below):
+Run segmentation plus textural properties (web-aligned defaults):
 
 ```bash
 mgrcli process structure.cif \
   -o ./out \
   -c config/web_analysis_template.json \
-  --pore-dia --psd --psd-accessible --sa --vol \
+  --pore-dia --percolation-plot \
+  --psd --psd-accessible --sa --vol \
+  --sa-plot-html --vol-plot-html \
   --probe-radius 1.2 \
   --types \
   --plot-html --plot-backend threejs
 ```
+
+**Default textural methods** (web app + `generate-config --profile web`):
+
+| Property | Method |
+|----------|--------|
+| Pore diameter | IMGR winding (`get_pore_dia_mgr_winding`) |
+| Surface area | Monte Carlo shell + winding accessibility |
+| Void volume | Voxel integration + winding accessibility |
+| Distance grid | `rust_exact`, auto-switch to `rust_aabb` on large cells |
 
 ### Basic Usage
 
@@ -503,7 +528,7 @@ Legacy profile differences: `mask_thickness=0.5`, `rust_bucket`, `crc` radii. Se
 
 ## Textural properties (CLI vs web app)
 
-Both use `mgr_src`. Batch CLI calls the same winding/mesh functions as the Streamlit app for most textural outputs when you use the web config template.
+Both use `mgr_src` and shared defaults in `python_cli/mgrcli/defaults.py` (`sa_method: mc`, winding accessibility, auto dgrid).
 
 | Analysis | CLI | Web app | Parity |
 |----------|-----|---------|--------|
@@ -511,9 +536,10 @@ Both use `mgr_src`. Batch CLI calls the same winding/mesh functions as the Strea
 | Pore LCD/PLD/DFSD | `--pore-dia` (`get_pore_dia_mgr_winding`) | PLD tab | **Yes** |
 | Percolation history | `--pore-dia` / auto before SA/vol | PLD tab | **Yes** |
 | Percolation cluster plot | `--percolation-plot` (threejs default) | Interactive tab | **Yes** |
-| SA (default MC + winding) | `--sa` | mesh in UI; MC via `--sa-method mc` | **Yes** (CLI defaults MC) |
-| Vol (voxel + winding) | `--vol` | Vol tab | **Yes** |
-| Lattice accessibility | `--accessibility-method lattice` | library | **Yes** |
+| SA (MC + winding) | `--sa` (default) | SA/Vol tab, MC default | **Yes** |
+| SA mesh (faster) | `--sa-method mesh` | SA/Vol tab radio | **Yes** |
+| Vol (voxel + winding) | `--vol` | SA/Vol tab | **Yes** |
+| Lattice accessibility | `--accessibility-method lattice` | not in UI | CLI only |
 | SA/vol breakdown bar HTML | `--sa-plot-html` / `--vol-plot-html` | Streamlit charts | **Yes** |
 | Auto dgrid | on by default (`auto_dgrid: true`) | UI auto | **Yes** (`--no-auto-dgrid` to disable) |
 

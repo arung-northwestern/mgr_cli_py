@@ -34,7 +34,7 @@ DGRID_DEFAULTS: Dict[str, Any] = {
     "auto_dgrid": True,
 }
 
-# Textural property defaults (batch CLI — MC SA + winding accessibility)
+# Textural property defaults (web app + batch CLI — MC SA + winding accessibility)
 TEXTURAL_DEFAULTS: Dict[str, Any] = {
     "probe_radius": 1.2,
     "probe_radius_psd": 1.2,

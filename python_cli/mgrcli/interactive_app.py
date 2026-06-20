@@ -1966,12 +1966,25 @@ def _hts_one_material(
                 if "distance_grid" not in modified_results:
                     modified_results["distance_grid"] = modified_results.get("dgrid")
                 probe = float(options.get("probe_radius_sa_vol", 1.2))
-                from mgr.compute import (
-                    compute_surface_area_mesh_winding,
-                    compute_void_volume_from_results_winding,
+                sa_method = str(options.get("sa_method", "mc")).lower()
+                from mgrcli.textural_analysis import compute_surface_area, compute_void_volume
+                from mgrcli.defaults import TEXTURAL_DEFAULTS
+
+                sa_results = compute_surface_area(
+                    modified_results,
+                    atoms,
+                    probe,
+                    sa_method=sa_method,
+                    window_fp=bool(options.get("window_fp", True)),
+                    mc_n_samples=int(TEXTURAL_DEFAULTS.get("mc_n_samples", 20000)),
+                    mc_shell_thickness=float(TEXTURAL_DEFAULTS.get("mc_shell_thickness", 0.5)),
                 )
-                sa_results = compute_surface_area_mesh_winding(modified_results, atoms, probe)
-                vol_results = compute_void_volume_from_results_winding(modified_results, atoms, probe)
+                vol_results = compute_void_volume(
+                    modified_results,
+                    atoms,
+                    probe,
+                    window_fp=bool(options.get("window_fp", True)),
+                )
                 if options.get("save_sa_vol_csv"):
                     if sa_results:
                         save_surface_area_csv(sa_results, material_folder / material_name)
@@ -4502,17 +4515,18 @@ def main() -> None:
                 help="Probe radius for surface area and volume calculations. Default is helium radius (1.2 Å)."
             )
 
-            # Clear cached SA/V results when probe radius changes
-            current_probe_key = f"probe_{probe_radius:.3f}"
-            if st.session_state.get("last_probe_key") != current_probe_key:
-                st.session_state.pop("sa_results", None)
-                st.session_state.pop("vol_results", None)
-                st.session_state["last_probe_key"] = current_probe_key
-
             window_fp = st.checkbox(
                 "Window fingerprint for accessible SA / void volume",
                 value=True,
                 help="Winding percolation plus window-fingerprint bridging for accessible metrics.",
+            )
+            sa_method = st.radio(
+                "Surface area method",
+                options=["mc", "mesh"],
+                index=0,
+                format_func=lambda x: "Monte Carlo shell (recommended)" if x == "mc" else "Marching-cubes mesh",
+                horizontal=True,
+                help="Monte Carlo integration is more accurate; mesh is faster for quick checks.",
             )
             st.info(
                 "When enabled, accessible surface area and void volume use winding percolation at the "
@@ -4520,13 +4534,17 @@ def main() -> None:
                 "Disable for strict winding percolation only (no fingerprint rescue)."
             )
 
+            # Clear cached SA/V results when probe radius or SA method changes
+            current_sa_vol_key = f"probe_{probe_radius:.3f}::sa_{sa_method}"
+            if st.session_state.get("last_sa_vol_key") != current_sa_vol_key:
+                st.session_state.pop("sa_results", None)
+                st.session_state.pop("vol_results", None)
+                st.session_state["last_sa_vol_key"] = current_sa_vol_key
             st.markdown("### Surface Area & Void Volume Analysis")
             if st.button("Compute Surface Area & Void Volume", key="compute_sa_vol"):
                 try:
-                    from mgr.compute import (
-                        compute_surface_area_mesh_winding,
-                        compute_void_volume_from_results_winding,
-                    )
+                    from mgrcli.textural_analysis import compute_surface_area, compute_void_volume
+                    from mgrcli.defaults import TEXTURAL_DEFAULTS
 
                     # First, ensure we have percolation analysis data
                     analysis_key = st.session_state.get("analysis_key")
@@ -4567,18 +4585,21 @@ def main() -> None:
                         vol_results = None
                     else:
                         with st.spinner("Computing surface area analysis..."):
-                            print(f"Computing surface area with probe radius: {probe_radius:.3f} Å")
+                            print(f"Computing surface area ({sa_method}) with probe radius: {probe_radius:.3f} Å")
                             print(f"Results keys available: {list(modified_results.keys())}")
-                            sa_results = compute_surface_area_mesh_winding(
+                            sa_results = compute_surface_area(
                                 modified_results,
                                 atoms,
                                 probe_radius,
+                                sa_method=sa_method,
                                 window_fp=window_fp,
+                                mc_n_samples=int(TEXTURAL_DEFAULTS.get("mc_n_samples", 20000)),
+                                mc_shell_thickness=float(TEXTURAL_DEFAULTS.get("mc_shell_thickness", 0.5)),
                             )
                             print(f"Surface area results: {sa_results}")
                         with st.spinner("Computing void volume analysis..."):
                             print(f"Computing void volume with probe radius: {probe_radius:.3f} Å")
-                            vol_results = compute_void_volume_from_results_winding(
+                            vol_results = compute_void_volume(
                                 modified_results,
                                 atoms,
                                 probe_radius,

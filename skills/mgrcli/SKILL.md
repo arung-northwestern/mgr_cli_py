@@ -127,7 +127,7 @@ Shared library: `mgr_src/mgr/compute.py`, `mgr/winding_percolation.py`. Defaults
 | Pore LCD/PLD/DFSD | `get_pore_dia_mgr_winding` | `--pore-dia` same | **Yes** |
 | Percolation cluster **plot** | Plotly / Three.js tab | `--percolation-plot` | **Yes** |
 | SA accessible | MC + winding default | `--sa` → `compute_surface_area_mc_winding` | **Yes** |
-| SA mesh | UI option | `--sa-method mesh` | **Yes** |
+| SA mesh | UI radio option | `--sa-method mesh` | **Yes** |
 | Vol accessible | voxel + winding | `--vol` | **Yes** |
 | Lattice accessibility | library | `--accessibility-method lattice` | **Yes** |
 | PSD total (global + pocket) | Rust uniform + pocketwise | `--psd` | **Yes** |
