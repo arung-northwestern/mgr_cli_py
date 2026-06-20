@@ -988,7 +988,22 @@ Notes:
         )
         param_group.add_argument(
             '--js-threshold', type=float, default=0.15,
-            help='Jensen-Shannon threshold for pocket type clustering (default: 0.15)'
+            help='Jensen-Shannon threshold for legacy_js pocket typing only (default: 0.15)',
+        )
+        param_group.add_argument(
+            '--probe-radius-psd',
+            type=float,
+            default=None,
+            help='Probe radius (Å) for pocket PSD in env_cluster typing (default: 1.2)',
+        )
+        param_group.add_argument(
+            '--pocket-typing',
+            choices=['env_cluster', 'legacy_js', 'none'],
+            default=None,
+            help=(
+                'Pocket typing method: env_cluster (web default), legacy_js (RAG+JS), or none. '
+                'Shorthand: --types enables env_cluster.'
+            ),
         )
         param_group.add_argument(
             '--no-surface-taubin',
@@ -1010,12 +1025,11 @@ Notes:
             help='Disable connection computation'
         )
         flag_group.add_argument(
-            '--auto-dgrid', action='store_true', default=None,
-            help='Auto-switch rust_exact → rust_aabb for large cells (web default when unset)',
-        )
-        flag_group.add_argument(
-            '--no-auto-dgrid', action='store_true',
-            help='Disable automatic rust_aabb distance-grid switching',
+            '--auto-dgrid-method', action='store_true',
+            help=(
+                'Auto-switch rust_exact → rust_aabb for large cells when dgrid_method is '
+                'rust_exact (off by default; explicit --dgrid-method always wins)'
+            ),
         )
         flag_group.add_argument(
             '--no-window-fp', action='store_true',
@@ -1072,7 +1086,10 @@ Notes:
         )
         flag_group.add_argument(
             '--types', action='store_true',
-            help='Detect pocket types using agglomerative clustering on cavity size distributions. If set, saves pocket type segmentation and (now) also outputs a RAG pickle file.'
+            help=(
+                'Detect pocket types via env_cluster (max_r bands + framework fingerprints). '
+                'Use --pocket-typing legacy_js for the older RAG+JS method.'
+            ),
         )
         flag_group.add_argument(
             '--rag', action='store_true',
@@ -1449,136 +1466,19 @@ Notes:
                     else:
                         print("  Void volume analysis failed")
 
-                # Handle RAG output if requested (even without --types)
-                if getattr(args, 'rag', False) and not getattr(args, 'types', False):
-                    # Only build/save RAG if not already handled by --types
-                    import numpy as np
-                    import pickle
-                    dgrid = result['dgrid']
-                    regions = result['regions']
-                    maxima_info = result['maxima_info']
-                    all_maxima = result['all_maxima']
-                    all_maxima_radii = dgrid[tuple(maxima_info[:,1:4].T)]
-                    connections = result.get('connections', [])
-                    unique_regions_for_pbc = result.get('unique_regions', [])
-                    pbc_groups_dict = get_pbc_groups(unique_regions_for_pbc, maxima_info)
-                    pbc_groups = [v for k, v in pbc_groups_dict.items()]
-                    unique_regions = result.get('unique_regions', [])
-                    maxima = all_maxima[:regions.max()]
-                    maxima_radii = all_maxima_radii[:regions.max()]
-                    connections_trimmed = [c for c in connections if np.any(np.isin(c[0], unique_regions))]
-                    if len(maxima) > 0:
-                        try:
-                            rag = mgr.rag_from_connections(connections_trimmed, maxima)
-                            rag = mgr.add_pbc_to_rag(rag, pbc_groups)
-                            rag = mgr.add_maxima_to_rag(rag, maxima, maxima_radii, dgrid.shape, original_atoms)
-                            rag_pickle_path = output_dir / f"{cif_file.stem}_rag_clustered.pkl"
-                            with open(rag_pickle_path, 'wb') as f:
-                                pickle.dump(rag, f)
-                            print(f"RAG (region adjacency graph) saved to: {rag_pickle_path}")
-                        except Exception as e:
-                            print(f"Warning: RAG creation failed: {e}")
-                    else:
-                        print("Warning: Cannot build RAG - no maxima data found")
+                pocket_method = self._resolve_pocket_typing_method(config, args)
 
-                # Handle pocket type detection if requested
-                if getattr(args, 'types', False):
-                    from skimage.measure import regionprops
-                    import numpy as np
+                if getattr(args, 'rag', False) and pocket_method != 'legacy_js':
+                    self._save_rag_pickle(result, original_atoms, output_dir, cif_file.stem)
 
-                    print("Detecting pocket types...")
-                    js_threshold = getattr(args, 'js_threshold', 0.2)
-
-                    # Get required data for clustering
-                    dgrid = result['dgrid']
-                    regions = result['regions']
-                    regions_pbc = result.get('regions_pbc', regions)
-                    maxima_info = result['maxima_info']
-                    all_maxima = result['all_maxima']
-                    all_maxima_radii = dgrid[tuple(maxima_info[:,1:4].T)]
-                    connections = result.get('connections', [])
-                    # Compute proper PBC groups using the reference library function
-                    unique_regions_for_pbc = result.get('unique_regions', [])
-                    pbc_groups_dict = get_pbc_groups(unique_regions_for_pbc, maxima_info)
-                    pbc_groups = [v for k, v in pbc_groups_dict.items()]
-                    unique_regions = result.get('unique_regions', [])
-
-                    # Trim maxima using regions.max() as shown in example
-                    maxima = all_maxima[:regions.max()]
-                    maxima_radii = all_maxima_radii[:regions.max()]
-                    connections_trimmed = [c for c in connections if np.any(np.isin(c[0], unique_regions))]
-
-                    if len(maxima) > 0:
-                        try:
-                            # Rebuild RAG following the example pattern
-                            rag = mgr.rag_from_connections(connections_trimmed, maxima)
-                            rag = mgr.add_pbc_to_rag(rag, pbc_groups)
-                            rag = mgr.add_maxima_to_rag(rag, maxima, maxima_radii, dgrid.shape, original_atoms)
-
-                            # Add PSD and clustering to RAG
-                            props = regionprops(regions)
-                            bins = np.linspace(0, 30, 50)
-
-                            # Check if any pbc_groups contain label 0 (background)
-                            has_zero = any(0 in group for group in pbc_groups)
-                            if has_zero:
-                                print("Debug: Removing groups with label 0")
-                                pbc_groups = [group for group in pbc_groups if 0 not in group]
-
-                            # Compute pocketwise probe-occupiable PSDs via Rust backend
-                            _probe_psd = getattr(args, 'probe_radius', None)
-                            if _probe_psd is None:
-                                from ase.data import vdw_radii
-                                _probe_psd = vdw_radii[2]  # helium default
-                            regions_pbc_for_psd = result.get('regions_pbc', regions)
-                            try:
-                                pocket_psds = mgr.compute_psds_pocketwise_rust(
-                                    dgrid, regions_pbc_for_psd, original_atoms,
-                                    num_samples_per_region=1000,
-                                    bins=bins,
-                                    return_fig=False,
-                                    probe_center_min_radius=_probe_psd,
-                                )
-                            except Exception:
-                                pocket_psds = None
-
-                            rag = mgr.add_csd_to_rag_with_pbc(rag, props, pbc_groups, bins, original_atoms, dgrid.shape)
-                            if pocket_psds is not None:
-                                rag = mgr.add_pocket_psd_to_rag_with_pbc(rag, props, pbc_groups, pocket_psds)
-                            _psd_source = "pocket_psd" if pocket_psds is not None else "geometry"
-                            rag = mgr.add_clustering_to_rag_geometry_js(rag, props, pbc_groups, original_atoms, dgrid.shape, use_pbc=True, js_threshold=js_threshold, psd_source=_psd_source)
-
-                            # Generate regions cluster
-                            regions_cluster = mgr.clustering_grid_from_regions(regions, rag, cluster_key="cluster_geom_pbc")
-                        except Exception as e:
-                            print(f"Warning: Pocket type detection failed: {e}")
-                            regions_cluster = None
-                            rag = None
-
-                        if regions_cluster is not None:
-                            result['regions_cluster'] = regions_cluster
-                            result['pocket_types_detected'] = True
-                            result['js_threshold_used'] = js_threshold
-                            result['psd_source'] = _psd_source
-                            if pocket_psds is not None:
-                                result['probe_radius_psd_used'] = _probe_psd
-
-                            # Save RAG pickle if --types or --rag is set
-                            if getattr(args, 'types', False) or getattr(args, 'rag', False):
-                                import pickle
-                                rag_pickle_path = output_dir / f"{cif_file.stem}_rag_clustered.pkl"
-                                with open(rag_pickle_path, 'wb') as f:
-                                    pickle.dump(rag, f)
-                                print(f"RAG (region adjacency graph) saved to: {rag_pickle_path}")
-
-                            _psd_label = "pocketwise probe-occupiable PSDs" if pocket_psds is not None else "centroid-distance histograms"
-                            print(f"Pocket types detected using JS threshold: {js_threshold} (PSD source: {_psd_label})")
-                            num_clusters = len(np.unique(regions_cluster)) - 1  # -1 for background
-                            print(f"Found {num_clusters} different pocket types")
-                        else:
-                            print("Warning: Cannot perform pocket type detection - no maxima data found or clustering failed")
-                            result['pocket_types_detected'] = False
-
+                if pocket_method == 'env_cluster':
+                    self._apply_env_cluster_pocket_typing(
+                        result, atoms, config, args, cif_file=cif_file
+                    )
+                elif pocket_method == 'legacy_js':
+                    self._apply_legacy_js_pocket_typing(
+                        result, original_atoms, args, output_dir, cif_file
+                    )
 
                 # Save results
                 save_payload = dict(result)
@@ -1903,10 +1803,17 @@ Notes:
         if getattr(args, 'watershed_backend', None) is not None:
             result['watershed_backend'] = args.watershed_backend
 
-        if getattr(args, 'no_auto_dgrid', False):
-            result['auto_dgrid'] = False
-        elif getattr(args, 'auto_dgrid', None):
+        if getattr(args, 'auto_dgrid_method', False):
             result['auto_dgrid'] = True
+
+        pocket_typing = getattr(args, 'pocket_typing', None)
+        if pocket_typing is not None:
+            result['pocket_typing'] = pocket_typing
+        if getattr(args, 'types', False) and pocket_typing is None:
+            result['pocket_typing'] = 'env_cluster'
+
+        if getattr(args, 'probe_radius_psd', None) is not None:
+            result['probe_radius_psd'] = float(args.probe_radius_psd)
 
         if getattr(args, 'no_window_fp', False):
             result['window_fp'] = False
@@ -1930,6 +1837,221 @@ Notes:
             probe_radius = float(vdw_radii[2])
         return float(probe_radius)
 
+    def _resolve_pocket_typing_method(self, config: Dict[str, Any], args) -> Optional[str]:
+        explicit = getattr(args, 'pocket_typing', None) or config.get('pocket_typing')
+        if getattr(args, 'types', False):
+            if explicit and explicit not in ('none', None):
+                return str(explicit)
+            return 'env_cluster'
+        if explicit and explicit not in ('none', None):
+            return str(explicit)
+        return None
+
+    def _resolve_probe_radius_psd(self, config: Dict[str, Any], args) -> float:
+        probe = getattr(args, 'probe_radius_psd', None)
+        if probe is None:
+            probe = config.get('probe_radius_psd', 1.2)
+        return float(probe)
+
+    def _apply_env_cluster_pocket_typing(
+        self,
+        result: Dict[str, Any],
+        atoms,
+        config: Dict[str, Any],
+        args,
+        *,
+        cif_file: Optional[Path] = None,
+    ) -> None:
+        from mgr.pocket_typing import (
+            assign_pocket_types_from_segmentation,
+            pocket_typing_result_for_app,
+        )
+
+        print("Detecting pocket types (env_cluster)...")
+        probe_radius_psd = self._resolve_probe_radius_psd(config, args)
+        result['probe_radius_psd_used'] = probe_radius_psd
+        try:
+            pt_out = assign_pocket_types_from_segmentation(
+                result,
+                atoms,
+                probe_radius_psd=probe_radius_psd,
+                method='env_cluster',
+                cif_path=str(cif_file) if cif_file else None,
+            )
+            pt_dict = pocket_typing_result_for_app(pt_out)
+        except Exception as exc:
+            print(f"Warning: Pocket type detection failed: {exc}")
+            result['pocket_types_detected'] = False
+            return
+
+        if not pt_dict.get('ok'):
+            print(f"Warning: Pocket type detection failed: {pt_dict.get('error', 'unknown')}")
+            result['pocket_types_detected'] = False
+            return
+
+        result['regions_cluster'] = pt_dict['regions_cluster']
+        result['pocket_types_detected'] = True
+        result['psd_source'] = pt_dict.get('psd_source', 'pocket_psd')
+        result['pocket_typing_method'] = pt_dict.get('pocket_typing_method', 'env_cluster')
+        result['pocket_type_summary'] = pt_dict.get('pocket_type_summary', [])
+        result['pocket_rep_to_type'] = pt_dict.get('pocket_rep_to_type', {})
+        result['pocket_typing_audit'] = pt_dict.get('pocket_typing_audit', {})
+        pt_audit = pt_dict.get('pocket_typing_audit') or {}
+        result['pocket_typing_radii'] = pt_audit.get('typing_radii', 'bondi_crc_fallback')
+        num_clusters = int(pt_dict.get('num_clusters', 0))
+        print(f"Found {num_clusters} pocket types (env_cluster, probe PSD r={probe_radius_psd:.3f} Å)")
+
+    def _save_rag_pickle(
+        self,
+        result: Dict[str, Any],
+        atoms,
+        output_dir: Path,
+        stem: str,
+    ) -> None:
+        import pickle
+
+        import numpy as np
+
+        dgrid = result['dgrid']
+        regions = result['regions']
+        maxima_info = result['maxima_info']
+        all_maxima = result['all_maxima']
+        all_maxima_radii = dgrid[tuple(maxima_info[:, 1:4].T)]
+        connections = result.get('connections', [])
+        unique_regions_for_pbc = result.get('unique_regions', [])
+        pbc_groups_dict = get_pbc_groups(unique_regions_for_pbc, maxima_info)
+        pbc_groups = [v for k, v in pbc_groups_dict.items()]
+        unique_regions = result.get('unique_regions', [])
+        maxima = all_maxima[:regions.max()]
+        maxima_radii = all_maxima_radii[:regions.max()]
+        connections_trimmed = [c for c in connections if np.any(np.isin(c[0], unique_regions))]
+        if len(maxima) == 0:
+            print("Warning: Cannot build RAG - no maxima data found")
+            return
+        try:
+            rag = mgr.rag_from_connections(connections_trimmed, maxima)
+            rag = mgr.add_pbc_to_rag(rag, pbc_groups)
+            rag = mgr.add_maxima_to_rag(rag, maxima, maxima_radii, dgrid.shape, atoms)
+            rag_pickle_path = output_dir / f"{stem}_rag_clustered.pkl"
+            with open(rag_pickle_path, 'wb') as f:
+                pickle.dump(rag, f)
+            print(f"RAG (region adjacency graph) saved to: {rag_pickle_path}")
+        except Exception as exc:
+            print(f"Warning: RAG creation failed: {exc}")
+
+    def _apply_legacy_js_pocket_typing(
+        self,
+        result: Dict[str, Any],
+        atoms,
+        args,
+        output_dir: Path,
+        cif_file: Path,
+    ) -> None:
+        from skimage.measure import regionprops
+
+        import numpy as np
+
+        print("Detecting pocket types (legacy_js)...")
+        js_threshold = getattr(args, 'js_threshold', 0.15)
+
+        dgrid = result['dgrid']
+        regions = result['regions']
+        maxima_info = result['maxima_info']
+        all_maxima = result['all_maxima']
+        all_maxima_radii = dgrid[tuple(maxima_info[:, 1:4].T)]
+        connections = result.get('connections', [])
+        unique_regions_for_pbc = result.get('unique_regions', [])
+        pbc_groups_dict = get_pbc_groups(unique_regions_for_pbc, maxima_info)
+        pbc_groups = [v for k, v in pbc_groups_dict.items()]
+        unique_regions = result.get('unique_regions', [])
+        maxima = all_maxima[:regions.max()]
+        maxima_radii = all_maxima_radii[:regions.max()]
+        connections_trimmed = [c for c in connections if np.any(np.isin(c[0], unique_regions))]
+
+        if len(maxima) == 0:
+            print("Warning: Cannot perform pocket type detection - no maxima data found")
+            result['pocket_types_detected'] = False
+            return
+
+        regions_cluster = None
+        rag = None
+        pocket_psds = None
+        _psd_source = 'geometry'
+        try:
+            rag = mgr.rag_from_connections(connections_trimmed, maxima)
+            rag = mgr.add_pbc_to_rag(rag, pbc_groups)
+            rag = mgr.add_maxima_to_rag(rag, maxima, maxima_radii, dgrid.shape, atoms)
+
+            props = regionprops(regions)
+            bins = np.linspace(0, 30, 50)
+            pbc_groups = [group for group in pbc_groups if 0 not in group]
+
+            _probe_psd = getattr(args, 'probe_radius', None)
+            if _probe_psd is None:
+                from ase.data import vdw_radii
+                _probe_psd = vdw_radii[2]
+            regions_pbc_for_psd = result.get('regions_pbc', regions)
+            try:
+                pocket_psds = mgr.compute_psds_pocketwise_rust(
+                    dgrid,
+                    regions_pbc_for_psd,
+                    atoms,
+                    num_samples_per_region=1000,
+                    bins=bins,
+                    return_fig=False,
+                    probe_center_min_radius=_probe_psd,
+                )
+            except Exception:
+                pocket_psds = None
+
+            rag = mgr.add_csd_to_rag_with_pbc(rag, props, pbc_groups, bins, atoms, dgrid.shape)
+            if pocket_psds is not None:
+                rag = mgr.add_pocket_psd_to_rag_with_pbc(rag, props, pbc_groups, pocket_psds)
+            _psd_source = 'pocket_psd' if pocket_psds is not None else 'geometry'
+            rag = mgr.add_clustering_to_rag_geometry_js(
+                rag,
+                props,
+                pbc_groups,
+                atoms,
+                dgrid.shape,
+                use_pbc=True,
+                js_threshold=js_threshold,
+                psd_source=_psd_source,
+            )
+            regions_cluster = mgr.clustering_grid_from_regions(
+                regions, rag, cluster_key='cluster_geom_pbc'
+            )
+        except Exception as exc:
+            print(f"Warning: Pocket type detection failed: {exc}")
+
+        if regions_cluster is None:
+            print("Warning: Cannot perform pocket type detection - clustering failed")
+            result['pocket_types_detected'] = False
+            return
+
+        result['regions_cluster'] = regions_cluster
+        result['pocket_types_detected'] = True
+        result['pocket_typing_method'] = 'legacy_js'
+        result['js_threshold_used'] = js_threshold
+        result['psd_source'] = _psd_source
+        if pocket_psds is not None:
+            result['probe_radius_psd_used'] = _probe_psd
+
+        if rag is not None and (getattr(args, 'types', False) or getattr(args, 'rag', False)):
+            import pickle
+
+            rag_pickle_path = output_dir / f"{cif_file.stem}_rag_clustered.pkl"
+            with open(rag_pickle_path, 'wb') as f:
+                pickle.dump(rag, f)
+            print(f"RAG (region adjacency graph) saved to: {rag_pickle_path}")
+
+        _psd_label = (
+            'pocketwise probe-occupiable PSDs' if pocket_psds is not None else 'centroid-distance histograms'
+        )
+        print(f"Pocket types detected using JS threshold: {js_threshold} (PSD source: {_psd_label})")
+        num_clusters = len(np.unique(regions_cluster)) - 1
+        print(f"Found {num_clusters} different pocket types")
+
     def process_single_cif(self, cif_file: Path, config: Dict[str, Any]) -> Dict[str, Any]:
         """Process a single CIF file using the Python workflow built on the Rust backend."""
 
@@ -1937,7 +2059,7 @@ Notes:
         spacing = config['spacing']
         radii_set = str(config.get('vdw_radii_set', 'bondi'))
         configured_dgrid = str(config.get('dgrid_method', 'rust_exact'))
-        auto_dgrid = bool(config.get('auto_dgrid', True))
+        auto_dgrid = bool(config.get('auto_dgrid', False))
         dgrid_method, dgrid_meta = resolve_dgrid_method(
             atoms, spacing, configured_dgrid, auto_dgrid=auto_dgrid
         )

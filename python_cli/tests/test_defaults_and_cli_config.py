@@ -32,7 +32,7 @@ class TestSharedDefaults(unittest.TestCase):
     self.assertEqual(web["extra_padding"], 5.0)
     self.assertTrue(web["skip_endchannel_pairs"])
     self.assertEqual(web["vdw_radii_set"], "bondi")
-    self.assertTrue(web["auto_dgrid"])
+    self.assertFalse(web["auto_dgrid"])
     self.assertTrue(web["window_fp"])
 
   def test_legacy_profile_differs(self):
@@ -70,6 +70,25 @@ class TestDgridPolicy(unittest.TestCase):
     method, meta = resolve_dgrid_method(atoms, 0.5, "rust_exact", auto_dgrid=True)
     self.assertEqual(method, "rust_exact")
     self.assertEqual(meta["resolved"], "rust_exact")
+
+  def test_auto_dgrid_off_keeps_configured_method(self):
+    try:
+      from ase import Atoms
+    except ImportError:
+      self.skipTest("ase not installed")
+    atoms = Atoms("C8", positions=[[i, 0, 0] for i in range(8)], cell=[200, 200, 200], pbc=True)
+    method, meta = resolve_dgrid_method(atoms, 0.1, "rust_exact", auto_dgrid=False)
+    self.assertEqual(method, "rust_exact")
+    self.assertFalse(meta["auto_dgrid"])
+
+  def test_explicit_dgrid_method_not_overridden(self):
+    try:
+      from ase import Atoms
+    except ImportError:
+      self.skipTest("ase not installed")
+    atoms = Atoms("C8", positions=[[i, 0, 0] for i in range(8)], cell=[200, 200, 200], pbc=True)
+    method, _ = resolve_dgrid_method(atoms, 0.1, "rust_aabb", auto_dgrid=True)
+    self.assertEqual(method, "rust_aabb")
 
 
 class TestCLIConfigIntegration(unittest.TestCase):
@@ -115,7 +134,7 @@ class TestCLIConfigIntegration(unittest.TestCase):
     result = subprocess.run(cmd, capture_output=True, text=True, cwd=self.test_dir.parent)
     self.assertEqual(result.returncode, 0, result.stderr)
     self.assertIn("--vdw-radii-set", result.stdout)
-    self.assertIn("--auto-dgrid", result.stdout)
+    self.assertIn("--auto-dgrid-method", result.stdout)
     self.assertIn("--no-window-fp", result.stdout)
 
   def test_interactive_help_lists_clean(self):

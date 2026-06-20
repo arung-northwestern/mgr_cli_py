@@ -31,14 +31,16 @@ DGRID_DEFAULTS: Dict[str, Any] = {
     "dgrid_n_neighbors": 10,
     "dgrid_coarse_factor": 2,
     "vdw_radii_set": "bondi",
-    "auto_dgrid": True,
+    "auto_dgrid": False,
 }
 
 # Probe-accessible textural properties (SA / vol / accessible PSD)
 TEXTURAL_DEFAULTS: Dict[str, Any] = {
     "probe_radius": 1.2,  # He (Å); overridden at runtime if None via vdw_radii[2]
+    "probe_radius_psd": 1.2,  # pocket typing PSD probe (env_cluster default)
     "window_fp": True,
     "accessibility_method": "winding",
+    "pocket_typing": "none",
 }
 
 # Batch CLI HTML plotting (web UI defaults to Three.js; CLI batch stays Plotly unless set)
@@ -147,6 +149,7 @@ def apply_config_overrides(
         "min_region_size": "min_region_size",
         "vdw_radii_set": "vdw_radii_set",
         "probe_radius": "probe_radius",
+        "probe_radius_psd": "probe_radius_psd",
     }
     result = dict(base)
     for arg_name, config_key in mapping.items():
