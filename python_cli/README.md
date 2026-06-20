@@ -4,11 +4,15 @@ Command-line and Streamlit entry points for MOF analysis.
 
 **Full install and usage:** see the [repository root README](../README.md).
 
+**AI agents:** [`skills/mgrcli/SKILL.md`](../skills/mgrcli/SKILL.md)  
+**Config template:** [`config/web_analysis_template.json`](../config/web_analysis_template.json)
+
 ## Quick start
 
 ```bash
 # From repo root (after pip install -e .)
-mgrcli process structure.cif -o ./results/
+mgrcli process structure.cif -o ./results/ -c config/web_analysis_template.json
+mgrcli process structure.cif -o ./results/ --pore-dia --psd --sa --vol
 mgrcli interactive --clean
 ```
 
@@ -22,7 +26,7 @@ mgrcli interactive --clean
 
 ## CLI vs web defaults
 
-Batch CLI defaults (`cli.py` → `DEFAULTS`) differ from the Streamlit app on mask thickness, watershed backend, and VDW radii. Parity plan: [docs/plan_cli_web_parity.md](../docs/plan_cli_web_parity.md).
+Web-aligned batch defaults: `mgrcli generate-config --profile web` or `config/web_analysis_template.json`. Textural property parity: [README § Textural properties](../README.md#textural-properties-cli-vs-web-app). Roadmap: [docs/plan_cli_web_parity.md](../docs/plan_cli_web_parity.md).
 
 ## Tests
 

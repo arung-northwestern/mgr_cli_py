@@ -15,6 +15,8 @@ A high-performance command-line interface for analyzing Metal-Organic Frameworks
 - [Features](#features)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
+- [Textural properties (CLI vs web app)](#textural-properties-cli-vs-web-app)
+- [AI agents](#ai-agents)
 - [Output Format](#output-format)
 - [Examples](#examples)
 - [Workflow Diagram](#workflow-diagram)
@@ -360,6 +362,26 @@ Then push the generated **`build_space/`** directory to a new Space (Docker). Se
 
 Once installed, MCLI is ready to analyze your CIF files:
 
+### Full analysis (template config)
+
+Copy [`config/web_analysis_template.json`](config/web_analysis_template.json) or generate web-aligned defaults:
+
+```bash
+mgrcli generate-config --profile web -o my_config.json
+```
+
+Run segmentation plus textural properties (matches web algorithms where noted below):
+
+```bash
+mgrcli process structure.cif \
+  -o ./out \
+  -c config/web_analysis_template.json \
+  --pore-dia --psd --psd-accessible --sa --vol \
+  --probe-radius 1.2 \
+  --types \
+  --plot-html --plot-backend threejs
+```
+
 ### Basic Usage
 
 ```bash
@@ -410,119 +432,145 @@ mgrcli interactive     # Launch interactive Streamlit web application
 
 ## Configuration
 
-### Generate Default Config
+### Default template
+
+[`config/web_analysis_template.json`](config/web_analysis_template.json) — web-aligned segmentation defaults (bondi VDW, `rust_det`, mask 0.05 Å, winding accessibility settings). See [`config/README.md`](config/README.md).
+
+### Generate config
+
 ```bash
-mgrcli generate-config -o config.json
+mgrcli generate-config --profile web -o config.json   # Streamlit-aligned (default)
+mgrcli generate-config --profile legacy -o legacy.json  # old batch defaults
 ```
 
-### Customize Parameters
+### Customize parameters
+
 ```bash
 mgrcli generate-config \
-    --spacing 0.3 \
-    -H 0.5 \
-    --mask-thickness 0.8 \
-    --threshold-abs 2.0 \
+    --profile web \
+    --spacing 0.4 \
+    --mask-thickness 0.05 \
     -o custom_config.json
 ```
 
-### Interactive Builder
+### Interactive builder
+
 ```bash
 mgrcli config-building
-# Follow prompts to create custom configuration
 ```
 
-### Analysis Parameters
+### Analysis parameters (web profile)
 
-| Parameter | Short | CLI default | Web app default | Description |
-|-----------|-------|-------------|-----------------|-------------|
-| `spacing` | `-s` | 0.5 | 0.5 | Grid spacing in Ångstroms |
-| `h` | `-H` | 0.2 | 0.2 | Minimum difference between pocket sizes in Å |
-| `mask-thickness` | `-mt` | 0.5 | **0.05** | Void space mask thickness in Å |
-| `threshold-abs` | `-ta` | 1.5 | 1.5 | Minimum maxima size in Å |
-| `min-distance` | `-md` | 1.5 | 1.5 | Minimum distance between maxima in Å |
-| `minimum-window-separation` | `-ms` | *(unset)* | **1.0** | Minimum separation between windows in Å |
-| `wall-thickness` | `-wt` | 0.05 | 0.05 | Wall thickness fraction |
-| `extra-padding` | `-ep` | 5.0 | 5.0 | Additional grid padding in Å |
-| `min-region-size` | `-mrs` | 0.001 | 0.001 | Minimum region size fraction |
-| `watershed-backend` | `-b` | **rust_bucket** | **rust_det** | Watershed implementation |
-| `vdw-radii-set` | — | **crc** (implicit) | **bondi** | VDW table for distance grid |
-| `js-threshold` | | 0.15 | — | Jensen–Shannon threshold (`--types` legacy path) |
+| Parameter | Short | Default | Description |
+|-----------|-------|---------|-------------|
+| `spacing` | `-s` | 0.5 | Grid spacing (Å) |
+| `mask-thickness` | `-mt` | 0.05 | Void mask thickness (Å) |
+| `watershed-backend` | `-b` | `rust_det` | Watershed backend |
+| `vdw-radii-set` | | `bondi` | VDW table for distance grid |
+| `minimum-window-separation` | `-ms` | 1.0 | Window separation (Å) |
+| `dgrid-method` | | `rust_exact` | Distance grid method |
+| `--auto-dgrid-method` | | off | Auto-switch to `rust_aabb` for large cells |
+| `probe-radius` | | 1.2 | He probe for SA/vol/accessible PSD (Å) |
+| `window_fp` | `--no-window-fp` | on | Window fingerprint rescue (SA/vol winding) |
 
-CLI and web defaults are **not fully aligned yet**; see [docs/plan_cli_web_parity.md](docs/plan_cli_web_parity.md).
+Legacy profile differences: `mask_thickness=0.5`, `rust_bucket`, `crc` radii. See [parity plan](docs/plan_cli_web_parity.md).
 
-### Analysis Flags
+### Analysis flags
 
 | Flag | Description |
 |------|-------------|
-| `--no-connections` | Disable connection computation |
-| `--return-padded-regions` | Include padded regions in output |
-| `--return-dgrid` | Include distance grid in output |
+| `--pore-dia` | LCD, PLD, DFSD + winding percolation history (CSV) |
+| `--psd` | Global + pocketwise total PSD (CSV) |
+| `--psd-accessible` | Accessible PSD at `--probe-radius` (CSV) |
+| `--sa` | Accessible surface area (mesh + winding; CSV breakdown) |
+| `--vol` | Accessible void volume (winding; CSV breakdown) |
+| `--types` | Pocket typing (`env_cluster`) |
+| `--pocket-typing {env_cluster,legacy_js,none}` | Explicit typing method |
+| `--plot-html` | Standalone HTML after process |
+| `--plot-backend {plotly,threejs}` | Visualization engine (default: plotly) |
+| `--rag` | Save RAG pickle |
+| `--return-dgrid` | Include distance grid in NPZ |
+| `--no-connections` | Disable connection graph |
+
+## Textural properties (CLI vs web app)
+
+Both use `mgr_src`. Batch CLI calls the same winding/mesh functions as the Streamlit app for most textural outputs when you use the web config template.
+
+| Analysis | CLI | Web app | Parity |
+|----------|-----|---------|--------|
+| Segmentation defaults | `generate-config --profile web` | UI defaults | **Yes** |
+| Pore LCD/PLD/DFSD | `--pore-dia` (`get_pore_dia_mgr`) | `get_pore_dia_mgr_winding` | **Partial** — web uses winding for diameters; CLI uses morphography LCD/PLD then winding history |
+| Percolation history | `--pore-dia` (winding) | PLD tab | **Yes** |
+| Percolation cluster **visualization** | not in batch | Plotly / Three.js tab | **No** |
+| SA total + accessible | `--sa` → `compute_surface_area_mesh_winding` | SA tab, mesh | **Yes** |
+| SA Monte Carlo | not exposed | library only | **No** (`--sa-method` planned) |
+| Vol total + accessible | `--vol` → `compute_void_volume_from_results_winding` | Vol tab | **Yes** |
+| Window fingerprint (SA/vol) | `window_fp` / `--no-window-fp` | checkbox | **Yes** |
+| Lattice accessibility | not exposed | library only | **No** |
+| PSD total (global + pocket) | `--psd` | PSD tab | **Yes** |
+| PSD accessible | `--psd-accessible` | PSD tab | **Yes** |
+| SA/vol breakdown CSV | region / pocket / cluster columns | tables + bar charts | **Yes** (CSV only in CLI) |
+| Pocket typing | `--types` (`env_cluster`) | detect pocket types | **Yes** |
+
+For lattice or MC comparisons, use `mgr.compute_surface_area_mc_lattice` / `compute_surface_area_mesh_lattice` on saved NPZ in Python — see `docs/accessibility_and_surface_area.org`.
+
+## AI agents
+
+Cursor skill: [`skills/mgrcli/SKILL.md`](skills/mgrcli/SKILL.md) (symlink to `.cursor/skills/mgrcli/` for auto-discovery).
+
+**Minimal agent recipe:**
+
+```bash
+pip install -e .   # from repo root
+mgrcli process cifs/NU-1000_S1.cif -o out/ \
+  -c config/web_analysis_template.json \
+  --pore-dia --psd --psd-accessible --sa --vol --types
+```
+
+### Input / output
+
+| Option | Description |
+|--------|-------------|
+| `-i, --input` | Input CIF file |
+| `-o, --output-dir` | Output directory |
+| `-c, --config` | JSON config (see `config/web_analysis_template.json`) |
+| `--html-dir` | HTML output directory (default: output dir) |
+| `--theme` | `dark` or `white` for plots |
+| `--no-stylize` | Disable stylized framework in plots |
 | `--disable-tqdm` | Disable progress bars |
-| `--auto-params` | Automatically estimate optimal parameters from structure |
-| `--pore-dia` | Compute pore diameter and percolation analysis |
-| `--psd` | Compute pore size distribution analysis |
-| `--types` | Detect pocket types using agglomerative clustering on cavity size distributions |
+| `--auto-params` | Estimate parameters from structure |
 
-### Visualization Options
-
-| Flag | Description |
-|------|-------------|
-| `--plot-html` | Generate Plotly HTML visualization after processing |
-| `--html-dir` | Directory for HTML visualizations (defaults to output directory) |
-| `--no-stylize` | Disable stylized framework rendering in plots |
-| `--theme` | Theme for generated visualizations (dark/white, default: dark) |
-
-### Input/Output Options
-
-| Option | Description |
-|--------|-------------|
-| `-i, --input` | Input CIF file (alternative to positional arguments) |
-| `-o, --output-dir` | Output directory for results (default: current directory) |
-| `-c, --config` | Configuration file (JSON format) |
-
-### Plot Command Options
+### Plot command
 
 ```bash
-mgrcli plot results.npz [options]
+mgrcli plot results.npz -o out/ -c config.json --plot-backend threejs
 ```
 
 | Option | Description |
 |--------|-------------|
-| `-o, --output-dir` | Directory to store generated HTML files |
-| `-c, --config` | Configuration file to control plotting options |
-| `--no-stylize` | Disable stylized framework rendering in plots |
-| `--cif` | Optional CIF file to use when metadata is missing |
+| `-o, --output-dir` | HTML output directory |
+| `-c, --config` | Plot options from config |
+| `--plot-backend` | `plotly` or `threejs` |
+| `--cif` | CIF if missing from NPZ metadata |
 
-### Interactive Command Options
-
-```bash
-mgrcli interactive [options]
-```
-
-| Option | Description |
-|--------|-------------|
-| `--port` | Port to serve the Streamlit app (default chosen by Streamlit) |
-| `--no-browser` | Do not automatically open a browser window |
-| `--clean` | Kill stale Streamlit processes for this app before launch (recommended after a crash or port conflict) |
-
-Example:
+### Interactive command
 
 ```bash
 mgrcli interactive --clean --port 8501
 ```
 
-### Global Options
+| Option | Description |
+|--------|-------------|
+| `--port` | Streamlit port |
+| `--no-browser` | Do not open browser |
+| `--clean` | Kill stale Streamlit for this app |
 
-```bash
-mgrcli --banner
-```
+### Global options
 
 | Option | Description |
 |--------|-------------|
-| `--banner` | Display the Mofography CLI banner with developer information |
-| `--version` | Show version information |
-
-**Note**: To learn more about the developer, check out our cool banner with `mgrcli --banner`!
+| `--banner` | Display banner |
+| `--version` | Version info |
 
 ## Output Format
 
@@ -563,7 +611,7 @@ mgrcli process my_mof.cif \
     --return-dgrid \
     --return-padded-regions
 
-# Detect pocket types and save RAG pickle
+# Detect pocket types (env_cluster)
 mgrcli process my_mof.cif --types
 # Save RAG pickle only (no clustering)
 mgrcli process my_mof.cif --rag
