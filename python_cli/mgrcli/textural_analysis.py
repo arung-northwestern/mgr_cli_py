@@ -17,6 +17,18 @@ def _results_with_distance_grid(results: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def count_unique_percolated_clusters(components: Any) -> int:
+    """Count distinct region sets across all percolation axes."""
+    if not isinstance(components, dict):
+        return 0
+    seen: set[tuple[int, ...]] = set()
+    for comp_list in components.values():
+        for comp in comp_list or []:
+            if comp:
+                seen.add(tuple(sorted(int(x) for x in comp)))
+    return len(seen)
+
+
 def compute_pld_analysis_full(
     segmentation_results: Dict[str, Any],
     mat_atoms,
@@ -48,6 +60,14 @@ def compute_pld_analysis_full(
         min_distance=min_distance,
         extra_padding=extra_padding,
     )
+    unique_regions = np.asarray(segmentation_results.get("unique_regions", []), dtype=int)
+    connections_prepared = prepared.get("connections", [])
+    connections_filtered = [
+        c for c in connections_prepared if np.all(np.isin(c[0], unique_regions))
+    ]
+    percolation_input = dict(segmentation_results)
+    percolation_input["connections"] = connections_filtered
+
     method = str(accessibility_method).lower()
     if method == "lattice":
         lcd, pld, dfsd, _ = mgr.get_pore_dia_lattice(
@@ -73,9 +93,9 @@ def compute_pld_analysis_full(
         )
         percolation_history, pld_locations, final_clusters = (
             mgr.winding_percolation.compute_percolation_history_winding(
-                segmentation_results,
+                percolation_input,
                 step=0.05,
-                expand_components=False,
+                expand_components=True,
             )
         )
         pld_locations = np.asarray(pld_locations)
@@ -85,12 +105,6 @@ def compute_pld_analysis_full(
         maxima_raw = maxima_raw.reshape(-1, 3) if maxima_raw.size else np.empty((0, 3), dtype=int)
     if maxima_raw.ndim != 2:
         maxima_raw = np.empty((0, 3), dtype=int)
-
-    unique_regions = np.asarray(segmentation_results.get("unique_regions", []), dtype=int)
-    connections_prepared = prepared.get("connections", [])
-    connections_filtered = [
-        c for c in connections_prepared if np.any(np.isin(c[0], unique_regions))
-    ]
 
     all_maxima_radii = dgrid[tuple(maxima_info[:, 1:4].T)]
     maxima = maxima_raw[: regions.max()]

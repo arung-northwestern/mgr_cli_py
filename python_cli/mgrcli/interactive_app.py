@@ -1544,18 +1544,22 @@ def _compute_pld_analysis(
     )
     print('got pore dia (winding)')
 
-    # Use winding percolation for percolation history
+    connections_prepared = prepared.get("connections", [])
+    connections_filtered = [
+        conn for conn in connections_prepared if np.all(np.isin(conn[0], unique_regions))
+    ]
+
+    # Percolation history must use the same filtered graph as SA/Vol (not the raw segmentation graph).
+    percolation_input = dict(analysis_results)
+    percolation_input["connections"] = connections_filtered
     percolation_history, pld_locations, final_clusters = mgr.winding_percolation.compute_percolation_history_winding(
-        analysis_results,
+        percolation_input,
         step=0.05,
-        expand_components=False,
+        expand_components=True,
     )
     print('got percolation hist (winding)')
 
     pld_locations = np.asarray(pld_locations)
-
-    connections_prepared = prepared.get("connections", [])
-    connections_filtered= [ conn for conn in connections_prepared if np.all(np.isin(conn[0], unique_regions) )]
 
     all_maxima_radii = dgrid[tuple(maxima_info[:, 1:4].T)]
     maxima = maxima_raw[:regions.max()]
@@ -3910,25 +3914,31 @@ def main() -> None:
                 if not history:
                     st.warning("No percolating clusters detected for the computed grid.")
                 else:
+                    from mgrcli.textural_analysis import count_unique_percolated_clusters
+
                     history_rows = []
                     for radius, percolation_components in history:
                         axis_map = {0: "Along a", 1: "Along b", 2: "Along c", "x": "Along a", "y": "Along b", "z": "Along c"}
                         axis_counts = {"Along a": 0, "Along b": 0, "Along c": 0}
                         for axis_key, comps in percolation_components.items():
                             label = axis_map.get(axis_key)
+                            if label is None and isinstance(axis_key, str):
+                                label = axis_map.get(axis_key.lower())
                             if label is not None:
                                 axis_counts[label] = len(comps or [])
                         history_rows.append(
                             {
                                 "Probe radius / threshold (Å)": round(float(radius), 3),
+                                "Unique clusters": count_unique_percolated_clusters(percolation_components),
                                 "Percolated clusters (a)": axis_counts["Along a"],
                                 "Percolated clusters (b)": axis_counts["Along b"],
                                 "Percolated clusters (c)": axis_counts["Along c"],
                             }
                         )
                     st.markdown(
-                        "Percolation history: probe radius (threshold) and **non-unique** percolated clusters "
-                        "along each lattice direction."
+                        "Percolation history at each probe radius. **Unique clusters** matches the SA/Vol tab "
+                        "(same filtered pore graph). Columns (a)/(b)/(c) count axis-local components and can "
+                        "exceed the unique count when the same pocket percolates along multiple directions."
                     )
                     st.dataframe(history_rows, use_container_width=True)
 
@@ -3984,6 +3994,15 @@ def main() -> None:
                     if abs(selected_radius - desired_radius) > 1e-6:
                         st.caption(f"Using nearest available radius: {selected_radius:.2f} Å")
 
+                    selected_components = next(
+                        (
+                            entry[1]
+                            for entry in history
+                            if np.isclose(float(entry[0]), float(selected_radius), rtol=0.0, atol=1e-5)
+                        ),
+                        {},
+                    )
+
                     boundary_col, width_col = st.columns(2)
                     with boundary_col:
                         boundary_line_color = st.color_picker(
@@ -4002,7 +4021,9 @@ def main() -> None:
                         )
 
                     st.markdown(
-                        f"Selected probe radius: **{selected_radius:.2f} Å** (diameter {2*selected_radius:.2f} Å)"
+                        f"Selected probe radius: **{selected_radius:.2f} Å** (diameter {2*selected_radius:.2f} Å) — "
+                        f"**{count_unique_percolated_clusters(selected_components)}** accessible cluster(s) "
+                        f"(same definition as SA/Vol tab)"
                     )
                     # Cluster surface isovalue — defaults to the main visualization pane's value
                     cluster_isovalue = st.number_input(
@@ -4190,14 +4211,6 @@ def main() -> None:
 
                         plot_status.markdown("<div style='padding:6px;background:#06310c;color:#6FE37F;text-align:center;font-family:monospace;'>✅ Percolation plot complete</div>", unsafe_allow_html=True)
 
-                    selected_components = next(
-                        (
-                            entry[1]
-                            for entry in history
-                            if np.isclose(float(entry[0]), float(selected_radius), rtol=0.0, atol=1e-5)
-                        ),
-                        {},
-                    )
                     with st.expander("Percolation components at selected radius", expanded=False):
                         st.json(_percolation_axes_for_display(selected_components))
 
