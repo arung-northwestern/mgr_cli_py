@@ -3,8 +3,8 @@
 # when deploying to HF Spaces (see scripts/deploy_to_hf_space.sh).
 
 # Cache-busting: change this timestamp to force a full Docker rebuild on HF Spaces.
-# Last updated: 2026-06-16 (pocket_typing importlib fix for compute shadowing)
-ARG BUILD_DATE=2026-06-18
+# Last updated: 2026-06-20 (percolation parity + clean prod deploy)
+ARG BUILD_DATE=2026-06-20
 
 FROM python:3.11-slim AS builder
 
@@ -44,7 +44,7 @@ ENV PYTHONUNBUFFERED=1 \
     MGR_DASK_DASHBOARD_PORT=8787 \
     MGR_DASK_DASHBOARD_HOST_PORT=8787 \
     MGR_DEPLOYMENT=spaces \
-    MGRCLI_BUILD=10
+    MGRCLI_BUILD=11
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
