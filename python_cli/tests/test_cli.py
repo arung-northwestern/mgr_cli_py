@@ -49,7 +49,8 @@ class TestMGRCLI(unittest.TestCase):
                 'min_distance', 'minimum_window_separation', 'wall_thickness',
                 'extra_padding', 'min_region_size', 'compute_connections',
                 'return_padded_regions', 'return_dgrid', 'disable_tqdm',
-                'plot_backend',
+                'watershed_backend', 'vdw_radii_set', 'auto_dgrid',
+                'skip_endchannel_pairs', 'window_fp', 'plot_backend',
             ]
 
             for key in expected_keys:

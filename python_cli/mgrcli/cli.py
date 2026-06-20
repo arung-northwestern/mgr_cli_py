@@ -35,6 +35,9 @@ MGR_SRC_PATH = REPO_ROOT / "mgr_src"
 if str(MGR_SRC_PATH) not in sys.path:
     sys.path.insert(0, str(MGR_SRC_PATH))
 
+from mgrcli.defaults import analysis_defaults, apply_config_overrides, build_segmentation_kwargs
+from mgrcli.dgrid_policy import resolve_dgrid_method
+
 def _import_mgr_module():
     """Import mgr lazily to keep CLI startup fast for non-analysis commands."""
     import mgr as _mgr
@@ -82,7 +85,7 @@ def compute_dgrid_rust(
     n_neighbors=10,
     coarse_factor=2,
     radii=None,
-    radii_set="crc",
+    radii_set="bondi",
 ):
     """Compute distance grid using Rust backend.
 
@@ -90,7 +93,7 @@ def compute_dgrid_rust(
     :param n_neighbors: Number of nearest neighbors for R-tree methods.
     :param coarse_factor: Coarsening factor for rust_aabb_interp.
     :param radii: Optional explicit per-atom radii array (Å).
-    :param radii_set: "crc" (CRC Handbook / mendeleev default), "bondi", or "alvarez".
+    :param radii_set: "bondi" (web default), "crc", or "alvarez".
     """
     radii = _resolve_vdw_radii(mat_atoms, radii=radii, radii_set=radii_set)
     if method == "rust_aabb":
@@ -122,7 +125,7 @@ def python_do_periodic_segmentation_rust(
     threshold_abs=1.5,
     return_padded_regions=False,
     spacing=None,
-    minimum_window_separation=None,
+    minimum_window_separation=1.0,
     wall_thickness=0.05,
     extra_padding=5,
     compactness=0,
@@ -131,6 +134,7 @@ def python_do_periodic_segmentation_rust(
     compute_connections=True,
     return_dgrid=False,
     watershed_backend='rust_det',
+    skip_endchannel_pairs=True,
 ):
     """Perform periodic segmentation using Rust backend."""
     import logging
@@ -157,6 +161,7 @@ def python_do_periodic_segmentation_rust(
         compute_connections=compute_connections,
         return_dgrid=return_dgrid,
         watershed_backend=watershed_backend,
+        skip_endchannel_pairs=skip_endchannel_pairs,
     )
 
     return result
@@ -817,55 +822,8 @@ class MCLI:
     # Flag to use standalone (numpy-free) implementation
     USE_STANDALONE = False  # Set to True for standalone builds
 
-    PLOT_DEFAULTS = {
-        'plot_backend': 'plotly',
-        'plot_enable': True,
-        'plot_cell': True,
-        'plot_framework': True,
-        'plot_framework_style': 'mesh',
-        'plot_framework_show_rings': True,
-        'plot_framework_mesh_scale': 0.65,
-        'plot_framework_bond_radius': 0.15,
-        'plot_maxima': True,
-        'plot_maxima_show_spheres': False,
-        'plot_connections': True,
-        'plot_windows': True,
-        'plot_surface': True,
-        'plot_surface_pbc': True,
-        'plot_surface_isovalue': 1.0,
-        'plot_surface_opacity': 1.0,
-        'plot_surface_pbc_opacity': 1.0,
-        'plot_surface_types_opacity': 1.0,
-        'plot_surface_taubin_smooth': True,
-        'plot_surface_taubin_intensity': 0.05,
-        'plot_surface_screen_door': False,
-        'plot_projection': 'perspective',
-        'plot_layout': 'dark',
-    }
-
-    # Default configuration values
-    DEFAULTS = {
-        'spacing': 0.5,
-        'dgrid_method': 'rust_exact',
-        'dgrid_block_size': 50000,
-        'dgrid_n_neighbors': 10,
-        'dgrid_coarse_factor': 2,
-        'h': 0.2,
-        'mask_thickness': 0.5,
-        'threshold_abs': 1.5,
-        'min_distance': 1.5,
-        'minimum_window_separation': None,
-        'compactness': 0,  # Not exposed in CLI
-        'wall_thickness': 0.05,
-        'extra_padding': 5.0,
-        'min_region_size': 0.001,
-        'disable_tqdm': False,
-        'compute_connections': True,
-        'return_padded_regions': False,
-        'return_dgrid': True,
-        'watershed_backend': 'rust_bucket',
-    }
-    DEFAULTS.update(PLOT_DEFAULTS)
+    DEFAULTS = analysis_defaults("web")
+    PLOT_DEFAULTS = {k: v for k, v in DEFAULTS.items() if k.startswith("plot_")}
 
     def __init__(self):
         """Initialize the CLI."""
@@ -1018,9 +976,15 @@ Notes:
             choices=['rust_bucket', 'rust_det', 'rust_det_parallel', 'skimage'],
             default=None,
             help=(
-                'Watershed backend for segmentation: rust_bucket (default), rust_det, '
-                'rust_det_parallel, or skimage (install scikit-image, e.g. pip install "mgrcli[skimage]").'
+                'Watershed backend for segmentation: rust_det (web default), rust_bucket, '
+                'rust_det_parallel, or skimage (install scikit-image).'
             ),
+        )
+        param_group.add_argument(
+            '--vdw-radii-set',
+            choices=['bondi', 'crc', 'alvarez'],
+            default=None,
+            help='VDW radii table for distance grid (default: bondi, matches web app)',
         )
         param_group.add_argument(
             '--js-threshold', type=float, default=0.15,
@@ -1044,6 +1008,18 @@ Notes:
         flag_group.add_argument(
             '--no-connections', action='store_true',
             help='Disable connection computation'
+        )
+        flag_group.add_argument(
+            '--auto-dgrid', action='store_true', default=None,
+            help='Auto-switch rust_exact → rust_aabb for large cells (web default when unset)',
+        )
+        flag_group.add_argument(
+            '--no-auto-dgrid', action='store_true',
+            help='Disable automatic rust_aabb distance-grid switching',
+        )
+        flag_group.add_argument(
+            '--no-window-fp', action='store_true',
+            help='Disable window fingerprint rescue for accessible SA/vol (winding)',
         )
         flag_group.add_argument(
             '--return-padded-regions', action='store_true',
@@ -1130,6 +1106,12 @@ Notes:
         config_parser.add_argument(
             '-o', '--output', default='config.json',
             help='Output configuration file (default: config.json)'
+        )
+        config_parser.add_argument(
+            '--profile',
+            choices=['web', 'legacy'],
+            default='web',
+            help='Default profile: web (Streamlit-aligned) or legacy batch CLI',
         )
         # Add the same parameter options for generate-config
         for action in param_group._group_actions:
@@ -1338,13 +1320,8 @@ Notes:
                     if result.get('connections') is None:
                         print("Warning: Accessible PSD requires segmentation with connections. Enable compute_connections and re-run.")
                     else:
-                        probe_radius = getattr(args, 'probe_radius', None)
-                        if probe_radius is None:
-                            from ase.data import vdw_radii
-                            probe_radius = vdw_radii[2]  # helium radius
-                            print(f"  Using default probe radius for accessible PSD: {probe_radius:.3f} Å")
-                        else:
-                            print(f"  Using probe radius for accessible PSD: {probe_radius:.3f} Å")
+                        probe_radius = self._resolve_probe_radius(config, args)
+                        print(f"  Using probe radius for accessible PSD: {probe_radius:.3f} Å")
                         print("Computing accessible PSD (percolating regions only)...")
                         try:
                             uniform_max_diameter = 50.0
@@ -1400,17 +1377,13 @@ Notes:
                 if getattr(args, 'sa', False):
                     print("Computing surface area analysis...")
 
-                    # Get probe radius from args or use default
-                    probe_radius = getattr(args, 'probe_radius', None)
-                    if probe_radius is None:
-                        from ase.data import vdw_radii
-                        probe_radius = vdw_radii[2]  # helium radius
-                        print(f"  Using default probe radius: {probe_radius:.3f} Å")
-                    else:
-                        print(f"  Using probe radius: {probe_radius:.3f} Å")
+                    probe_radius = self._resolve_probe_radius(config, args)
+                    print(f"  Using probe radius: {probe_radius:.3f} Å")
 
-                    # Compute surface area analysis
-                    sa_results = compute_surface_area_analysis(result, atoms, probe_radius)
+                    window_fp = bool(config.get('window_fp', True))
+                    sa_results = compute_surface_area_analysis(
+                        result, atoms, probe_radius, window_fp=window_fp
+                    )
                     if sa_results:
                         # Add to main results
                         result['surface_area_analysis'] = sa_results
@@ -1442,17 +1415,13 @@ Notes:
                 if getattr(args, 'vol', False):
                     print("Computing void volume analysis...")
 
-                    # Get probe radius from args or use default
-                    probe_radius = getattr(args, 'probe_radius', None)
-                    if probe_radius is None:
-                        from ase.data import vdw_radii
-                        probe_radius = vdw_radii[2]  # helium radius
-                        print(f"  Using default probe radius: {probe_radius:.3f} Å")
-                    else:
-                        print(f"  Using probe radius: {probe_radius:.3f} Å")
+                    probe_radius = self._resolve_probe_radius(config, args)
+                    print(f"  Using probe radius: {probe_radius:.3f} Å")
 
-                    # Compute void volume analysis
-                    vol_results = compute_void_volume_analysis(result, atoms, probe_radius)
+                    window_fp = bool(config.get('window_fp', True))
+                    vol_results = compute_void_volume_analysis(
+                        result, atoms, probe_radius, window_fp=window_fp
+                    )
                     if vol_results:
                         # Add to main results
                         result['void_volume_analysis'] = vol_results
@@ -1803,8 +1772,8 @@ Notes:
 
     def generate_config_command(self, args):
         """Handle the generate-config command."""
-        # Start with defaults
-        config = self.DEFAULTS.copy()
+        profile = getattr(args, 'profile', 'web')
+        config = analysis_defaults(profile)
 
         # Override with command line arguments
         config = self.update_config_from_args(config, args)
@@ -1902,42 +1871,26 @@ Notes:
 
     def update_config_from_args(self, config: Dict[str, Any], args) -> Dict[str, Any]:
         """Update configuration with command line arguments."""
-        # Copy defaults first
         result = self.DEFAULTS.copy()
         result.update(config)
+        result = apply_config_overrides(result, args)
 
-        # Override with command line arguments
-        arg_mapping = {
-            'spacing': 'spacing',
-            'dgrid_method': 'dgrid_method',
-            'dgrid_block_size': 'dgrid_block_size',
-            'dgrid_n_neighbors': 'dgrid_n_neighbors',
-            'dgrid_coarse_factor': 'dgrid_coarse_factor',
-            'h': 'h',
-            'mask_thickness': 'mask_thickness',
-            'threshold_abs': 'threshold_abs',
-            'min_distance': 'min_distance',
-            'minimum_window_separation': 'minimum_window_separation',
-            'wall_thickness': 'wall_thickness',
-            'extra_padding': 'extra_padding',
-            'min_region_size': 'min_region_size',
-        }
-
-        for arg_name, config_key in arg_mapping.items():
-            value = getattr(args, arg_name, None)
-            if value is not None:
-                result[config_key] = value
-
-        # Ensure return_dgrid and compute_connections are enabled if sa, vol, or psd_accessible is requested
-        if (hasattr(args, 'sa') and args.sa) or (hasattr(args, 'vol') and args.vol) or (hasattr(args, 'psd_accessible') and args.psd_accessible):
+        if (hasattr(args, 'sa') and args.sa) or (hasattr(args, 'vol') and args.vol) or (
+            hasattr(args, 'psd_accessible') and args.psd_accessible
+        ):
             if not result.get('return_dgrid', False):
                 result['return_dgrid'] = True
-                print("Info: Automatically enabled distance grid (--return-dgrid) for surface area / void volume / accessible PSD analysis")
+                print(
+                    "Info: Automatically enabled distance grid (--return-dgrid) "
+                    "for surface area / void volume / accessible PSD analysis"
+                )
             if not result.get('compute_connections', False):
                 result['compute_connections'] = True
-                print("Info: Automatically enabled compute_connections for accessible PSD / percolation analysis")
+                print(
+                    "Info: Automatically enabled compute_connections for "
+                    "accessible PSD / percolation analysis"
+                )
 
-        # Handle boolean flags
         if hasattr(args, 'no_connections') and args.no_connections:
             result['compute_connections'] = False
         if hasattr(args, 'return_padded_regions') and args.return_padded_regions:
@@ -1950,6 +1903,14 @@ Notes:
         if getattr(args, 'watershed_backend', None) is not None:
             result['watershed_backend'] = args.watershed_backend
 
+        if getattr(args, 'no_auto_dgrid', False):
+            result['auto_dgrid'] = False
+        elif getattr(args, 'auto_dgrid', None):
+            result['auto_dgrid'] = True
+
+        if getattr(args, 'no_window_fp', False):
+            result['window_fp'] = False
+
         if getattr(args, 'no_surface_taubin', False):
             result['plot_surface_taubin_smooth'] = False
         if getattr(args, 'surface_taubin_intensity', None) is not None:
@@ -1960,12 +1921,31 @@ Notes:
 
         return result
 
+    def _resolve_probe_radius(self, config: Dict[str, Any], args) -> float:
+        probe_radius = getattr(args, 'probe_radius', None)
+        if probe_radius is None:
+            probe_radius = config.get('probe_radius')
+        if probe_radius is None:
+            from ase.data import vdw_radii
+            probe_radius = float(vdw_radii[2])
+        return float(probe_radius)
+
     def process_single_cif(self, cif_file: Path, config: Dict[str, Any]) -> Dict[str, Any]:
         """Process a single CIF file using the Python workflow built on the Rust backend."""
 
         atoms = self._read_atoms(cif_file)
         spacing = config['spacing']
-        dgrid_method = str(config.get('dgrid_method', 'rust_exact'))
+        radii_set = str(config.get('vdw_radii_set', 'bondi'))
+        configured_dgrid = str(config.get('dgrid_method', 'rust_exact'))
+        auto_dgrid = bool(config.get('auto_dgrid', True))
+        dgrid_method, dgrid_meta = resolve_dgrid_method(
+            atoms, spacing, configured_dgrid, auto_dgrid=auto_dgrid
+        )
+        if dgrid_meta.get('reason'):
+            print(
+                f"  Auto dgrid: {configured_dgrid} -> {dgrid_method} "
+                f"({dgrid_meta['reason']})"
+            )
         dgrid_block_size = int(config.get('dgrid_block_size', 50000))
         dgrid_n_neighbors = int(config.get('dgrid_n_neighbors', 10))
         dgrid_coarse_factor = int(config.get('dgrid_coarse_factor', 2))
@@ -1988,28 +1968,10 @@ Notes:
                 method=rust_method,
                 n_neighbors=dgrid_n_neighbors,
                 coarse_factor=dgrid_coarse_factor,
+                radii_set=radii_set,
             )
 
-        segmentation_kwargs = dict(
-            dgrid=dgrid,
-            mat_atoms=atoms,
-            mask_thickness=config['mask_thickness'],
-            h=config['h'],
-            min_distance=config['min_distance'],
-            threshold_abs=config['threshold_abs'],
-            return_padded_regions=config['return_padded_regions'],
-            spacing=spacing,
-            minimum_window_separation=config.get('minimum_window_separation'),
-            wall_thickness=config['wall_thickness'],
-            extra_padding=config['extra_padding'],
-            compactness=config['compactness'],
-            min_region_size=config['min_region_size'],
-            disable_tqdm=config['disable_tqdm'],
-            compute_connections=config['compute_connections'],
-            return_dgrid=config['return_dgrid'],
-            watershed_backend=config.get('watershed_backend', 'rust_bucket'),
-        )
-
+        segmentation_kwargs = build_segmentation_kwargs(config, dgrid, atoms, spacing)
         total_start = time.perf_counter()
         result = python_do_periodic_segmentation_rust(**segmentation_kwargs)
         total_end = time.perf_counter()
