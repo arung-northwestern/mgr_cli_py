@@ -469,7 +469,9 @@ mgrcli config-building
 | `vdw-radii-set` | | `bondi` | VDW table for distance grid |
 | `minimum-window-separation` | `-ms` | 1.0 | Window separation (Å) |
 | `dgrid-method` | | `rust_exact` | Distance grid method |
-| `--auto-dgrid-method` | | off | Auto-switch to `rust_aabb` for large cells |
+| `auto_dgrid` | `--no-auto-dgrid` | **on** | Auto-switch to `rust_aabb` for large cells |
+| `sa_method` | `--sa-method` | `mc` | Surface area: Monte Carlo (or `mesh`) |
+| `accessibility_method` | `--accessibility-method` | `winding` | Winding percolation (or `lattice`) |
 | `probe-radius` | | 1.2 | He probe for SA/vol/accessible PSD (Å) |
 | `window_fp` | `--no-window-fp` | on | Window fingerprint rescue (SA/vol winding) |
 
@@ -480,10 +482,17 @@ Legacy profile differences: `mask_thickness=0.5`, `rust_bucket`, `crc` radii. Se
 | Flag | Description |
 |------|-------------|
 | `--pore-dia` | LCD, PLD, DFSD + winding percolation history (CSV) |
+| `--percolation-plot` | Percolation cluster visualization HTML (default backend: threejs) |
+| `--percolation-plot-backend` | `threejs` or `plotly` |
 | `--psd` | Global + pocketwise total PSD (CSV) |
 | `--psd-accessible` | Accessible PSD at `--probe-radius` (CSV) |
-| `--sa` | Accessible surface area (mesh + winding; CSV breakdown) |
-| `--vol` | Accessible void volume (winding; CSV breakdown) |
+| `--sa` | Accessible surface area (default: MC + winding; CSV breakdown) |
+| `--sa-method` | `mc` (default) or `mesh` |
+| `--sa-plot-html` | Surface area breakdown bar chart HTML |
+| `--vol` | Accessible void volume (voxel + winding; CSV breakdown) |
+| `--vol-plot-html` | Void volume breakdown bar chart HTML |
+| `--accessibility-method` | `winding` (default) or `lattice` |
+| `--no-auto-dgrid` | Disable automatic rust_exact → rust_aabb switching |
 | `--types` | Pocket typing (`env_cluster`) |
 | `--pocket-typing {env_cluster,legacy_js,none}` | Explicit typing method |
 | `--plot-html` | Standalone HTML after process |
@@ -499,18 +508,14 @@ Both use `mgr_src`. Batch CLI calls the same winding/mesh functions as the Strea
 | Analysis | CLI | Web app | Parity |
 |----------|-----|---------|--------|
 | Segmentation defaults | `generate-config --profile web` | UI defaults | **Yes** |
-| Pore LCD/PLD/DFSD | `--pore-dia` (`get_pore_dia_mgr`) | `get_pore_dia_mgr_winding` | **Partial** — web uses winding for diameters; CLI uses morphography LCD/PLD then winding history |
-| Percolation history | `--pore-dia` (winding) | PLD tab | **Yes** |
-| Percolation cluster **visualization** | not in batch | Plotly / Three.js tab | **No** |
-| SA total + accessible | `--sa` → `compute_surface_area_mesh_winding` | SA tab, mesh | **Yes** |
-| SA Monte Carlo | not exposed | library only | **No** (`--sa-method` planned) |
-| Vol total + accessible | `--vol` → `compute_void_volume_from_results_winding` | Vol tab | **Yes** |
-| Window fingerprint (SA/vol) | `window_fp` / `--no-window-fp` | checkbox | **Yes** |
-| Lattice accessibility | not exposed | library only | **No** |
-| PSD total (global + pocket) | `--psd` | PSD tab | **Yes** |
-| PSD accessible | `--psd-accessible` | PSD tab | **Yes** |
-| SA/vol breakdown CSV | region / pocket / cluster columns | tables + bar charts | **Yes** (CSV only in CLI) |
-| Pocket typing | `--types` (`env_cluster`) | detect pocket types | **Yes** |
+| Pore LCD/PLD/DFSD | `--pore-dia` (`get_pore_dia_mgr_winding`) | PLD tab | **Yes** |
+| Percolation history | `--pore-dia` / auto before SA/vol | PLD tab | **Yes** |
+| Percolation cluster plot | `--percolation-plot` (threejs default) | Interactive tab | **Yes** |
+| SA (default MC + winding) | `--sa` | mesh in UI; MC via `--sa-method mc` | **Yes** (CLI defaults MC) |
+| Vol (voxel + winding) | `--vol` | Vol tab | **Yes** |
+| Lattice accessibility | `--accessibility-method lattice` | library | **Yes** |
+| SA/vol breakdown bar HTML | `--sa-plot-html` / `--vol-plot-html` | Streamlit charts | **Yes** |
+| Auto dgrid | on by default (`auto_dgrid: true`) | UI auto | **Yes** (`--no-auto-dgrid` to disable) |
 
 For lattice or MC comparisons, use `mgr.compute_surface_area_mc_lattice` / `compute_surface_area_mesh_lattice` on saved NPZ in Python — see `docs/accessibility_and_surface_area.org`.
 

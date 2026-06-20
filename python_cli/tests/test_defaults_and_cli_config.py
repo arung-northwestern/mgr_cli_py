@@ -32,7 +32,9 @@ class TestSharedDefaults(unittest.TestCase):
     self.assertEqual(web["extra_padding"], 5.0)
     self.assertTrue(web["skip_endchannel_pairs"])
     self.assertEqual(web["vdw_radii_set"], "bondi")
-    self.assertFalse(web["auto_dgrid"])
+    self.assertTrue(web["auto_dgrid"])
+    self.assertEqual(web["sa_method"], "mc")
+    self.assertEqual(web["accessibility_method"], "winding")
     self.assertTrue(web["window_fp"])
 
   def test_legacy_profile_differs(self):
@@ -134,7 +136,10 @@ class TestCLIConfigIntegration(unittest.TestCase):
     result = subprocess.run(cmd, capture_output=True, text=True, cwd=self.test_dir.parent)
     self.assertEqual(result.returncode, 0, result.stderr)
     self.assertIn("--vdw-radii-set", result.stdout)
-    self.assertIn("--auto-dgrid-method", result.stdout)
+    self.assertIn("--no-auto-dgrid", result.stdout)
+    self.assertIn("--sa-method", result.stdout)
+    self.assertIn("--percolation-plot", result.stdout)
+    self.assertIn("--accessibility-method", result.stdout)
     self.assertIn("--no-window-fp", result.stdout)
 
   def test_interactive_help_lists_clean(self):

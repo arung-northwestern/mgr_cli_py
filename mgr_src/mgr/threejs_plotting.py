@@ -88,6 +88,7 @@ def show_mof_threejs(
         "plot_framework_mesh_quality": "medium",
         "plot_maxima": True,
         "plot_maxima_show_spheres": False,
+        "plot_show_periodic": False,
         "plot_connections": True,
         "plot_windows": True,
         "plot_surface": True,
@@ -106,6 +107,8 @@ def show_mof_threejs(
         defaults.update({k: v for k, v in options.items() if v is not None})
 
     resolve_plot_surface_taubin_params(defaults, options)
+
+    show_periodic = bool(defaults.get("plot_show_periodic", False))
 
     if not defaults.get("plot_enable", True):
         for key in ("plot_cell", "plot_framework", "plot_maxima",
@@ -341,7 +344,7 @@ def show_mof_threejs(
             "maxima_pbc_dict": maxima_pbc_dict if maxima_pbc_dict is not None else {},
             "connections": connections,
         }
-        fig.add_connections(seg, mat_atoms, hide_periodic=True)
+        fig.add_connections(seg, mat_atoms, hide_periodic=not show_periodic)
 
     # Windows
     if defaults.get("plot_windows", True) and connections:
@@ -355,7 +358,7 @@ def show_mof_threejs(
             "maxima_pbc_dict": maxima_pbc_dict if maxima_pbc_dict is not None else {},
             "connections": connections,
         }
-        fig.add_windows(seg, hide_periodic=True, atoms=mat_atoms, spacing=_dgrid_spacing(mat_atoms, dgrid))
+        fig.add_windows(seg, hide_periodic=not show_periodic, atoms=mat_atoms, spacing=_dgrid_spacing(mat_atoms, dgrid))
 
     # Maxima
     if defaults.get("plot_maxima", True) and len(all_maxima_plot):
@@ -369,7 +372,7 @@ def show_mof_threejs(
             "maxima_pbc_dict": maxima_pbc_dict if maxima_pbc_dict is not None else {},
             "connections": connections,
         }
-        fig.add_maxima(seg, mat_atoms, hide_periodic=True)
+        fig.add_maxima(seg, mat_atoms, hide_periodic=not show_periodic)
 
     trace_ids = {t.get("id") for t in fig.data}
 

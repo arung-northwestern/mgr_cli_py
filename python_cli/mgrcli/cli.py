@@ -170,102 +170,52 @@ def python_do_periodic_segmentation_rust(
 # Note: Import is deferred to avoid immediate failure during CLI help/version commands
 
 
-def compute_pore_diameter_analysis(dgrid, mat_atoms, spacing=None, segmentation_results=None):
-    """Compute pore diameter and percolation analysis.
+def compute_pore_diameter_analysis(
+    dgrid,
+    mat_atoms,
+    spacing=None,
+    segmentation_results=None,
+    *,
+    config: Optional[Dict[str, Any]] = None,
+):
+    """Pore diameters + percolation history (winding by default, lattice optional)."""
+    from mgrcli.textural_analysis import compute_pld_analysis_full
 
-    This function calculates:
-    - Largest Cavity Diameter (LCD)
-    - Pore Limiting Diameter (PLD)
-    - Distance From Surface Distribution (DFSD)
-    - Percolation history (using winding percolation if segmentation results available)
-
-    Parameters:
-    - dgrid: 3D distance grid
-    - mat_atoms: ASE atoms object
-    - spacing: Grid spacing (estimated if None)
-    - segmentation_results: Full segmentation results dict (optional, for winding percolation)
-
-    Returns:
-    - Dictionary with pore diameter and percolation analysis results
-    """
+    if segmentation_results is None:
+        print("Info: No segmentation results provided for pore diameter analysis")
+        return None
 
     if spacing is None:
-        # Estimate spacing from dgrid and atoms
-        spacing = np.min(
-            mat_atoms.get_cell_lengths_and_angles()[:3] / (np.array(dgrid.shape) - 1)
+        spacing = float(
+            np.min(mat_atoms.get_cell_lengths_and_angles()[:3] / (np.array(dgrid.shape) - 1))
         )
 
+    cfg = config or {}
     print("Computing pore diameter and percolation analysis...")
-
-    # Compute LCD, PLD, and DFSD using the morphography function
     try:
-        lcd, pld, dfsd, _ = mgr.get_pore_dia_mgr(mat_atoms, dgrid=dgrid, kwargs=dict(spacing=spacing))
-        print(f"  LCD: {lcd:.3f} Å")
-        print(f"  PLD: {pld:.3f} Å")
-        print(f"  DFSD: {dfsd:.3f} Å")
-    except Exception as e:
-        print(f"Warning: Pore diameter calculation failed: {e}")
-        lcd, pld, dfsd = 0.0, 0.0, 0.0
+        analysis = compute_pld_analysis_full(
+            segmentation_results,
+            mat_atoms,
+            spacing=float(cfg.get("spacing", spacing)),
+            mask_thickness=float(cfg.get("mask_thickness", 0.05)),
+            h=float(cfg.get("h", 0.2)),
+            threshold_abs=float(cfg.get("threshold_abs", 1.5)),
+            min_distance=float(cfg.get("min_distance", 1.5)),
+            extra_padding=float(cfg.get("extra_padding", 5.0)),
+            accessibility_method=str(
+                cfg.get("pore_dia_method", cfg.get("accessibility_method", "winding"))
+            ),
+            lattice_variant=str(cfg.get("lattice_variant", "v2")),
+        )
+    except Exception as exc:
+        print(f"Warning: Pore diameter analysis failed: {exc}")
+        return None
 
-    # Compute percolation history using winding percolation if available
-    percolation_history = []
-    pld_locations = np.array([])
-
-    if segmentation_results is not None:
-        # Try winding percolation first (requires maxima_info, connections, regions)
-        required_keys = ['maxima_info', 'connections', 'regions']
-        if all(key in segmentation_results for key in required_keys):
-            try:
-                from mgr.winding_percolation import compute_percolation_history_winding, update_results_with_percolation_history_winding
-
-                # Prepare results dict for winding percolation
-                results_for_winding = {
-                    'dgrid': dgrid,
-                    'maxima_info': segmentation_results['maxima_info'],
-                    'connections': segmentation_results['connections'],
-                    'regions': segmentation_results['regions'],
-                    'mask_thickness': segmentation_results.get('kwargs', {}).get('mask_thickness', 0.5),
-                }
-
-                # Compute percolation history using winding percolation
-                percolation_history, pld_locations, _ = compute_percolation_history_winding(
-                    results_for_winding,
-                    step=0.05,
-                    min_threshold=None,
-                    max_threshold=None,
-                )
-                print(f"  Percolation history points (winding): {len(percolation_history)}")
-            except Exception as e:
-                print(f"Warning: Winding percolation failed: {e}")
-                percolation_history = []
-                pld_locations = np.array([])
-        else:
-            print("Warning: Segmentation results incomplete for winding percolation")
-    else:
-        print("Info: No segmentation results provided, using fallback percolation analysis")
-
-    # Fallback to original percolation computation if winding failed or not available
-    if not percolation_history:
-        try:
-            percolation_history, pld_locations, _, _, _ = mgr.compute_percolation_history(
-                dgrid, mat_atoms
-            )
-            print(f"  Percolation history points (fallback): {len(percolation_history)}")
-        except Exception as e:
-            print(f"Warning: Percolation analysis failed: {e}")
-            percolation_history = []
-            pld_locations = np.array([])
-
-    # Prepare results
-    results = {
-        'lcd': float(lcd),
-        'pld': float(pld),
-        'dfsd': float(dfsd),
-        'percolation_history': percolation_history,
-        'pld_locations': pld_locations,
-    }
-
-    return results
+    print(f"  LCD: {analysis['lcd']:.3f} Å")
+    print(f"  PLD: {analysis['pld']:.3f} Å")
+    print(f"  DFSD: {analysis['dfsd']:.3f} Å")
+    print(f"  Percolation history points: {len(analysis.get('percolation_history', []))}")
+    return analysis
 
 
 def save_pore_diameter_csv(results, output_file):
@@ -570,46 +520,27 @@ def compute_surface_area_analysis(
     probe_radius=None,
     window_fp=True,
     winding_kwargs=None,
+    *,
+    sa_method: str = "mc",
+    accessibility_method: str = "winding",
+    lattice_variant: str = "v2",
+    mc_n_samples: int = 20000,
+    mc_shell_thickness: float = 0.5,
 ):
-    """
-    Compute surface area analysis from results dictionary.
+    from mgrcli.textural_analysis import compute_surface_area
 
-    Parameters:
-    - results_dict: Dictionary containing analysis results
-    - mat_atoms: ASE atoms object
-    - probe_radius: Probe radius for surface area calculation
-
-    Returns:
-    - Dictionary with surface area analysis results
-    """
-    try:
-        # Convert results dict to expected format for reference functions
-        # Our CLI uses 'dgrid' but reference functions expect 'distance_grid'
-        modified_results = results_dict.copy()
-        if 'dgrid' in modified_results:
-            modified_results['distance_grid'] = modified_results['dgrid']
-
-        from mgr.compute import compute_surface_area_mesh_winding
-
-        return compute_surface_area_mesh_winding(
-            modified_results,
-            mat_atoms,
-            probe_radius,
-            window_fp=window_fp,
-            winding_kwargs=winding_kwargs,
-        )
-    except ImportError:
-        print("Warning: Surface area computation functions not available. Please ensure mgr_src is properly installed.")
-        return None
-    except Exception as e:
-        print(f"Warning: Surface area computation failed with error: {e}")
-        print("This might be due to inappropriate parameters for this material structure.")
-        print("Try using --auto-params to automatically estimate optimal parameters, or adjust:")
-        print("  - --mask-thickness (default: 0.5)")
-        print("  - --threshold-abs (default: 1.5)")
-        print("  - --spacing (default: 0.5)")
-        print("  - --h (default: 0.2)")
-        return None
+    return compute_surface_area(
+        results_dict,
+        mat_atoms,
+        probe_radius,
+        sa_method=sa_method,
+        accessibility_method=accessibility_method,
+        window_fp=window_fp,
+        lattice_variant=lattice_variant,
+        mc_n_samples=mc_n_samples,
+        mc_shell_thickness=mc_shell_thickness,
+        winding_kwargs=winding_kwargs,
+    )
 
 
 def compute_void_volume_analysis(
@@ -618,46 +549,23 @@ def compute_void_volume_analysis(
     probe_radius=None,
     window_fp=True,
     winding_kwargs=None,
+    *,
+    accessibility_method: str = "winding",
+    lattice_variant: str = "v2",
+    vol_method: str = "voxel",
 ):
-    """
-    Compute void volume analysis from results dictionary.
+    from mgrcli.textural_analysis import compute_void_volume
 
-    Parameters:
-    - results_dict: Dictionary containing analysis results
-    - mat_atoms: ASE atoms object
-    - probe_radius: Probe radius for volume calculation
-
-    Returns:
-    - Dictionary with void volume analysis results
-    """
-    try:
-        # Convert results dict to expected format for reference functions
-        # Our CLI uses 'dgrid' but reference functions expect 'distance_grid'
-        modified_results = results_dict.copy()
-        if 'dgrid' in modified_results:
-            modified_results['distance_grid'] = modified_results['dgrid']
-
-        from mgr.compute import compute_void_volume_from_results_winding
-
-        return compute_void_volume_from_results_winding(
-            modified_results,
-            mat_atoms,
-            probe_radius,
-            window_fp=window_fp,
-            winding_kwargs=winding_kwargs,
-        )
-    except ImportError:
-        print("Warning: Void volume computation functions not available. Please ensure mgr_src is properly installed.")
-        return None
-    except Exception as e:
-        print(f"Warning: Void volume computation failed with error: {e}")
-        print("This might be due to inappropriate parameters for this material structure.")
-        print("Try using --auto-params to automatically estimate optimal parameters, or adjust:")
-        print("  - --mask-thickness (default: 0.5)")
-        print("  - --threshold-abs (default: 1.5)")
-        print("  - --spacing (default: 0.5)")
-        print("  - --h (default: 0.2)")
-        return None
+    _ = vol_method  # only voxel integration is implemented
+    return compute_void_volume(
+        results_dict,
+        mat_atoms,
+        probe_radius,
+        accessibility_method=accessibility_method,
+        window_fp=window_fp,
+        lattice_variant=lattice_variant,
+        winding_kwargs=winding_kwargs,
+    )
 
 
 def save_surface_area_csv(results, output_file, material_name="material"):
@@ -991,6 +899,24 @@ Notes:
             help='Jensen-Shannon threshold for legacy_js pocket typing only (default: 0.15)',
         )
         param_group.add_argument(
+            '--sa-method',
+            choices=['mesh', 'mc'],
+            default=None,
+            help='Surface area integration: mc (default, Monte Carlo shell) or mesh',
+        )
+        param_group.add_argument(
+            '--accessibility-method',
+            choices=['winding', 'lattice'],
+            default=None,
+            help='Percolation accessibility for pore dia, SA, and vol (default: winding)',
+        )
+        param_group.add_argument(
+            '--lattice-variant',
+            choices=['v1', 'v2'],
+            default=None,
+            help='Lattice percolation variant when --accessibility-method lattice (default: v2)',
+        )
+        param_group.add_argument(
             '--probe-radius-psd',
             type=float,
             default=None,
@@ -1025,11 +951,8 @@ Notes:
             help='Disable connection computation'
         )
         flag_group.add_argument(
-            '--auto-dgrid-method', action='store_true',
-            help=(
-                'Auto-switch rust_exact → rust_aabb for large cells when dgrid_method is '
-                'rust_exact (off by default; explicit --dgrid-method always wins)'
-            ),
+            '--no-auto-dgrid', action='store_true',
+            help='Disable automatic rust_exact → rust_aabb switching for large cells (on by default)',
         )
         flag_group.add_argument(
             '--no-window-fp', action='store_true',
@@ -1070,7 +993,25 @@ Notes:
         )
         flag_group.add_argument(
             '--pore-dia', action='store_true',
-            help='Compute pore diameter and percolation analysis'
+            help='Pore LCD/PLD/DFSD via get_pore_dia_mgr_winding + percolation history',
+        )
+        flag_group.add_argument(
+            '--percolation-plot', action='store_true',
+            help='Save percolation cluster visualization HTML',
+        )
+        flag_group.add_argument(
+            '--percolation-plot-backend',
+            choices=['plotly', 'threejs'],
+            default=None,
+            help='Percolation plot backend (default: threejs from config)',
+        )
+        flag_group.add_argument(
+            '--sa-plot-html', action='store_true',
+            help='Save Plotly bar chart for surface area breakdown',
+        )
+        flag_group.add_argument(
+            '--vol-plot-html', action='store_true',
+            help='Save Plotly bar chart for void volume breakdown',
         )
         flag_group.add_argument(
             '--psd', action='store_true',
@@ -1097,11 +1038,11 @@ Notes:
         )
         flag_group.add_argument(
             '--sa', action='store_true',
-            help='Compute surface area analysis with percolation accessibility'
+            help='Surface area (default: MC shell + winding accessibility)',
         )
         flag_group.add_argument(
             '--vol', action='store_true',
-            help='Compute void volume analysis with percolation accessibility'
+            help='Void volume (voxel integration + winding accessibility)',
         )
         flag_group.add_argument(
             '--psd-accessible', action='store_true',
@@ -1302,19 +1243,26 @@ Notes:
                 # Generate output filename
                 output_file = output_dir / f"{cif_file.stem}_results.npz"
 
-                # Handle pore diameter analysis if requested
-                if getattr(args, 'pore_dia', False):
-                    pore_dia_results = compute_pore_diameter_analysis(
-                        result['dgrid'], atoms, spacing=config['spacing'],
-                        segmentation_results=result
-                    )
-                    if pore_dia_results:
-                        # Add to main results
-                        result.update(pore_dia_results)
+                needs_pld = (
+                    getattr(args, 'pore_dia', False)
+                    or getattr(args, 'sa', False)
+                    or getattr(args, 'vol', False)
+                    or getattr(args, 'percolation_plot', False)
+                    or getattr(args, 'psd_accessible', False)
+                )
+                if needs_pld:
+                    result = self._ensure_pld_analysis(result, atoms, config)
 
-                        # Save CSV file for pore diameter analysis
-                        pore_dia_csv_file = output_dir / f"{cif_file.stem}_pore_dia.csv"
-                        save_pore_diameter_csv(pore_dia_results, pore_dia_csv_file)
+                tex_kw = self._textural_kwargs(config)
+
+                if getattr(args, 'pore_dia', False) and result.get('lcd') is not None:
+                    pore_dia_csv_file = output_dir / f"{cif_file.stem}_pore_dia.csv"
+                    save_pore_diameter_csv(result, pore_dia_csv_file)
+
+                if getattr(args, 'percolation_plot', False):
+                    self._save_percolation_plot(
+                        result, atoms, config, args, output_dir, cif_file.stem
+                    )
 
                 # Handle PSD analysis if requested
                 if getattr(args, 'psd', False):
@@ -1395,11 +1343,18 @@ Notes:
                     print("Computing surface area analysis...")
 
                     probe_radius = self._resolve_probe_radius(config, args)
-                    print(f"  Using probe radius: {probe_radius:.3f} Å")
+                    print(f"  Using probe radius: {probe_radius:.3f} Å (SA method: {tex_kw['sa_method']})")
 
-                    window_fp = bool(config.get('window_fp', True))
                     sa_results = compute_surface_area_analysis(
-                        result, atoms, probe_radius, window_fp=window_fp
+                        result,
+                        atoms,
+                        probe_radius,
+                        window_fp=tex_kw['window_fp'],
+                        sa_method=tex_kw['sa_method'],
+                        accessibility_method=tex_kw['accessibility_method'],
+                        lattice_variant=tex_kw['lattice_variant'],
+                        mc_n_samples=tex_kw['mc_n_samples'],
+                        mc_shell_thickness=tex_kw['mc_shell_thickness'],
                     )
                     if sa_results:
                         # Add to main results
@@ -1408,6 +1363,18 @@ Notes:
                         # Save CSV file for surface area analysis
                         sa_csv_base_file = output_dir / f"{cif_file.stem}_sa"
                         save_surface_area_csv(sa_results, sa_csv_base_file, material_name=cif_file.stem)
+                        if getattr(args, 'sa_plot_html', False):
+                            from mgrcli.textural_analysis import save_textural_breakdown_html
+
+                            sa_plot_path = output_dir / f"{cif_file.stem}_surface_area_plot.html"
+                            save_textural_breakdown_html(
+                                sa_results,
+                                sa_plot_path,
+                                quantity='sa',
+                                title='Surface Area Breakdown by Category',
+                                y_label='Surface Area (m²/g)',
+                            )
+                            print(f"  Surface area plot saved to: {sa_plot_path}")
 
                         # Print summary
                         total_sa = sa_results.get('total_surface_area', 0)
@@ -1433,11 +1400,19 @@ Notes:
                     print("Computing void volume analysis...")
 
                     probe_radius = self._resolve_probe_radius(config, args)
-                    print(f"  Using probe radius: {probe_radius:.3f} Å")
+                    print(
+                        f"  Using probe radius: {probe_radius:.3f} Å "
+                        f"(accessibility: {tex_kw['accessibility_method']})"
+                    )
 
-                    window_fp = bool(config.get('window_fp', True))
                     vol_results = compute_void_volume_analysis(
-                        result, atoms, probe_radius, window_fp=window_fp
+                        result,
+                        atoms,
+                        probe_radius,
+                        window_fp=tex_kw['window_fp'],
+                        accessibility_method=tex_kw['accessibility_method'],
+                        lattice_variant=tex_kw['lattice_variant'],
+                        vol_method=str(config.get('vol_method', 'voxel')),
                     )
                     if vol_results:
                         # Add to main results
@@ -1446,6 +1421,18 @@ Notes:
                         # Save CSV file for void volume analysis
                         vol_csv_base_file = output_dir / f"{cif_file.stem}_vol"
                         save_void_volume_csv(vol_results, vol_csv_base_file, material_name=cif_file.stem)
+                        if getattr(args, 'vol_plot_html', False):
+                            from mgrcli.textural_analysis import save_textural_breakdown_html
+
+                            vol_plot_path = output_dir / f"{cif_file.stem}_void_volume_plot.html"
+                            save_textural_breakdown_html(
+                                vol_results,
+                                vol_plot_path,
+                                quantity='vol',
+                                title='Void Volume Breakdown by Category',
+                                y_label='Void Volume (cm³/g)',
+                            )
+                            print(f"  Void volume plot saved to: {vol_plot_path}")
 
                         # Print summary
                         total_vol = vol_results.get('total_void_volume', 0)
@@ -1803,8 +1790,18 @@ Notes:
         if getattr(args, 'watershed_backend', None) is not None:
             result['watershed_backend'] = args.watershed_backend
 
-        if getattr(args, 'auto_dgrid_method', False):
-            result['auto_dgrid'] = True
+        if getattr(args, 'no_auto_dgrid', False):
+            result['auto_dgrid'] = False
+
+        if getattr(args, 'sa_method', None) is not None:
+            result['sa_method'] = args.sa_method
+        if getattr(args, 'accessibility_method', None) is not None:
+            result['accessibility_method'] = args.accessibility_method
+            result['pore_dia_method'] = args.accessibility_method
+        if getattr(args, 'lattice_variant', None) is not None:
+            result['lattice_variant'] = args.lattice_variant
+        if getattr(args, 'percolation_plot_backend', None) is not None:
+            result['percolation_plot_backend'] = args.percolation_plot_backend
 
         pocket_typing = getattr(args, 'pocket_typing', None)
         if pocket_typing is not None:
@@ -1827,6 +1824,73 @@ Notes:
             result['plot_backend'] = args.plot_backend
 
         return result
+
+    def _textural_kwargs(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "sa_method": str(config.get("sa_method", "mc")),
+            "accessibility_method": str(config.get("accessibility_method", "winding")),
+            "lattice_variant": str(config.get("lattice_variant", "v2")),
+            "mc_n_samples": int(config.get("mc_n_samples", 20000)),
+            "mc_shell_thickness": float(config.get("mc_shell_thickness", 0.5)),
+            "window_fp": bool(config.get("window_fp", True)),
+        }
+
+    def _ensure_pld_analysis(
+        self,
+        result: Dict[str, Any],
+        atoms,
+        config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if result.get("percolation_history") and result.get("pld") is not None:
+            return result
+        pore = compute_pore_diameter_analysis(
+            result["dgrid"],
+            atoms,
+            spacing=config["spacing"],
+            segmentation_results=result,
+            config=config,
+        )
+        if pore:
+            result.update(pore)
+        return result
+
+    def _save_percolation_plot(
+        self,
+        result: Dict[str, Any],
+        atoms,
+        config: Dict[str, Any],
+        args,
+        output_dir: Path,
+        stem: str,
+    ) -> None:
+        if not result.get('percolation_history'):
+            print("Warning: No percolation history available for plot")
+            return
+        from mgrcli.textural_analysis import save_percolation_plot_html
+
+        probe_radius = self._resolve_probe_radius(config, args)
+        perc_backend = (
+            getattr(args, 'percolation_plot_backend', None)
+            or config.get('percolation_plot_backend', 'threejs')
+        )
+        perc_path = output_dir / f"{stem}_percolation.html"
+        plot_analysis = {
+            k: result[k]
+            for k in (
+                'percolation_history', 'pld_locations', 'rag', 'maxima', 'maxima_info',
+                'maxima_pbc_dict', 'dgrid', 'regions', 'connections', 'isovalue',
+            )
+            if k in result
+        }
+        save_percolation_plot_html(
+            plot_analysis,
+            atoms,
+            perc_path,
+            probe_radius=probe_radius,
+            backend=str(perc_backend),
+            theme=getattr(args, 'theme', 'dark'),
+        )
+        print(f"  Percolation plot saved to: {perc_path}")
 
     def _resolve_probe_radius(self, config: Dict[str, Any], args) -> float:
         probe_radius = getattr(args, 'probe_radius', None)
@@ -2059,7 +2123,7 @@ Notes:
         spacing = config['spacing']
         radii_set = str(config.get('vdw_radii_set', 'bondi'))
         configured_dgrid = str(config.get('dgrid_method', 'rust_exact'))
-        auto_dgrid = bool(config.get('auto_dgrid', False))
+        auto_dgrid = bool(config.get('auto_dgrid', True))
         dgrid_method, dgrid_meta = resolve_dgrid_method(
             atoms, spacing, configured_dgrid, auto_dgrid=auto_dgrid
         )
@@ -2318,6 +2382,7 @@ Notes:
             'plot_framework_bond_radius': config.get('plot_framework_bond_radius', pd['plot_framework_bond_radius']),
             'plot_maxima': config.get('plot_maxima', True),
             'plot_maxima_show_spheres': config.get('plot_maxima_show_spheres', False),
+            'plot_show_periodic': config.get('plot_show_periodic', False),
             'plot_connections': config.get('plot_connections', True),
             'plot_windows': config.get('plot_windows', True),
             'plot_surface': config.get('plot_surface', True),

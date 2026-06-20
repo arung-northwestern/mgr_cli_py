@@ -58,6 +58,7 @@ mgrcli process MOF.cif -o out/ \
   -c config/web_analysis_template.json \
   --return-dgrid \
   --pore-dia \
+  --percolation-plot \
   --psd \
   --psd-accessible \
   --sa \
@@ -78,18 +79,23 @@ mgrcli process MOF.cif -o out/ \
 | `-b` / `--watershed-backend` | `rust_det` |
 | `--vdw-radii-set` | `bondi` |
 | `--dgrid-method` | `rust_exact` |
-| `--auto-dgrid-method` | off; opt-in AABB for large cells |
+| `auto_dgrid` | **on** (rust_exact → rust_aabb for large cells); `--no-auto-dgrid` to disable |
 | `--no-window-fp` | window FP on by default for SA/vol |
 
 ### Textural properties
 
 | Flag | Output |
 |------|--------|
-| `--pore-dia` | `*_pore_dia.csv` (LCD, PLD, DFSD, percolation history count) |
-| `--psd` | `*_psd_psd_uniform.csv`, `*_psd_psd_pockets.csv` (total / occupiable) |
-| `--psd-accessible` | `*_psd_accessible_*.csv` (percolation-accessible at probe) |
-| `--sa` | `*_sa_surface_area.csv` (total, accessible, by region/pocket/cluster) |
-| `--vol` | `*_vol_void_volume.csv` (same breakdown shape) |
+| `--pore-dia` | `*_pore_dia.csv` + winding percolation history |
+| `--percolation-plot` | `*_percolation.html` (cluster meshes, graph, windows) |
+| `--percolation-plot-backend` | `threejs` (default) or `plotly` |
+| `--sa` | `*_sa_surface_area.csv` (default: **MC** + winding) |
+| `--sa-method` | `mc` (default) or `mesh` |
+| `--sa-plot-html` | `*_surface_area_plot.html` breakdown bars |
+| `--vol` | `*_vol_void_volume.csv` (voxel + winding) |
+| `--vol-plot-html` | `*_void_volume_plot.html` breakdown bars |
+| `--accessibility-method` | `winding` (default) or `lattice` |
+| `--no-auto-dgrid` | Disable auto rust_exact→rust_aabb (auto **on** by default) |
 | `--probe-radius` | He default 1.2 Å if unset; used for SA/vol/accessible PSD |
 | `--probe-radius-psd` | Pocket typing PSD probe (default 1.2 Å) |
 
@@ -118,17 +124,16 @@ Shared library: `mgr_src/mgr/compute.py`, `mgr/winding_percolation.py`. Defaults
 | Property | Web app | CLI | Same algorithm / defaults? |
 |----------|---------|-----|----------------------------|
 | Segmentation | `rust_det`, mask 0.05, bondi, `skip_endchannel_pairs` | Web profile matches | **Yes** (use `-c` web template or `generate-config --profile web`) |
-| Pore LCD/PLD/DFSD | `get_pore_dia_mgr_winding` | `--pore-dia` uses `get_pore_dia_mgr` + winding **history** | **Partial** — LCD/PLD path differs; history is winding |
-| Percolation history | `compute_percolation_history_winding` | Same when segmentation complete | **Yes** |
-| Percolation cluster **plot** | Plotly / Three.js interactive tab | Not exported in batch | **No** — CSV only via `--pore-dia` |
-| SA accessible | `compute_surface_area_mesh_winding`, `window_fp=True` | `--sa` → same function, `window_fp` from config | **Yes** (mesh only) |
-| SA Monte Carlo | Available in library, not main UI default | Not exposed (`--sa-method` missing) | **No** |
-| Vol accessible | `compute_void_volume_from_results_winding` | `--vol` → same | **Yes** |
-| Lattice accessibility | Library only (`*_lattice` functions) | Not exposed | **No** |
+| Pore LCD/PLD/DFSD | `get_pore_dia_mgr_winding` | `--pore-dia` same | **Yes** |
+| Percolation cluster **plot** | Plotly / Three.js tab | `--percolation-plot` | **Yes** |
+| SA accessible | MC + winding default | `--sa` → `compute_surface_area_mc_winding` | **Yes** |
+| SA mesh | UI option | `--sa-method mesh` | **Yes** |
+| Vol accessible | voxel + winding | `--vol` | **Yes** |
+| Lattice accessibility | library | `--accessibility-method lattice` | **Yes** |
 | PSD total (global + pocket) | Rust uniform + pocketwise | `--psd` | **Yes** |
 | PSD accessible | `compute_psd_global_accessible`, pocketwise accessible | `--psd-accessible` | **Yes** (needs connections) |
 | SA/vol breakdown CSV | fragment / pocket / cluster columns | `--sa` / `--vol` CSV | **Yes** |
-| SA/vol breakdown **bar HTML** | Streamlit plots | Not in CLI | **No** |
+| SA/vol breakdown **bar HTML** | Streamlit plots | `--sa-plot-html` / `--vol-plot-html` | **Yes** |
 | Pocket typing | `env_cluster` | `--types` | **Yes** |
 
 For Zeo++-style lattice comparisons, call `mgr.compute_surface_area_mc_lattice` etc. from Python on saved NPZ — not yet CLI flags.
@@ -158,7 +163,7 @@ Re-plot without re-segmenting: `mgrcli plot out/file_results.npz -c config.json 
 
 ## Pitfalls
 
-1. **Large cells**: use `--auto-dgrid-method` or `--dgrid-method rust_aabb` to avoid OOM on `rust_exact`.
+1. **Large cells**: auto dgrid is **on** by default; use `--no-auto-dgrid` or explicit `--dgrid-method`.
 2. **`--psd-accessible` / `--sa` / `--vol`**: need `compute_connections: true` (auto-enabled).
 3. **Stale Streamlit**: `mgrcli interactive --clean`.
 4. **Rust rebuild**: after editing `src/`, run `pip install --force-reinstall -e .`.

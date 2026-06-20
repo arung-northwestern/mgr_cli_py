@@ -31,15 +31,22 @@ DGRID_DEFAULTS: Dict[str, Any] = {
     "dgrid_n_neighbors": 10,
     "dgrid_coarse_factor": 2,
     "vdw_radii_set": "bondi",
-    "auto_dgrid": False,
+    "auto_dgrid": True,
 }
 
-# Probe-accessible textural properties (SA / vol / accessible PSD)
+# Textural property defaults (batch CLI — MC SA + winding accessibility)
 TEXTURAL_DEFAULTS: Dict[str, Any] = {
-    "probe_radius": 1.2,  # He (Å); overridden at runtime if None via vdw_radii[2]
-    "probe_radius_psd": 1.2,  # pocket typing PSD probe (env_cluster default)
+    "probe_radius": 1.2,
+    "probe_radius_psd": 1.2,
     "window_fp": True,
     "accessibility_method": "winding",
+    "lattice_variant": "v2",
+    "pore_dia_method": "winding",
+    "sa_method": "mc",
+    "vol_method": "voxel",
+    "mc_n_samples": 20000,
+    "mc_shell_thickness": 0.5,
+    "percolation_plot_backend": "threejs",
     "pocket_typing": "none",
 }
 
@@ -55,6 +62,7 @@ PLOT_DEFAULTS: Dict[str, Any] = {
     "plot_framework_bond_radius": 0.15,
     "plot_maxima": True,
     "plot_maxima_show_spheres": False,
+    "plot_show_periodic": False,
     "plot_connections": True,
     "plot_windows": True,
     "plot_surface": True,
