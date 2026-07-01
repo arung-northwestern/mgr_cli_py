@@ -13,25 +13,57 @@ Repository: `arung-northwestern/mgr_cli_py`. Batch CLI + `mgrcli interactive` (S
 
 **Cursor:** symlink or copy this file to `.cursor/skills/mgrcli/SKILL.md` for auto-discovery.
 
-## Install (local)
+## Install (local, no Conda)
 
-Run from the **repository root** after clone.
+Use a **venv + uv** (or plain pip). **Conda is not required.** Run all commands from the **repository root** after clone.
+
+### Prerequisites
+
+- **Rust 1.70+** (compiles `mgrcli_rust` during install): `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh` then `source "$HOME/.cargo/env"`
+- **Python 3.10+** recommended (`requires-python >=3.8`)
+
+### Recommended: standalone [uv](https://docs.astral.sh/uv/)
 
 ```bash
 git clone https://github.com/arung-northwestern/mgr_cli_py.git
 cd mgr_cli_py
 
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source "$HOME/.cargo/env"
+# Install uv if missing (macOS/Linux — no Conda)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# Windows (PowerShell): irm https://astral.sh/uv/install.ps1 | iex
 
-python3 -m venv .venv && source .venv/bin/activate
-pip install --upgrade pip && pip install -e .
+uv venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 
+uv pip install -e .                # builds mgrcli_rust + installs mgrcli (maturin)
+
+# Verify CLI
 mgrcli --help
 mgrcli process cifs/ZIF-8-RASPA.cif -o ./out/ --return-dgrid
+
+# Interactive Streamlit web app (same env — opens browser locally)
+mgrcli interactive --clean         # --clean kills stale Streamlit from prior runs
+# Optional: mgrcli interactive --port 8501 --no-browser
 ```
 
-**Requirements:** Python **3.10+** recommended (`requires-python >=3.8`). Rust **1.70+**. Sample CIFs: `cifs/`.
+After editing Rust (`mgr_src/mgrcli_rust/`): `uv pip install --force-reinstall -e .`
+
+**One-liner script:** `./install/install.sh` (also uv-based; creates `mgrcli_env/` venv).
+
+### Alternative: stdlib venv + pip
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip && pip install -e .
+mgrcli interactive --clean
+```
+
+### Interactive mode notes
+
+- `mgrcli interactive` runs `python_cli/mgrcli/interactive_app.py` via Streamlit (installed by `pip install -e .`).
+- Sets local mode (`MGR_FORCE_LOCAL=1`) — no HF Spaces limits on your machine.
+- HTS tab in the web UI is **local/Docker only**; from terminal use `mgrcli batch` instead.
+- Sample structures: `cifs/` (`ZIF-8-RASPA.cif`, etc.).
 
 ## Commands
 
