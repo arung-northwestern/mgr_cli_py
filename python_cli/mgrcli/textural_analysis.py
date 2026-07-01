@@ -376,3 +376,41 @@ def save_textural_breakdown_html(
     df = __import__("pandas").DataFrame(breakdown_data)
     fig = px.bar(df, x="Label", y=y_label, color="Type", barmode="group", title=title)
     fig.write_html(str(path))
+
+
+def save_psd_plot_html(
+    psd_results: Mapping[str, Any],
+    path: Path,
+    *,
+    material_name: str = "material",
+    title_suffix: str = "",
+) -> None:
+    """Save uniform PSD as Plotly HTML (matches HTS worker output)."""
+    import plotly.graph_objects as go
+
+    uniform = psd_results.get("psd_uniform") if psd_results else None
+    if not uniform or uniform.get("histogram") is None:
+        print("No uniform PSD data to plot.")
+        return
+
+    hist = np.asarray(uniform["histogram"])
+    bins_arr = np.asarray(uniform.get("bins", np.linspace(0, 50, len(hist) + 1)))
+    centers = 0.5 * (bins_arr[:-1] + bins_arr[1:]) if len(bins_arr) > 1 else bins_arr[: len(hist)]
+    if len(centers) > len(hist):
+        centers = centers[: len(hist)]
+
+    suffix = f" {title_suffix}".rstrip()
+    fig = go.Figure(
+        data=[go.Scatter(x=centers, y=hist, mode="lines", name="PSD", line=dict(width=2))]
+    )
+    fig.update_layout(
+        title=f"Pore Size Distribution (uniform sampling) — {material_name}{suffix}",
+        xaxis_title="Pore Diameter (Å)",
+        yaxis_title="Counts",
+        width=1000,
+        height=600,
+    )
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.write_html(str(path))
+    print(f"PSD plot saved to: {path}")

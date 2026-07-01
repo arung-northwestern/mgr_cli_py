@@ -335,7 +335,7 @@ def compute_psd_analysis(dgrid, mat_atoms, regions_pbc=None, spacing=None,
                         num_samples_total=10000, num_samples_per_region=1000,
                         uniform_max_diameter=50.0, pocket_max_diameter=50.0,
                         uniform_num_bins=200, pocket_num_bins=200,
-                        probe_center_min_radius=None):
+                        probe_center_min_radius=None, uniform_log_bins=False):
     """Compute pore size distribution analysis.
 
     This function calculates:
@@ -354,6 +354,7 @@ def compute_psd_analysis(dgrid, mat_atoms, regions_pbc=None, spacing=None,
     - uniform_num_bins: Number of bins for uniform PSD
     - pocket_num_bins: Number of bins for pocket PSD
     - probe_center_min_radius: If set and > 0, restrict PSD sample sites to dgrid ≥ this radius (uniform + pockets).
+    - uniform_log_bins: Use log-spaced histogram edges for uniform PSD.
 
     Returns:
     - Dictionary with PSD analysis results
@@ -371,7 +372,13 @@ def compute_psd_analysis(dgrid, mat_atoms, regions_pbc=None, spacing=None,
 
     # Compute uniform PSD
     try:
-        bins_uniform = np.linspace(0, float(uniform_max_diameter), int(uniform_num_bins) + 1)
+        d_hi = float(uniform_max_diameter)
+        n_bins = int(uniform_num_bins)
+        if uniform_log_bins and d_hi > 0:
+            lo = max(0.25, d_hi / (10 ** n_bins) if n_bins > 0 else 0.25)
+            bins_uniform = np.logspace(np.log10(lo), np.log10(d_hi), n_bins + 1)
+        else:
+            bins_uniform = np.linspace(0, d_hi, n_bins + 1)
         uniform_result = mgr.compute_psd_uniform_rust(
             dgrid,
             mat_atoms,
@@ -920,7 +927,45 @@ Notes:
             '--probe-radius-psd',
             type=float,
             default=None,
-            help='Probe radius (Å) for pocket PSD in env_cluster typing (default: 1.2)',
+            help='Probe radius (Å) for env_cluster pocket typing PSD (default: 1.2)',
+        )
+        param_group.add_argument(
+            '--min-box-thickness',
+            type=float,
+            default=None,
+            metavar='Å',
+            help=(
+                'Optional convenience: repeat unit cell so shortest lattice vector ≥ this '
+                'value before segmentation (web HTS option; not required for correct results)'
+            ),
+        )
+        param_group.add_argument(
+            '--psd-num-samples-total', type=int, default=None,
+            help=f'Total uniform PSD samples (default: {self.DEFAULTS["psd_num_samples_total"]})',
+        )
+        param_group.add_argument(
+            '--psd-num-samples-per-region', type=int, default=None,
+            help=f'Pocket-wise PSD samples per region (default: {self.DEFAULTS["psd_num_samples_per_region"]})',
+        )
+        param_group.add_argument(
+            '--psd-uniform-num-bins', type=int, default=None,
+            help=f'Uniform PSD histogram bins (default: {self.DEFAULTS["psd_uniform_num_bins"]})',
+        )
+        param_group.add_argument(
+            '--psd-pocket-num-bins', type=int, default=None,
+            help=f'Pocket-wise PSD histogram bins (default: {self.DEFAULTS["psd_pocket_num_bins"]})',
+        )
+        param_group.add_argument(
+            '--psd-uniform-max-diameter', type=float, default=None,
+            help=f'Uniform PSD max diameter Å (default: {self.DEFAULTS["psd_uniform_max_diameter"]})',
+        )
+        param_group.add_argument(
+            '--psd-pocket-max-diameter', type=float, default=None,
+            help=f'Pocket PSD max diameter Å (default: {self.DEFAULTS["psd_pocket_max_diameter"]})',
+        )
+        param_group.add_argument(
+            '--psd-uniform-log-bins', action='store_true',
+            help='Log-spaced bins for uniform (occupiable) PSD',
         )
         param_group.add_argument(
             '--pocket-typing',
@@ -1014,6 +1059,10 @@ Notes:
             help='Save Plotly bar chart for void volume breakdown',
         )
         flag_group.add_argument(
+            '--psd-plot-html', action='store_true',
+            help='Save Plotly line chart for uniform PSD',
+        )
+        flag_group.add_argument(
             '--psd', action='store_true',
             help='Compute pore size distribution analysis'
         )
@@ -1046,15 +1095,70 @@ Notes:
         )
         flag_group.add_argument(
             '--psd-accessible', action='store_true',
-            help='Compute accessible (percolation-based) PSD at --probe-radius; use with or without --psd. Saves *_psd_accessible_psd_uniform.csv and *_psd_accessible_psd_pockets.csv'
+            help=(
+                'Accessible (percolation) PSD at --psd-accessible-probe-radius (or --probe-radius). '
+                'Saves *_psd_accessible_psd_*.csv'
+            ),
         )
 
-        # Analysis parameters
+        # Analysis parameters — probe radii (global + per-analysis overrides)
         analysis_group = process_parser.add_argument_group('analysis options')
         analysis_group.add_argument(
             '--probe-radius', type=float,
-            help='Probe radius for surface area and volume calculations (default: helium radius 1.2 Å)'
+            help='Global default probe radius Å (fallback for SA/vol/PSD/percolation; default 1.2 He)',
         )
+        analysis_group.add_argument(
+            '--sa-probe-radius', type=float, default=None,
+            help='Probe radius Å for --sa (default: --probe-radius or 1.2)',
+        )
+        analysis_group.add_argument(
+            '--vol-probe-radius', type=float, default=None,
+            help='Probe radius Å for --vol (default: --probe-radius or 1.2)',
+        )
+        analysis_group.add_argument(
+            '--psd-probe-radius', type=float, default=None,
+            help='Probe σ Å for occupiable --psd sample-site clearance (default: --probe-radius or 1.2)',
+        )
+        analysis_group.add_argument(
+            '--psd-accessible-probe-radius', type=float, default=None,
+            help='Probe radius Å for --psd-accessible (default: --probe-radius or 1.2)',
+        )
+        analysis_group.add_argument(
+            '--percolation-probe-radius', type=float, default=None,
+            help='Probe radius Å for --percolation-plot (default: --probe-radius or 1.2)',
+        )
+
+        # Batch command — parallel process (Dask), same flags as process
+        batch_parser = subparsers.add_parser(
+            'batch',
+            help='Process many CIFs in parallel with Dask (same outputs as process)',
+        )
+        batch_parser.add_argument('cif_files', nargs='*', help='CIF files or globs')
+        batch_parser.add_argument('-i', '--input', help='Single input CIF')
+        batch_parser.add_argument(
+            '--input-dir',
+            help='Recursively process all .cif files under this directory',
+        )
+        batch_parser.add_argument('-o', '--output-dir', default='.', help='Output directory')
+        batch_parser.add_argument('-c', '--config', help='JSON configuration file')
+        batch_parser.add_argument(
+            '--workers', type=int, default=4,
+            help='Dask local cluster workers (default: 4)',
+        )
+        batch_parser.add_argument(
+            '--tar', action='store_true',
+            help='Write batch_results.tar.gz of output directory when finished',
+        )
+        batch_parser.add_argument(
+            '--html-dir',
+            help='Directory for HTML visualizations (defaults to output directory)',
+        )
+        for action in param_group._group_actions:
+            batch_parser._add_action(action)
+        for action in flag_group._group_actions:
+            batch_parser._add_action(action)
+        for action in analysis_group._group_actions:
+            batch_parser._add_action(action)
 
         # Generate-config command
         config_parser = subparsers.add_parser(
@@ -1163,6 +1267,8 @@ Notes:
         # Execute the appropriate command
         if args.command == 'process':
             self.process_command(args)
+        elif args.command == 'batch':
+            self.batch_command(args)
         elif args.command == 'generate-config':
             self.generate_config_command(args)
         elif args.command == 'config-building':
@@ -1224,284 +1330,293 @@ Notes:
                 for key, value in auto_params.items():
                     print(f"    {key}: {value:.3f}")
 
-        plot_options = self._get_plot_options(config)
-
         for cif_file in cif_files:
             if not cif_file.exists():
                 print(f"Warning: {cif_file} does not exist, skipping")
                 continue
-
-            print(f"\nProcessing: {cif_file}")
             try:
-                result = self.process_single_cif(cif_file, config)
-                atoms = self._read_atoms(cif_file)
-                # Keep a copy of original atoms without covalent bonds for RAG operations
-                # to avoid duplicate atom warnings in MGR library functions
-                from ase.io import read
-                original_atoms = read(str(cif_file))
-
-                # Generate output filename
-                output_file = output_dir / f"{cif_file.stem}_results.npz"
-
-                needs_pld = (
-                    getattr(args, 'pore_dia', False)
-                    or getattr(args, 'sa', False)
-                    or getattr(args, 'vol', False)
-                    or getattr(args, 'percolation_plot', False)
-                    or getattr(args, 'psd_accessible', False)
-                )
-                if needs_pld:
-                    result = self._ensure_pld_analysis(result, atoms, config)
-
-                tex_kw = self._textural_kwargs(config)
-
-                if getattr(args, 'pore_dia', False) and result.get('lcd') is not None:
-                    pore_dia_csv_file = output_dir / f"{cif_file.stem}_pore_dia.csv"
-                    save_pore_diameter_csv(result, pore_dia_csv_file)
-
-                if getattr(args, 'percolation_plot', False):
-                    self._save_percolation_plot(
-                        result, atoms, config, args, output_dir, cif_file.stem
-                    )
-
-                # Handle PSD analysis if requested
-                if getattr(args, 'psd', False):
-                    # Get regions data for pocket-wise PSD
-                    regions_pbc = result.get('regions_pbc')
-
-                    psd_results = compute_psd_analysis(
-                        result['dgrid'], atoms, regions_pbc=regions_pbc, spacing=config['spacing']
-                    )
-                    if psd_results:
-                        # Add to main results
-                        result.update(psd_results)
-
-                        # Save CSV files for PSD analysis
-                        psd_csv_base_file = output_dir / f"{cif_file.stem}_psd"
-                        save_psd_csv(psd_results, psd_csv_base_file, material_name=cif_file.stem)
-
-                # Handle accessible PSD if requested (percolation-based, at probe_radius)
-                if getattr(args, 'psd_accessible', False):
-                    if result.get('connections') is None:
-                        print("Warning: Accessible PSD requires segmentation with connections. Enable compute_connections and re-run.")
-                    else:
-                        probe_radius = self._resolve_probe_radius(config, args)
-                        print(f"  Using probe radius for accessible PSD: {probe_radius:.3f} Å")
-                        print("Computing accessible PSD (percolating regions only)...")
-                        try:
-                            uniform_max_diameter = 50.0
-                            uniform_num_bins = 200
-                            pocket_max_diameter = 50.0
-                            pocket_num_bins = 200
-                            num_samples_total = 10000
-                            num_samples_per_region = 1000
-                            bins_uniform = np.linspace(0, uniform_max_diameter, uniform_num_bins + 1)
-                            bins_pocket = np.linspace(0, pocket_max_diameter, pocket_num_bins + 1)
-
-                            acc_uniform = mgr.compute_psd_global_accessible(
-                                result,
-                                atoms,
-                                probe_radius,
-                                bins=bins_uniform,
-                                samples_per_region=num_samples_per_region,
-                                return_fig=False,
-                            )
-                            uniform_hist = acc_uniform if isinstance(acc_uniform, (list, np.ndarray)) else acc_uniform[0]
-                            acc_pocket_psds = mgr.compute_psds_pocketwise_accessible(
-                                result,
-                                atoms,
-                                probe_radius,
-                                num_samples_per_region=num_samples_per_region,
-                                bins=bins_pocket,
-                                return_fig=False,
-                            )
-                            pocket_psds = acc_pocket_psds if isinstance(acc_pocket_psds, dict) else acc_pocket_psds[0]
-
-                            acc_psd_results = {
-                                'psd_uniform': {
-                                    'bins': bins_uniform,
-                                    'histogram': uniform_hist,
-                                    'bin_centers': 0.5 * (bins_uniform[:-1] + bins_uniform[1:]),
-                                    'num_samples': num_samples_per_region * (len(pocket_psds) if pocket_psds else 0) or 1,
-                                },
-                                'psd_pocket': {
-                                    'bins': bins_pocket,
-                                    'bin_centers': 0.5 * (bins_pocket[:-1] + bins_pocket[1:]),
-                                    'pocket_psds': pocket_psds,
-                                    'num_samples_per_region': num_samples_per_region,
-                                    'num_regions': len(pocket_psds) if pocket_psds else 0,
-                                },
-                            }
-                            psd_accessible_base = output_dir / f"{cif_file.stem}_psd_accessible"
-                            save_psd_csv(acc_psd_results, psd_accessible_base, material_name=cif_file.stem)
-                            print("  Accessible PSD CSVs saved.")
-                        except Exception as e:
-                            print(f"Warning: Accessible PSD calculation failed: {e}")
-
-                # Handle surface area analysis if requested
-                if getattr(args, 'sa', False):
-                    print("Computing surface area analysis...")
-
-                    probe_radius = self._resolve_probe_radius(config, args)
-                    print(f"  Using probe radius: {probe_radius:.3f} Å (SA method: {tex_kw['sa_method']})")
-
-                    sa_results = compute_surface_area_analysis(
-                        result,
-                        atoms,
-                        probe_radius,
-                        window_fp=tex_kw['window_fp'],
-                        sa_method=tex_kw['sa_method'],
-                        accessibility_method=tex_kw['accessibility_method'],
-                        lattice_variant=tex_kw['lattice_variant'],
-                        mc_n_samples=tex_kw['mc_n_samples'],
-                        mc_shell_thickness=tex_kw['mc_shell_thickness'],
-                    )
-                    if sa_results:
-                        # Add to main results
-                        result['surface_area_analysis'] = sa_results
-
-                        # Save CSV file for surface area analysis
-                        sa_csv_base_file = output_dir / f"{cif_file.stem}_sa"
-                        save_surface_area_csv(sa_results, sa_csv_base_file, material_name=cif_file.stem)
-                        if getattr(args, 'sa_plot_html', False):
-                            from mgrcli.textural_analysis import save_textural_breakdown_html
-
-                            sa_plot_path = output_dir / f"{cif_file.stem}_surface_area_plot.html"
-                            save_textural_breakdown_html(
-                                sa_results,
-                                sa_plot_path,
-                                quantity='sa',
-                                title='Surface Area Breakdown by Category',
-                                y_label='Surface Area (m²/g)',
-                            )
-                            print(f"  Surface area plot saved to: {sa_plot_path}")
-
-                        # Print summary
-                        total_sa = sa_results.get('total_surface_area', 0)
-                        accessible_sa = sa_results.get('accessible_surface_area', 0)
-                        accessible_fraction = sa_results.get('accessible_fraction', 0)
-                        
-                        # Add point probe reference
-                        point_probe_ref = sa_results.get('point_probe_reference', {})
-                        point_probe_sa = point_probe_ref.get('surface_area', 0)
-                        point_probe_fraction = point_probe_ref.get('surface_area_fraction', 0)
-                        
-                        print(f"  Surface Area Results:")
-                        print(f"    Total surface area: {total_sa:.4f} m²/g")
-                        print(f"    Accessible surface area: {accessible_sa:.4f} m²/g")
-                        print(f"    Accessible fraction: {accessible_fraction:.4f}")
-                        print(f"    Point probe reference (radius = 0): {point_probe_sa:.4f} m²/g")
-                        print(f"    Point probe fraction: {point_probe_fraction:.4f}")
-                    else:
-                        print("  Surface area analysis failed")
-
-                # Handle void volume analysis if requested
-                if getattr(args, 'vol', False):
-                    print("Computing void volume analysis...")
-
-                    probe_radius = self._resolve_probe_radius(config, args)
-                    print(
-                        f"  Using probe radius: {probe_radius:.3f} Å "
-                        f"(accessibility: {tex_kw['accessibility_method']})"
-                    )
-
-                    vol_results = compute_void_volume_analysis(
-                        result,
-                        atoms,
-                        probe_radius,
-                        window_fp=tex_kw['window_fp'],
-                        accessibility_method=tex_kw['accessibility_method'],
-                        lattice_variant=tex_kw['lattice_variant'],
-                        vol_method=str(config.get('vol_method', 'voxel')),
-                    )
-                    if vol_results:
-                        # Add to main results
-                        result['void_volume_analysis'] = vol_results
-
-                        # Save CSV file for void volume analysis
-                        vol_csv_base_file = output_dir / f"{cif_file.stem}_vol"
-                        save_void_volume_csv(vol_results, vol_csv_base_file, material_name=cif_file.stem)
-                        if getattr(args, 'vol_plot_html', False):
-                            from mgrcli.textural_analysis import save_textural_breakdown_html
-
-                            vol_plot_path = output_dir / f"{cif_file.stem}_void_volume_plot.html"
-                            save_textural_breakdown_html(
-                                vol_results,
-                                vol_plot_path,
-                                quantity='vol',
-                                title='Void Volume Breakdown by Category',
-                                y_label='Void Volume (cm³/g)',
-                            )
-                            print(f"  Void volume plot saved to: {vol_plot_path}")
-
-                        # Print summary
-                        total_vol = vol_results.get('total_void_volume', 0)
-                        accessible_vol = vol_results.get('accessible_void_volume', 0)
-                        accessible_fraction = vol_results.get('accessible_fraction', 0)
-                        
-                        # Add point probe reference
-                        point_probe_ref = vol_results.get('point_probe_reference', {})
-                        point_probe_vol = point_probe_ref.get('void_volume', 0)
-                        point_probe_fraction = point_probe_ref.get('void_volume_fraction', 0)
-                        
-                        print(f"  Void Volume Results:")
-                        print(f"    Total void volume: {total_vol:.4f} cm³/g")
-                        print(f"    Accessible void volume: {accessible_vol:.4f} cm³/g")
-                        print(f"    Accessible fraction: {accessible_fraction:.4f}")
-                        print(f"    Point probe reference (radius = 0): {point_probe_vol:.4f} cm³/g")
-                        print(f"    Point probe fraction: {point_probe_fraction:.4f}")
-                    else:
-                        print("  Void volume analysis failed")
-
-                pocket_method = self._resolve_pocket_typing_method(config, args)
-
-                if getattr(args, 'rag', False) and pocket_method != 'legacy_js':
-                    self._save_rag_pickle(result, original_atoms, output_dir, cif_file.stem)
-
-                if pocket_method == 'env_cluster':
-                    self._apply_env_cluster_pocket_typing(
-                        result, atoms, config, args, cif_file=cif_file
-                    )
-                elif pocket_method == 'legacy_js':
-                    self._apply_legacy_js_pocket_typing(
-                        result, original_atoms, args, output_dir, cif_file
-                    )
-
-                # Save results
-                save_payload = dict(result)
-                save_payload['cif_path'] = str(cif_file)
-                # Ensure rag_clustered is not present in results
-                if 'rag_clustered' in save_payload:
-                    del save_payload['rag_clustered']
-                self.save_results(save_payload, output_file)
-                print(f"Results saved to: {output_file}")
-
-                if getattr(args, 'plot_html', False):
-                    from .plotting import prepare_results_for_plot, save_mof_html
-                    plot_ready = prepare_results_for_plot(dict(result), atoms)
-                    html_dir = Path(getattr(args, 'html_dir', '') or output_dir)
-                    html_dir.mkdir(parents=True, exist_ok=True)
-                    html_path = html_dir / f"{cif_file.stem}.html"
-
-                    plot_backend = (
-                        (getattr(args, 'plot_backend', None) or config.get('plot_backend') or 'plotly')
-                    )
-                    plot_backend = str(plot_backend).lower().strip()
-                    theme = getattr(args, 'theme', 'dark')
-
-                    save_mof_html(
-                        html_path,
-                        plot_ready,
-                        backend=plot_backend,
-                        stylize=not getattr(args, 'no_stylize', False),
-                        options=plot_options,
-                        theme=theme,
-                    )
-                    print(f"Plot saved to: {html_path} (backend: {plot_backend}, theme: {theme})")
-
+                self._process_one_cif_file(cif_file, config, args, output_dir)
             except Exception as e:
                 print(f"Error processing {cif_file}: {e}")
                 continue
+
+    def batch_command(self, args):
+        """Parallel batch processing via Dask (same per-file outputs as process)."""
+        from mgrcli.batch import collect_cif_paths, run_batch
+
+        config = self.load_config(args.config) if args.config else {}
+        config = self.update_config_from_args(config, args)
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        cif_files = collect_cif_paths(
+            positional=args.cif_files,
+            input_file=getattr(args, 'input', None),
+            input_dir=getattr(args, 'input_dir', None),
+        )
+        if not cif_files:
+            print("Error: No CIF files found. Pass paths, -i, globs, or --input-dir.")
+            sys.exit(1)
+
+        print(f"Batch: {len(cif_files)} CIF(s), {args.workers} worker(s), output {output_dir}")
+        try:
+            results = run_batch(
+                cif_files,
+                output_dir,
+                config,
+                args,
+                workers=int(args.workers),
+                tar_output=bool(getattr(args, 'tar', False)),
+            )
+        except RuntimeError as exc:
+            print(f"Error: {exc}")
+            sys.exit(1)
+
+        ok = sum(1 for _, success, _ in results if success)
+        print(f"\nBatch complete: {ok}/{len(results)} succeeded")
+        for stem, success, err in results:
+            if not success:
+                print(f"  FAILED {stem}: {err}")
+
+    def _process_one_cif_file(
+        self,
+        cif_file: Path,
+        config: Dict[str, Any],
+        args,
+        output_dir: Path,
+    ) -> None:
+        """Run full process pipeline for a single CIF (used by process and batch)."""
+        print(f"\nProcessing: {cif_file}")
+        result = self.process_single_cif(cif_file, config)
+        atoms = self._read_atoms(cif_file)
+        from ase.io import read
+        original_atoms = read(str(cif_file))
+
+        output_file = output_dir / f"{cif_file.stem}_results.npz"
+
+        needs_pld = (
+            getattr(args, 'pore_dia', False)
+            or getattr(args, 'sa', False)
+            or getattr(args, 'vol', False)
+            or getattr(args, 'percolation_plot', False)
+            or getattr(args, 'psd_accessible', False)
+        )
+        if needs_pld:
+            result = self._ensure_pld_analysis(result, atoms, config)
+
+        tex_kw = self._textural_kwargs(config)
+        psd_kw = self._psd_kwargs(config, args)
+
+        if getattr(args, 'pore_dia', False) and result.get('lcd') is not None:
+            pore_dia_csv_file = output_dir / f"{cif_file.stem}_pore_dia.csv"
+            save_pore_diameter_csv(result, pore_dia_csv_file)
+
+        if getattr(args, 'percolation_plot', False):
+            self._save_percolation_plot(
+                result, atoms, config, args, output_dir, cif_file.stem
+            )
+
+        if getattr(args, 'psd', False):
+            regions_pbc = result.get('regions_pbc')
+            psd_probe = self._resolve_psd_probe_radius(config, args)
+            psd_results = compute_psd_analysis(
+                result['dgrid'],
+                atoms,
+                regions_pbc=regions_pbc,
+                spacing=config['spacing'],
+                probe_center_min_radius=psd_probe,
+                **psd_kw,
+            )
+            if psd_results:
+                result.update(psd_results)
+                psd_csv_base_file = output_dir / f"{cif_file.stem}_psd"
+                save_psd_csv(psd_results, psd_csv_base_file, material_name=cif_file.stem)
+                if getattr(args, 'psd_plot_html', False):
+                    from mgrcli.textural_analysis import save_psd_plot_html
+                    save_psd_plot_html(
+                        psd_results,
+                        output_dir / f"{cif_file.stem}_psd_plot.html",
+                        material_name=cif_file.stem,
+                    )
+
+        if getattr(args, 'psd_accessible', False):
+            if result.get('connections') is None:
+                print("Warning: Accessible PSD requires segmentation with connections. Enable compute_connections and re-run.")
+            else:
+                acc_probe = self._resolve_psd_accessible_probe_radius(config, args)
+                print(f"  Using probe radius for accessible PSD: {acc_probe:.3f} Å")
+                print("Computing accessible PSD (percolating regions only)...")
+                try:
+                    bins_uniform = np.linspace(
+                        0, psd_kw['uniform_max_diameter'], psd_kw['uniform_num_bins'] + 1
+                    )
+                    bins_pocket = np.linspace(
+                        0, psd_kw['pocket_max_diameter'], psd_kw['pocket_num_bins'] + 1
+                    )
+                    acc_uniform = mgr.compute_psd_global_accessible(
+                        result,
+                        atoms,
+                        acc_probe,
+                        bins=bins_uniform,
+                        samples_per_region=psd_kw['num_samples_per_region'],
+                        return_fig=False,
+                    )
+                    uniform_hist = acc_uniform if isinstance(acc_uniform, (list, np.ndarray)) else acc_uniform[0]
+                    acc_pocket_psds = mgr.compute_psds_pocketwise_accessible(
+                        result,
+                        atoms,
+                        acc_probe,
+                        num_samples_per_region=psd_kw['num_samples_per_region'],
+                        bins=bins_pocket,
+                        return_fig=False,
+                    )
+                    pocket_psds = acc_pocket_psds if isinstance(acc_pocket_psds, dict) else acc_pocket_psds[0]
+                    acc_psd_results = {
+                        'psd_uniform': {
+                            'bins': bins_uniform,
+                            'histogram': uniform_hist,
+                            'bin_centers': 0.5 * (bins_uniform[:-1] + bins_uniform[1:]),
+                            'num_samples': psd_kw['num_samples_per_region'] * (len(pocket_psds) if pocket_psds else 0) or 1,
+                        },
+                        'psd_pocket': {
+                            'bins': bins_pocket,
+                            'bin_centers': 0.5 * (bins_pocket[:-1] + bins_pocket[1:]),
+                            'pocket_psds': pocket_psds,
+                            'num_samples_per_region': psd_kw['num_samples_per_region'],
+                            'num_regions': len(pocket_psds) if pocket_psds else 0,
+                        },
+                    }
+                    psd_accessible_base = output_dir / f"{cif_file.stem}_psd_accessible"
+                    save_psd_csv(acc_psd_results, psd_accessible_base, material_name=cif_file.stem)
+                    if getattr(args, 'psd_plot_html', False):
+                        from mgrcli.textural_analysis import save_psd_plot_html
+                        save_psd_plot_html(
+                            acc_psd_results,
+                            output_dir / f"{cif_file.stem}_psd_accessible_plot.html",
+                            material_name=cif_file.stem,
+                            title_suffix="(accessible)",
+                        )
+                    print("  Accessible PSD CSVs saved.")
+                except Exception as e:
+                    print(f"Warning: Accessible PSD calculation failed: {e}")
+
+        if getattr(args, 'sa', False):
+            print("Computing surface area analysis...")
+            probe_radius = self._resolve_sa_probe_radius(config, args)
+            print(f"  Using probe radius: {probe_radius:.3f} Å (SA method: {tex_kw['sa_method']})")
+            sa_results = compute_surface_area_analysis(
+                result,
+                atoms,
+                probe_radius,
+                window_fp=tex_kw['window_fp'],
+                sa_method=tex_kw['sa_method'],
+                accessibility_method=tex_kw['accessibility_method'],
+                lattice_variant=tex_kw['lattice_variant'],
+                mc_n_samples=tex_kw['mc_n_samples'],
+                mc_shell_thickness=tex_kw['mc_shell_thickness'],
+            )
+            if sa_results:
+                result['surface_area_analysis'] = sa_results
+                sa_csv_base_file = output_dir / f"{cif_file.stem}_sa"
+                save_surface_area_csv(sa_results, sa_csv_base_file, material_name=cif_file.stem)
+                if getattr(args, 'sa_plot_html', False):
+                    from mgrcli.textural_analysis import save_textural_breakdown_html
+                    sa_plot_path = output_dir / f"{cif_file.stem}_surface_area_plot.html"
+                    save_textural_breakdown_html(
+                        sa_results, sa_plot_path, quantity='sa',
+                        title='Surface Area Breakdown by Category', y_label='Surface Area (m²/g)',
+                    )
+                    print(f"  Surface area plot saved to: {sa_plot_path}")
+                total_sa = sa_results.get('total_surface_area', 0)
+                accessible_sa = sa_results.get('accessible_surface_area', 0)
+                accessible_fraction = sa_results.get('accessible_fraction', 0)
+                print(f"  Surface Area Results:")
+                print(f"    Total surface area: {total_sa:.4f} m²/g")
+                print(f"    Accessible surface area: {accessible_sa:.4f} m²/g")
+                print(f"    Accessible fraction: {accessible_fraction:.4f}")
+            else:
+                print("  Surface area analysis failed")
+
+        if getattr(args, 'vol', False):
+            print("Computing void volume analysis...")
+            probe_radius = self._resolve_vol_probe_radius(config, args)
+            print(
+                f"  Using probe radius: {probe_radius:.3f} Å "
+                f"(accessibility: {tex_kw['accessibility_method']})"
+            )
+            vol_results = compute_void_volume_analysis(
+                result,
+                atoms,
+                probe_radius,
+                window_fp=tex_kw['window_fp'],
+                accessibility_method=tex_kw['accessibility_method'],
+                lattice_variant=tex_kw['lattice_variant'],
+                vol_method=str(config.get('vol_method', 'voxel')),
+            )
+            if vol_results:
+                result['void_volume_analysis'] = vol_results
+                vol_csv_base_file = output_dir / f"{cif_file.stem}_vol"
+                save_void_volume_csv(vol_results, vol_csv_base_file, material_name=cif_file.stem)
+                if getattr(args, 'vol_plot_html', False):
+                    from mgrcli.textural_analysis import save_textural_breakdown_html
+                    vol_plot_path = output_dir / f"{cif_file.stem}_void_volume_plot.html"
+                    save_textural_breakdown_html(
+                        vol_results, vol_plot_path, quantity='vol',
+                        title='Void Volume Breakdown by Category', y_label='Void Volume (cm³/g)',
+                    )
+                    print(f"  Void volume plot saved to: {vol_plot_path}")
+                total_vol = vol_results.get('total_void_volume', 0)
+                accessible_vol = vol_results.get('accessible_void_volume', 0)
+                accessible_fraction = vol_results.get('accessible_fraction', 0)
+                print(f"  Void Volume Results:")
+                print(f"    Total void volume: {total_vol:.4f} cm³/g")
+                print(f"    Accessible void volume: {accessible_vol:.4f} cm³/g")
+                print(f"    Accessible fraction: {accessible_fraction:.4f}")
+            else:
+                print("  Void volume analysis failed")
+
+        plot_options = self._get_plot_options(config)
+        pocket_method = self._resolve_pocket_typing_method(config, args)
+
+        if getattr(args, 'rag', False) and pocket_method != 'legacy_js':
+            self._save_rag_pickle(result, original_atoms, output_dir, cif_file.stem)
+
+        if pocket_method == 'env_cluster':
+            self._apply_env_cluster_pocket_typing(
+                result, atoms, config, args, cif_file=cif_file
+            )
+        elif pocket_method == 'legacy_js':
+            self._apply_legacy_js_pocket_typing(
+                result, original_atoms, args, output_dir, cif_file
+            )
+
+        save_payload = dict(result)
+        save_payload['cif_path'] = str(cif_file)
+        if 'rag_clustered' in save_payload:
+            del save_payload['rag_clustered']
+        self.save_results(save_payload, output_file)
+        print(f"Results saved to: {output_file}")
+
+        if getattr(args, 'plot_html', False):
+            from .plotting import prepare_results_for_plot, save_mof_html
+            plot_ready = prepare_results_for_plot(dict(result), atoms)
+            html_dir = Path(getattr(args, 'html_dir', '') or output_dir)
+            html_dir.mkdir(parents=True, exist_ok=True)
+            html_path = html_dir / f"{cif_file.stem}.html"
+            plot_backend = (
+                (getattr(args, 'plot_backend', None) or config.get('plot_backend') or 'plotly')
+            )
+            plot_backend = str(plot_backend).lower().strip()
+            theme = getattr(args, 'theme', 'dark')
+            save_mof_html(
+                html_path,
+                plot_ready,
+                backend=plot_backend,
+                stylize=not getattr(args, 'no_stylize', False),
+                options=plot_options,
+                theme=theme,
+            )
+            print(f"Plot saved to: {html_path} (backend: {plot_backend}, theme: {theme})")
 
     def plot_command(self, args):
         """Generate HTML plots from existing results files."""
@@ -1812,6 +1927,27 @@ Notes:
         if getattr(args, 'probe_radius_psd', None) is not None:
             result['probe_radius_psd'] = float(args.probe_radius_psd)
 
+        _probe_keys = (
+            ('sa_probe_radius', 'sa_probe_radius'),
+            ('vol_probe_radius', 'vol_probe_radius'),
+            ('psd_probe_radius', 'psd_probe_radius'),
+            ('psd_accessible_probe_radius', 'psd_accessible_probe_radius'),
+            ('percolation_probe_radius', 'percolation_probe_radius'),
+            ('min_box_thickness', 'min_box_thickness'),
+            ('psd_num_samples_total', 'psd_num_samples_total'),
+            ('psd_num_samples_per_region', 'psd_num_samples_per_region'),
+            ('psd_uniform_num_bins', 'psd_uniform_num_bins'),
+            ('psd_pocket_num_bins', 'psd_pocket_num_bins'),
+            ('psd_uniform_max_diameter', 'psd_uniform_max_diameter'),
+            ('psd_pocket_max_diameter', 'psd_pocket_max_diameter'),
+        )
+        for arg_name, cfg_key in _probe_keys:
+            val = getattr(args, arg_name, None)
+            if val is not None:
+                result[cfg_key] = val
+        if getattr(args, 'psd_uniform_log_bins', False):
+            result['psd_uniform_log_bins'] = True
+
         if getattr(args, 'no_window_fp', False):
             result['window_fp'] = False
 
@@ -1834,6 +1970,73 @@ Notes:
             "mc_shell_thickness": float(config.get("mc_shell_thickness", 0.5)),
             "window_fp": bool(config.get("window_fp", True)),
         }
+
+    def _psd_kwargs(self, config: Dict[str, Any], args) -> Dict[str, Any]:
+        log_bins = bool(config.get("psd_uniform_log_bins", False))
+        if getattr(args, "psd_uniform_log_bins", False):
+            log_bins = True
+        return {
+            "num_samples_total": int(config.get("psd_num_samples_total", 10000)),
+            "num_samples_per_region": int(config.get("psd_num_samples_per_region", 1000)),
+            "uniform_max_diameter": float(config.get("psd_uniform_max_diameter", 50.0)),
+            "pocket_max_diameter": float(config.get("psd_pocket_max_diameter", 50.0)),
+            "uniform_num_bins": int(config.get("psd_uniform_num_bins", 200)),
+            "pocket_num_bins": int(config.get("psd_pocket_num_bins", 200)),
+            "uniform_log_bins": log_bins,
+        }
+
+    def _resolve_probe_radius(self, config: Dict[str, Any], args) -> float:
+        probe_radius = getattr(args, 'probe_radius', None)
+        if probe_radius is None:
+            probe_radius = config.get('probe_radius')
+        if probe_radius is None:
+            from ase.data import vdw_radii
+            probe_radius = float(vdw_radii[2])
+        return float(probe_radius)
+
+    def _resolve_specific_probe(
+        self,
+        config: Dict[str, Any],
+        args,
+        *,
+        arg_attr: str,
+        config_key: str,
+    ) -> float:
+        specific = getattr(args, arg_attr, None)
+        if specific is not None:
+            return float(specific)
+        if config.get(config_key) is not None:
+            return float(config[config_key])
+        return self._resolve_probe_radius(config, args)
+
+    def _resolve_sa_probe_radius(self, config: Dict[str, Any], args) -> float:
+        return self._resolve_specific_probe(
+            config, args, arg_attr='sa_probe_radius', config_key='sa_probe_radius'
+        )
+
+    def _resolve_vol_probe_radius(self, config: Dict[str, Any], args) -> float:
+        return self._resolve_specific_probe(
+            config, args, arg_attr='vol_probe_radius', config_key='vol_probe_radius'
+        )
+
+    def _resolve_psd_probe_radius(self, config: Dict[str, Any], args) -> float:
+        return self._resolve_specific_probe(
+            config, args, arg_attr='psd_probe_radius', config_key='psd_probe_radius'
+        )
+
+    def _resolve_psd_accessible_probe_radius(self, config: Dict[str, Any], args) -> float:
+        return self._resolve_specific_probe(
+            config, args,
+            arg_attr='psd_accessible_probe_radius',
+            config_key='psd_accessible_probe_radius',
+        )
+
+    def _resolve_percolation_probe_radius(self, config: Dict[str, Any], args) -> float:
+        return self._resolve_specific_probe(
+            config, args,
+            arg_attr='percolation_probe_radius',
+            config_key='percolation_probe_radius',
+        )
 
     def _ensure_pld_analysis(
         self,
@@ -1868,7 +2071,7 @@ Notes:
             return
         from mgrcli.textural_analysis import save_percolation_plot_html
 
-        probe_radius = self._resolve_probe_radius(config, args)
+        probe_radius = self._resolve_percolation_probe_radius(config, args)
         perc_backend = (
             getattr(args, 'percolation_plot_backend', None)
             or config.get('percolation_plot_backend', 'threejs')
@@ -1891,15 +2094,6 @@ Notes:
             theme=getattr(args, 'theme', 'dark'),
         )
         print(f"  Percolation plot saved to: {perc_path}")
-
-    def _resolve_probe_radius(self, config: Dict[str, Any], args) -> float:
-        probe_radius = getattr(args, 'probe_radius', None)
-        if probe_radius is None:
-            probe_radius = config.get('probe_radius')
-        if probe_radius is None:
-            from ase.data import vdw_radii
-            probe_radius = float(vdw_radii[2])
-        return float(probe_radius)
 
     def _resolve_pocket_typing_method(self, config: Dict[str, Any], args) -> Optional[str]:
         explicit = getattr(args, 'pocket_typing', None) or config.get('pocket_typing')
@@ -2120,6 +2314,17 @@ Notes:
         """Process a single CIF file using the Python workflow built on the Rust backend."""
 
         atoms = self._read_atoms(cif_file)
+        min_box = config.get('min_box_thickness')
+        if min_box is not None and float(min_box) > 0:
+            cell_lengths = atoms.get_cell_lengths_and_angles()[:3]
+            if min(cell_lengths) < float(min_box):
+                repetitions = mgr.get_repetitions_to_meet_cutoff(atoms, float(min_box))
+                atoms = atoms * repetitions
+                print(
+                    f"  Supercell {repetitions} for min box thickness "
+                    f"{float(min_box):.1f} Å (short axis was {min(cell_lengths):.2f} Å)"
+                )
+
         spacing = config['spacing']
         radii_set = str(config.get('vdw_radii_set', 'bondi'))
         configured_dgrid = str(config.get('dgrid_method', 'rust_exact'))

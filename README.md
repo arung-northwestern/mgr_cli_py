@@ -449,6 +449,7 @@ MCLI provides several commands for different tasks:
 
 ```bash
 mgrcli process          # Analyze CIF files with comprehensive segmentation and analysis
+mgrcli batch            # Parallel process many CIFs (Dask; same outputs as process)
 mgrcli generate-config  # Create configuration files with custom parameters
 mgrcli config-building  # Interactive configuration builder with guided prompts
 mgrcli plot            # Generate Plotly visualizations from existing results
@@ -497,7 +498,21 @@ mgrcli config-building
 | `auto_dgrid` | `--no-auto-dgrid` | **on** | Auto-switch to `rust_aabb` for large cells |
 | `sa_method` | `--sa-method` | `mc` | Surface area: Monte Carlo (or `mesh`) |
 | `accessibility_method` | `--accessibility-method` | `winding` | Winding percolation (or `lattice`) |
-| `probe-radius` | | 1.2 | He probe for SA/vol/accessible PSD (Å) |
+| `probe-radius` | | 1.2 | Global default probe Å (fallback for all analyses) |
+| `sa_probe_radius` | `--sa-probe-radius` | 1.2 | SA probe (overrides global) |
+| `vol_probe_radius` | `--vol-probe-radius` | 1.2 | Void volume probe |
+| `psd_probe_radius` | `--psd-probe-radius` | 1.2 | Occupiable PSD sample-site clearance σ |
+| `psd_accessible_probe_radius` | `--psd-accessible-probe-radius` | 1.2 | Accessible PSD percolation probe |
+| `percolation_probe_radius` | `--percolation-probe-radius` | 1.2 | Percolation cluster plot probe |
+| `probe_radius_psd` | `--probe-radius-psd` | 1.2 | env_cluster pocket typing PSD only |
+| `psd_num_samples_total` | `--psd-num-samples-total` | 10000 | Uniform PSD samples |
+| `psd_num_samples_per_region` | `--psd-num-samples-per-region` | 1000 | Pocket-wise PSD samples / region |
+| `psd_uniform_num_bins` | `--psd-uniform-num-bins` | 200 | Uniform PSD histogram bins |
+| `psd_pocket_num_bins` | `--psd-pocket-num-bins` | 200 | Pocket PSD histogram bins |
+| `psd_uniform_max_diameter` | `--psd-uniform-max-diameter` | 50.0 | Uniform PSD max diameter (Å) |
+| `psd_pocket_max_diameter` | `--psd-pocket-max-diameter` | 50.0 | Pocket PSD max diameter (Å) |
+| `psd_uniform_log_bins` | `--psd-uniform-log-bins` | off | Log-spaced uniform PSD bins |
+| `min_box_thickness` | `--min-box-thickness` | off | Optional supercell convenience (Å) |
 | `window_fp` | `--no-window-fp` | on | Window fingerprint rescue (SA/vol winding) |
 
 Legacy profile differences: `mask_thickness=0.5`, `rust_bucket`, `crc` radii. See [parity plan](docs/plan_cli_web_parity.md).
@@ -509,8 +524,9 @@ Legacy profile differences: `mask_thickness=0.5`, `rust_bucket`, `crc` radii. Se
 | `--pore-dia` | LCD, PLD, DFSD + winding percolation history (CSV) |
 | `--percolation-plot` | Percolation cluster visualization HTML (default backend: threejs) |
 | `--percolation-plot-backend` | `threejs` or `plotly` |
-| `--psd` | Global + pocketwise total PSD (CSV) |
-| `--psd-accessible` | Accessible PSD at `--probe-radius` (CSV) |
+| `--psd` | Global + pocketwise total PSD (CSV); uses `--psd-probe-radius` for occupiable clearance |
+| `--psd-accessible` | Accessible PSD at `--psd-accessible-probe-radius` (CSV) |
+| `--psd-plot-html` | Uniform PSD Plotly line chart HTML |
 | `--sa` | Accessible surface area (default: MC + winding; CSV breakdown) |
 | `--sa-method` | `mc` (default) or `mesh` |
 | `--sa-plot-html` | Surface area breakdown bar chart HTML |
@@ -525,6 +541,19 @@ Legacy profile differences: `mask_thickness=0.5`, `rust_bucket`, `crc` radii. Se
 | `--rag` | Save RAG pickle |
 | `--return-dgrid` | Include distance grid in NPZ |
 | `--no-connections` | Disable connection graph |
+| `--min-box-thickness` | Optional: repeat cell so shortest axis ≥ value (Å) |
+
+### Batch (parallel)
+
+Same flags as `process`, plus:
+
+```bash
+mgrcli batch cifs/*.cif -o out/ -c config/web_analysis_template.json \
+  --workers 4 --pore-dia --psd --sa --vol --psd-plot-html
+mgrcli batch --input-dir ./structures -o out/ --workers 8 --tar
+```
+
+Uses Dask `LocalCluster` (local installs only; serial fallback: `mgrcli process *.cif` or `xargs`).
 
 ## Textural properties (CLI vs web app)
 

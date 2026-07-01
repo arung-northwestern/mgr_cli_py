@@ -15,225 +15,150 @@ Repository: `arung-northwestern/mgr_cli_py`. Batch CLI + `mgrcli interactive` (S
 
 ## Install (local)
 
-Run from the **repository root** after clone (paths like `config/web_analysis_template.json` and `cifs/` are relative to root).
+Run from the **repository root** after clone.
 
 ```bash
 git clone https://github.com/arung-northwestern/mgr_cli_py.git
 cd mgr_cli_py
 
-# Rust toolchain (required once) — maturin compiles mgrcli_rust during pip install
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 
 python3 -m venv .venv && source .venv/bin/activate
 pip install --upgrade pip && pip install -e .
 
-# After editing Rust: mgr_src/mgrcli_rust/
-pip install --force-reinstall -e .
-
 mgrcli --help
 mgrcli process cifs/ZIF-8-RASPA.cif -o ./out/ --return-dgrid
 ```
 
-**Requirements:** Python **3.10+** recommended (`requires-python >=3.8` in `pyproject.toml`). Rust **1.70+**. ~2 GB RAM for compilation.
-
-**Alternative:** `./install/install.sh` (uv-based; same editable install).
-
-**Sample structures:** `cifs/` (`ZIF-8-RASPA.cif`, `P1-Cu-BTC.cif`, `MIL-47-RASPA.cif`, etc.).
-
-**Verify env:** `which mgrcli` should point inside `.venv/bin/` after activate. No need to `cd python_cli/` — the console script is on PATH.
+**Requirements:** Python **3.10+** recommended (`requires-python >=3.8`). Rust **1.70+**. Sample CIFs: `cifs/`.
 
 ## Commands
 
 | Command | Purpose |
 |---------|---------|
 | `mgrcli process <cif>… -o OUT` | Segment + optional textural props + optional HTML |
+| `mgrcli batch <cif>… -o OUT` | **Parallel** `process` via Dask (`--workers`, `--input-dir`, `--tar`) |
 | `mgrcli generate-config -o config.json` | Emit defaults (`--profile web` or `legacy`) |
 | `mgrcli plot results.npz -o OUT` | HTML from saved NPZ (no re-segmentation) |
-| `mgrcli interactive [--clean]` | Streamlit web app (`--port`, `--no-browser`) |
+| `mgrcli interactive [--clean]` | Streamlit web app |
 | `mgrcli config-building` | Interactive config wizard |
 
-## Quick analysis (web-aligned defaults)
+Serial multi-file: `mgrcli process cifs/*.cif …` or `xargs`. Use `batch` when Dask parallelism helps.
 
-Use the checked-in template or generate one:
+## Quick analysis (web-aligned)
 
 ```bash
-mgrcli generate-config --profile web -o /tmp/web.json   # optional
 mgrcli process cifs/ZIF-8-RASPA.cif \
   -o ./out \
   -c config/web_analysis_template.json \
-  --pore-dia --psd --psd-accessible --sa --vol \
+  --pore-dia --percolation-plot \
+  --psd --psd-accessible --psd-plot-html \
+  --sa --vol --sa-plot-html --vol-plot-html \
   --types \
   --plot-html --plot-backend threejs
 ```
 
-**Full textural + plots (batch):**
+**Parallel batch:**
 
 ```bash
-mgrcli process cifs/ZIF-8-RASPA.cif -o out/ \
+mgrcli batch --input-dir cifs/ -o out/ \
   -c config/web_analysis_template.json \
-  --pore-dia \
-  --percolation-plot \
-  --psd --psd-accessible \
-  --sa --sa-plot-html \
-  --vol --vol-plot-html \
-  --probe-radius 1.2
+  --workers 4 \
+  --pore-dia --psd --psd-accessible --sa --vol
 ```
 
-`--sa`, `--vol`, and `--psd-accessible` **auto-enable** `return_dgrid` and `compute_connections` when missing (web template already has both `true`).
+`--sa`, `--vol`, `--psd-accessible` auto-enable `return_dgrid` and `compute_connections`.
 
-## Defaults (web profile)
+## Probe radii (per-analysis overrides)
 
-Source of truth: `python_cli/mgrcli/defaults.py` and `config/web_analysis_template.json`.
+| Flag / config key | Used for |
+|-------------------|----------|
+| `--probe-radius` / `probe_radius` | Global fallback (default 1.2 Å He) |
+| `--sa-probe-radius` | `--sa` |
+| `--vol-probe-radius` | `--vol` |
+| `--psd-probe-radius` | Occupiable `--psd` sample-site clearance σ |
+| `--psd-accessible-probe-radius` | `--psd-accessible` percolation probe |
+| `--percolation-probe-radius` | `--percolation-plot` |
+| `--probe-radius-psd` | `env_cluster` pocket typing only (not occupiable PSD) |
 
-### Segmentation
+Example — SA at 1.2 Å, accessible PSD at 1.5 Å:
 
-| Key / flag | Default (web) |
-|------------|---------------|
-| `spacing` / `-s` | 0.5 Å |
-| `h` / `-H` | 0.2 Å |
-| `mask_thickness` / `-mt` | 0.05 Å |
-| `threshold_abs` / `-ta` | 1.5 Å |
-| `min_distance` / `-md` | 1.5 Å |
-| `minimum_window_separation` / `-ms` | 1.0 Å |
-| `watershed_backend` / `-b` | `rust_det` |
-| `skip_endchannel_pairs` | `true` |
-| `compute_connections` | `true` |
-| `return_dgrid` | `true` |
-| `vdw_radii_set` | `bondi` |
-| `dgrid_method` | `rust_exact` |
-| `auto_dgrid` | **`true`** — auto-switch large cells to `rust_aabb`; disable with `--no-auto-dgrid` |
-| `window_fp` | `true` (disable with `--no-window-fp`) |
+```bash
+mgrcli process MOF.cif -o out/ -c config/web_analysis_template.json \
+  --sa --sa-probe-radius 1.2 \
+  --psd-accessible --psd-accessible-probe-radius 1.5
+```
 
-### Textural properties
+## PSD sampling (`--psd` / config JSON)
 
-| Key / flag | Default (web) |
-|------------|---------------|
-| `probe_radius` / `--probe-radius` | 1.2 Å (helium) |
-| `probe_radius_psd` / `--probe-radius-psd` | 1.2 Å |
-| `accessibility_method` / `--accessibility-method` | `winding` (`lattice` + `--lattice-variant v2`) |
-| `sa_method` / `--sa-method` | `mc` (`mesh` optional) |
-| `vol_method` | `voxel` |
-| `mc_n_samples` | 20000 |
-| `mc_shell_thickness` | 0.5 Å |
-| `percolation_plot_backend` | `threejs` |
-| `pocket_typing` | `none` (`--types` → `env_cluster`) |
+| Flag / config | Default |
+|---------------|---------|
+| `--psd-num-samples-total` / `psd_num_samples_total` | 10000 |
+| `--psd-num-samples-per-region` / `psd_num_samples_per_region` | 1000 |
+| `--psd-uniform-num-bins` / `psd_uniform_num_bins` | 200 |
+| `--psd-pocket-num-bins` / `psd_pocket_num_bins` | 200 |
+| `--psd-uniform-max-diameter` | 50.0 Å |
+| `--psd-pocket-max-diameter` | 50.0 Å |
+| `--psd-uniform-log-bins` | off |
+| `--psd-plot-html` | `{stem}_psd_plot.html` (and accessible variant) |
 
-### Plotting (batch CLI)
+## Segmentation defaults (web profile)
 
 | Key / flag | Default |
 |------------|---------|
-| `plot_backend` / `--plot-backend` | **`plotly`** (Streamlit UI defaults to Three.js; override with `--plot-backend threejs` or config) |
-| `plot_layout` / `--theme` | `dark` |
+| `spacing` / `-s` | 0.5 Å |
+| `mask_thickness` / `-mt` | 0.05 Å |
+| `watershed_backend` / `-b` | `rust_det` |
+| `vdw_radii_set` | `bondi` |
+| `dgrid_method` | `rust_exact` |
+| `auto_dgrid` | **on**; `--no-auto-dgrid` to disable |
+| `min_box_thickness` / `--min-box-thickness` | off (optional supercell convenience) |
+| `window_fp` | on; `--no-window-fp` to disable |
+| `plot_backend` | `plotly` (override `--plot-backend threejs`) |
 
-**Legacy profile** (`generate-config --profile legacy`): `rust_bucket`, mask 0.5, `crc` radii, `auto_dgrid` off — regression tests only.
+## Textural flags & outputs
 
-## Key flags
-
-### Textural analysis
-
-| Flag | Output / behavior |
-|------|-------------------|
-| `--pore-dia` | `{stem}_pore_dia.csv` via `get_pore_dia_mgr_winding` + percolation history |
+| Flag | Output |
+|------|--------|
+| `--pore-dia` | `{stem}_pore_dia.csv` |
 | `--percolation-plot` | `{stem}_percolation.html` |
-| `--percolation-plot-backend` | `threejs` (config default) or `plotly` |
 | `--psd` | `{stem}_psd_psd_uniform.csv`, `{stem}_psd_psd_pockets.csv` |
-| `--psd-accessible` | `{stem}_psd_accessible_psd_uniform.csv`, `{stem}_psd_accessible_psd_pockets.csv` |
-| `--sa` | `{stem}_sa_surface_area.csv` (MC + winding by default) |
-| `--sa-method` | `mc` (default) or `mesh` |
-| `--sa-plot-html` | `{stem}_surface_area_plot.html` (Plotly bars) |
-| `--vol` | `{stem}_vol_void_volume.csv` (voxel + winding) |
-| `--vol-plot-html` | `{stem}_void_volume_plot.html` (Plotly bars) |
+| `--psd-accessible` | `{stem}_psd_accessible_psd_*.csv` |
+| `--psd-plot-html` | `{stem}_psd_plot.html` |
+| `--sa` | `{stem}_sa_surface_area.csv` |
+| `--sa-plot-html` | `{stem}_surface_area_plot.html` |
+| `--vol` | `{stem}_vol_void_volume.csv` |
+| `--vol-plot-html` | `{stem}_void_volume_plot.html` |
+| `--types` | `env_cluster` → `regions_cluster` in NPZ |
+| `--plot-html` | `{stem}.html` |
 
-### Pocket typing & visualization
-
-| Flag | Behavior |
-|------|----------|
-| `--types` | `env_cluster` pocket typing → `regions_cluster` in NPZ |
-| `--pocket-typing legacy_js` | RAG + Jensen–Shannon clustering (`--js-threshold`, default 0.15) |
-| `--rag` | Save `{stem}_rag_clustered.pkl` (also saved when using `--types`) |
-| `--plot-html` | `{stem}.html` after process |
-| `--plot-backend threejs` | Override config `plot_backend` (default batch: plotly) |
-| `--auto-params` | Estimate segmentation parameters from structure |
-
-## Outputs
-
-| File | When |
-|------|------|
-| `{stem}_results.npz` | Always (segmentation + optional `dgrid`, `regions_cluster`, embedded analyses) |
-| CSV / HTML siblings | Per flags above |
-| `{stem}.html` | `--plot-html` |
-| `{stem}_rag_clustered.pkl` | `--rag` or `--types` |
-
-Load NPZ: `numpy.load(path, allow_pickle=True)`; `connections` may be dict-encoded.
-
-Re-plot without re-segmenting:
-
-```bash
-mgrcli plot out/{stem}_results.npz -c config/web_analysis_template.json \
-  --plot-backend threejs -o out
-```
+Always: `{stem}_results.npz`.
 
 ## CLI vs web app
 
-Shared library: `mgr_src/mgr/compute.py`, `mgr/winding_percolation.py`. Defaults: `python_cli/mgrcli/defaults.py`.
+| Feature | CLI | Web | Match? |
+|---------|-----|-----|--------|
+| Segmentation web profile | `-c config/web_analysis_template.json` | UI | **Yes** |
+| HTS parallel batch | `mgrcli batch` (Dask) | HTS tab (local only) | **Yes** |
+| Per-analysis probe radii | `--sa-probe-radius`, etc. | single global in HTS | **CLI richer** |
+| PSD sampling + plot | flags + `--psd-plot-html` | PSD tab / HTS | **Yes** |
+| Min box thickness | `--min-box-thickness` | HTS checkbox | **Yes** (convenience) |
+| Lattice accessibility | `--accessibility-method lattice` | not in single-material UI | CLI only |
 
-| Property | Web app | CLI batch | Match? |
-|----------|---------|-----------|--------|
-| Segmentation | `rust_det`, mask 0.05, bondi | `-c config/web_analysis_template.json` or `--profile web` | **Yes** |
-| Pore LCD/PLD/DFSD | `get_pore_dia_mgr_winding` | `--pore-dia` | **Yes** |
-| Percolation plot | Streamlit tab | `--percolation-plot` | **Yes** |
-| SA | MC + winding (UI selectable mesh) | `--sa` / `--sa-method` | **Yes** |
-| Vol | voxel + winding | `--vol` | **Yes** |
-| Lattice accessibility | UI option | `--accessibility-method lattice` | **Yes** |
-| PSD total + pocket | Rust uniform + pocketwise | `--psd` | **Yes** |
-| PSD accessible | winding percolation | `--psd-accessible` | **Yes** |
-| SA/vol breakdown CSV + bar HTML | Streamlit | `--sa`/`--vol` + `--sa-plot-html`/`--vol-plot-html` | **Yes** |
-| Pocket typing | `env_cluster` | `--types` | **Yes** |
+## Pitfalls
 
-## Three.js full-scene config
-
-Override `plot_backend` in JSON (template defaults to `plotly`):
-
-```json
-{
-  "plot_backend": "threejs",
-  "plot_framework": true,
-  "plot_framework_show_rings": true,
-  "plot_cell": true,
-  "plot_surface": true,
-  "plot_surface_pbc": true,
-  "plot_connections": true,
-  "plot_windows": true,
-  "plot_maxima": true,
-  "plot_show_periodic": true
-}
-```
-
-```bash
-mgrcli process file.cif -o out -c config.json --plot-html --types
-```
-
-## Pitfalls (agents)
-
-1. **CWD:** run from repo root so `-c config/...` and `cifs/...` resolve.
-2. **Large cells:** `auto_dgrid` is on; use `--no-auto-dgrid` only if you need to force `rust_exact`, or set `--dgrid-method rust_aabb` explicitly.
-3. **Textural flags:** `--psd-accessible` / `--sa` / `--vol` need connections (auto-enabled).
-4. **Stale Streamlit:** `mgrcli interactive --clean` kills old processes.
-5. **Rust edits:** change `mgr_src/mgrcli_rust/` (built via `pyproject.toml` `manifest-path`), then `pip install --force-reinstall -e .`. Root `src/` is not the maturin build path.
-6. **Config vs flags:** CLI flags override JSON config keys.
-7. **HF Spaces deploy:** see repo `AGENTS.md` / `CLAUDE.md` — no `git push` to Hugging Face without explicit user consent.
+1. **CWD:** repo root for `config/` and `cifs/` paths.
+2. **Rust edits:** `mgr_src/mgrcli_rust/`, then `pip install --force-reinstall -e .`.
+3. **Batch:** needs `dask[distributed]` (in `pyproject.toml`); not on HF Spaces.
+4. **HF push:** see `AGENTS.md` — no push without explicit user consent.
 
 ## Reference paths
 
 | Path | Role |
 |------|------|
-| `python_cli/mgrcli/cli.py` | CLI entry, flags, orchestration |
-| `python_cli/mgrcli/defaults.py` | Web / legacy default dicts |
-| `python_cli/mgrcli/textural_analysis.py` | Shared textural helpers |
-| `python_cli/mgrcli/interactive_app.py` | Streamlit UI |
-| `config/web_analysis_template.json` | Web-aligned analysis config |
-| `mgr_src/mgrcli_rust/` | Rust extension sources (maturin build) |
-| `cifs/` | Sample CIF structures |
-| `docs/plan_cli_web_parity.md` | Parity roadmap |
-| `docs/accessibility_and_surface_area.org` | Winding / lattice / mesh / MC APIs |
+| `python_cli/mgrcli/cli.py` | CLI entry, `process` / `batch` |
+| `python_cli/mgrcli/batch.py` | Dask parallel runner |
+| `python_cli/mgrcli/defaults.py` | Web / legacy defaults |
+| `config/web_analysis_template.json` | Web-aligned config |
+| `docs/plan_cli_web_parity.md` | Parity notes |

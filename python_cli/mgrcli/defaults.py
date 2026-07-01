@@ -34,10 +34,26 @@ DGRID_DEFAULTS: Dict[str, Any] = {
     "auto_dgrid": True,
 }
 
+# PSD sampling defaults (web PSD tab / HTS worker)
+PSD_DEFAULTS: Dict[str, Any] = {
+    "psd_num_samples_total": 10000,
+    "psd_num_samples_per_region": 1000,
+    "psd_uniform_num_bins": 200,
+    "psd_pocket_num_bins": 200,
+    "psd_uniform_max_diameter": 50.0,
+    "psd_pocket_max_diameter": 50.0,
+    "psd_uniform_log_bins": False,
+}
+
 # Textural property defaults (web app + batch CLI — MC SA + winding accessibility)
 TEXTURAL_DEFAULTS: Dict[str, Any] = {
     "probe_radius": 1.2,
     "probe_radius_psd": 1.2,
+    "psd_probe_radius": 1.2,
+    "psd_accessible_probe_radius": 1.2,
+    "sa_probe_radius": 1.2,
+    "vol_probe_radius": 1.2,
+    "percolation_probe_radius": 1.2,
     "window_fp": True,
     "accessibility_method": "winding",
     "lattice_variant": "v2",
@@ -94,6 +110,7 @@ def analysis_defaults(profile: str = "web") -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     out.update(SEGMENTATION_DEFAULTS)
     out.update(DGRID_DEFAULTS)
+    out.update(PSD_DEFAULTS)
     out.update(TEXTURAL_DEFAULTS)
     out.update(PLOT_DEFAULTS)
     if profile == "legacy":
