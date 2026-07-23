@@ -30,6 +30,21 @@ def _cell_matrix_for_rust(ase_atoms):
     return cellpar_to_cell(ase_atoms.cell.cellpar()).T
 
 
+def _stable_sort_merged_maxima(merged_maxima):
+    """Lexicographic sort so ``regions_pbc`` label *i* matches ``maxima_pbc[i-1]``.
+
+    Must run before merged-marker watershed; ``maxima_info`` / ``remap_dict`` assume
+    this order.
+    """
+    merged_maxima = np.asarray(merged_maxima, dtype=int)
+    if merged_maxima.size == 0:
+        return merged_maxima
+    order = np.lexsort(
+        (merged_maxima[:, 2], merged_maxima[:, 1], merged_maxima[:, 0])
+    )
+    return merged_maxima[order]
+
+
 def dgrid_from_atoms_rust(ase_atoms, spacing, radii=None):
     """Compute a distance grid from atomic positions using the Rust backend.
 
@@ -492,6 +507,7 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.05, h=0.2,
     merged_maxima = np.vstack(
         [m for i, m in enumerate(merged_maxima) if i not in all_removals]
     )
+    merged_maxima = _stable_sort_merged_maxima(merged_maxima)
 
     logger.info(
         "time(s): %.2f computing regions with pbc \n"
@@ -571,6 +587,7 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.05, h=0.2,
 
     # * remove those rows from merged_maxima nd redo segmentations
     merged_maxima = np.delete(merged_maxima, removed_maxima_labels - 1, axis=0)
+    merged_maxima = _stable_sort_merged_maxima(merged_maxima)
 
     if len(removed_maxima_labels) > 0:
         logger.info(
@@ -619,14 +636,6 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.05, h=0.2,
     # step 2: get unmerged maxima info using valid maxima
     original_shape = np.array(dgrid.shape)
     padded_shape = np.array(padded_grid.shape)
-
-    # Stable periodic seed IDs regardless of watershed backend / merge order.
-    merged_maxima = np.asarray(merged_maxima, dtype=int)
-    if merged_maxima.size:
-        order = np.lexsort(
-            (merged_maxima[:, 2], merged_maxima[:, 1], merged_maxima[:, 0])
-        )
-        merged_maxima = merged_maxima[order]
 
     new_maxima_info_list = []
     counter = 1
@@ -1208,29 +1217,26 @@ def _check_pocket_maxima_consistency(dgrid, regions, maxima_info, tol=0.25):
     )
 
 
-def compute_pore_sizes_uniform_rust(dgrid, ase_atoms, num_samples_total=10000):
+def compute_pore_sizes_uniform_rust(dgrid, ase_atoms, num_samples_total=10000, min_sphere_center_radius=None):
     """Compute pore sizes using uniform sampling across the material.
 
-    This function samples points uniformly throughout the material and calculates
-    the pore size (distance to nearest atom surface) at each sample point.
-
     :param dgrid: 3D distance grid from dgrid_from_atoms_rust
-    :type dgrid: numpy.ndarray
     :param ase_atoms: ASE Atoms object of the material
-    :type ase_atoms: ase.Atoms
     :param num_samples_total: Total number of sample points to generate
-    :type num_samples_total: int
-    :return: Tuple of (sample_points, pore_sizes) where sample_points are the sampled coordinates and pore_sizes are the corresponding pore diameters
-    :rtype: tuple[numpy.ndarray, numpy.ndarray]
+    :param min_sphere_center_radius: Minimum clearance (Å) for sphere-center voxels in the
+        largest-including-sphere search. Sample sites still use all void voxels (dgrid > 0).
+        Set to the probe radius (e.g. 1.82 Å for N₂) to match PoreBlazer Total PSD.
+    :return: Tuple of (sample_points, pore_sizes)
     """
     import mgrcli_rust
     from ase.geometry import cellpar_to_cell
     import numpy as np
 
     cell = cellpar_to_cell(ase_atoms.cell.cellpar()).T
-    sample_points, pore_sizes = mgrcli_rust.compute_pore_sizes_uniform(
-        dgrid, cell, num_samples_total=num_samples_total
-    )
+    kwargs = {"dgrid": dgrid, "cell": cell, "num_samples_total": num_samples_total}
+    if min_sphere_center_radius is not None and float(min_sphere_center_radius) > 0:
+        kwargs["min_sphere_center_radius"] = float(min_sphere_center_radius)
+    sample_points, pore_sizes = mgrcli_rust.compute_pore_sizes_uniform(**kwargs)
     return sample_points, pore_sizes
 
 
@@ -1243,30 +1249,21 @@ def compute_psd_uniform_rust(
     return_fig=False,
     material="Material",
     probe_center_min_radius=None,
+    min_sphere_center_radius=None,
 ):
     """Compute pore size distribution using uniform sampling.
 
-    This function calculates the pore size distribution by sampling points uniformly
-    throughout the material and optionally creates a plotly figure for visualization.
-
     :param dgrid: 3D distance grid from dgrid_from_atoms_rust
-    :type dgrid: numpy.ndarray
     :param ase_atoms: ASE Atoms object of the material
-    :type ase_atoms: ase.Atoms
     :param num_samples_total: Total number of sample points to generate
-    :type num_samples_total: int
     :param bins: Bin edges for histogram. If None, uses np.linspace(0, 50, 200)
-    :type bins: numpy.ndarray or None
     :param density: Whether to normalize the histogram
-    :type density: bool
     :param return_fig: Whether to return a plotly figure along with the histogram
-    :type return_fig: bool
     :param material: Name of the material for plot title
-    :type material: str
     :param probe_center_min_radius: If > 0, only void voxels with dgrid >= this value are sampled.
-    :type probe_center_min_radius: float or None
+    :param min_sphere_center_radius: Minimum clearance for LIS center voxels in the Rust
+        largest-including-sphere search. Forwarded to compute_pore_sizes_uniform_rust.
     :return: If return_fig is False, returns histogram values. If True, returns (histogram, figure)
-    :rtype: numpy.ndarray or tuple[numpy.ndarray, plotly.graph_objects.Figure]
     """
     # Create region-wise PSD plot
     import numpy as np
@@ -1276,7 +1273,8 @@ def compute_psd_uniform_rust(
 
     dgrid_eff = _effective_dgrid_uniform_psd_sampling(dgrid, probe_center_min_radius)
     sample_points, pore_sizes = compute_pore_sizes_uniform_rust(
-        dgrid_eff, ase_atoms, num_samples_total=num_samples_total
+        dgrid_eff, ase_atoms, num_samples_total=num_samples_total,
+        min_sphere_center_radius=min_sphere_center_radius,
     )
     if bins is None:
         bins = np.linspace(0, 50, 200)  # histogram bins
@@ -1338,6 +1336,39 @@ def _effective_regions_pocket_psd_sampling(regions_pbc, dgrid, probe_center_min_
     valid = (rg > np.uint32(0)) & (d >= s)
     return np.where(valid, rg, np.uint32(0))
 
+def _build_lis_regions_from_pbc_groups(regions, pbc_groups):
+    """Assign one LIS pool id per PBC group on the fragment ``regions`` grid.
+
+    All periodic images of the same pocket share an id so LIS can use MIC across
+    cell boundaries. Includes fragments that are not network-accessible.
+    """
+    import numpy as np
+
+    regions = np.asarray(regions, dtype=np.uint32)
+    lis = np.zeros_like(regions, dtype=np.uint32)
+    if not pbc_groups:
+        return lis
+    groups_iter = pbc_groups.values() if isinstance(pbc_groups, dict) else pbc_groups
+    for group_index, group in enumerate(groups_iter, start=1):
+        for fragment_id in group:
+            fid = int(fragment_id)
+            if fid == 0:
+                continue
+            lis[regions == np.uint32(fid)] = np.uint32(group_index)
+    return lis
+
+
+def _pbc_groups_from_results(results):
+    """Return PBC fragment groups from segmentation ``results``."""
+    pbc_groups = results.get("pbc_groups")
+    if pbc_groups is not None:
+        if isinstance(pbc_groups, dict):
+            return [v for v in pbc_groups.values() if 0 not in v]
+        return list(pbc_groups)
+    from .compute import pbc_groups_from_segmentation
+
+    return pbc_groups_from_segmentation(results)
+
 
 def compute_pore_sizes_pocketwise_rust(
     dgrid,
@@ -1345,6 +1376,7 @@ def compute_pore_sizes_pocketwise_rust(
     ase_atoms,
     samples_per_region=1000,
     probe_center_min_radius=None,
+    lis_regions=None,
 ):
     """Compute pore sizes for each pocket/region separately.
 
@@ -1352,15 +1384,14 @@ def compute_pore_sizes_pocketwise_rust(
     the pore size distribution for each region individually.
 
     :param dgrid: 3D distance grid from dgrid_from_atoms_rust
-    :type dgrid: numpy.ndarray
     :param regions_pbc: 3D array of region labels from periodic segmentation
-    :type regions_pbc: numpy.ndarray
     :param ase_atoms: ASE Atoms object of the material
-    :type ase_atoms: ase.Atoms
     :param samples_per_region: Number of sample points per region label
-    :type samples_per_region: int
+    :param lis_regions: Optional PBC-group grid mapping fragments to shared LIS pools.
+        When provided, the largest-including-sphere search pools voxels across all
+        periodic images of the same pocket, so a fragment on the cell boundary
+        can find its LIS center in a neighboring image.
     :return: Tuple of (sample_points, pore_sizes, region_labels)
-    :rtype: tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray]
     """
     import mgrcli_rust
     from ase.geometry import cellpar_to_cell
@@ -1371,13 +1402,16 @@ def compute_pore_sizes_pocketwise_rust(
     regions_eff = _effective_regions_pocket_psd_sampling(
         regions_pbc, dgrid, probe_center_min_radius
     )
+    kwargs = {
+        "dgrid": dgrid,
+        "regions_pbc": regions_eff,
+        "cell": cell,
+        "samples_per_region": samples_per_region,
+    }
+    if lis_regions is not None:
+        kwargs["lis_regions"] = np.ascontiguousarray(np.asarray(lis_regions, dtype=np.uint32))
     sample_points, pore_sizes, region_labels = (
-        mgrcli_rust.compute_pore_sizes_for_psd_pocketwise(
-            dgrid,
-            regions_eff,
-            cell,
-            samples_per_region=samples_per_region,
-        )
+        mgrcli_rust.compute_pore_sizes_for_psd_pocketwise(**kwargs)
     )
     return sample_points, pore_sizes, region_labels
 
@@ -1602,13 +1636,17 @@ def compute_accessible_psd_from_results(
             "accessible_region_ids": [],
         }
 
-    # Sample pocketwise on the accessible mask
+    # Sample pocketwise on the accessible mask; LIS pools follow full PBC groups.
     cell = cellpar_to_cell(mat_atoms.cell.cellpar()).T
-    sample_points, pore_sizes, region_labels = mgrcli_rust.compute_pore_sizes_for_psd_pocketwise(
+    pbc_groups = _pbc_groups_from_results(results)
+    lis_regions = _build_lis_regions_from_pbc_groups(regions, pbc_groups)
+    sample_points, pore_sizes, region_labels = compute_pore_sizes_pocketwise_rust(
         dgrid,
         regions_accessible,
-        cell,
+        mat_atoms,
         samples_per_region=int(samples_per_region),
+        probe_center_min_radius=probe_center_min_radius,
+        lis_regions=lis_regions,
     )
 
     bin_edges = np.asarray(bin_edges)

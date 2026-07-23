@@ -4226,12 +4226,26 @@ def main() -> None:
             st.info(
                 "📊 **PSD Methodology**\n"
                 "• **Distance grid:** geometric clearance to the nearest framework atom surface "
-                "(Euclidean distance transform on the pore side).\n"
-                "• **Probe-centered:** samples drawn only from void voxels where clearance ≥ probe radius σ.\n"
-                "• **Global PSD:** volume-sampled — peak height is proportional to the *volume of pockets* of that diameter.\n"
-                "• **Pocket-wise PSD:** fixed N points per pocket — overall height is proportional to the *number of pockets* of that diameter.\n"
-                "• **Occupiable:** PSD over all segmented pore regions under the clearance rule.\n"
-                "• **Accessible:** same rule, but only regions that percolate at σ."
+                "(Euclidean distance transform on the pore side).\n\n"
+                "**Sampling vs. Largest-Including-Sphere (LIS) search:**\n"
+                "• **Sample sites** are drawn from all void voxels (dgrid > 0) — this matches "
+                "PoreBlazer's *g_cubes* and captures the full pore volume.\n"
+                "• **LIS center search** only considers voxels with clearance ≥ *Sphere-center "
+                "radius* — this matches PoreBlazer's *n_cubes*. The largest-including sphere "
+                "center must itself fit the probe. Default: equal to the probe radius σ.\n\n"
+                "**Pocket-wise PSD with PBC-group pooling:**\n"
+                "• Fragments that are periodic images of the same pocket are grouped via "
+                "PBC connectivity.\n"
+                "• The LIS search pools voxels across the entire PBC group, so a fragment "
+                "on the cell boundary can find its true largest sphere in a neighboring "
+                "periodic image of the same pocket.\n"
+                "• Sample points are still drawn per-fragment and labelled by fragment ID, "
+                "preserving the pocket-wise histogram structure.\n\n"
+                "**Domain selection:**\n"
+                "• **Global PSD:** volume-sampled — peak height ∝ volume of pockets at that diameter.\n"
+                "• **Pocket-wise PSD:** fixed N points per pocket — peak height ∝ number of pockets.\n"
+                "• **Occupiable:** all segmented pore regions under the clearance rule.\n"
+                "• **Accessible:** only regions that percolate at σ.\n"
             )
 
             _bins_default = _recommended_pocket_psd_bins(results_data.get("dgrid"))
@@ -4239,7 +4253,6 @@ def main() -> None:
             _default_pocket_max_d = float(_bins_default[-1])
             _default_uniform_max_d = float(max(50.0, _default_pocket_max_d))
             _default_uniform_num_bins = int(max(200, np.ceil(_default_uniform_max_d / 0.25)))
-
             with st.form("psd_settings"):
                 psd_domain = st.radio(
                     "Domain",
@@ -4248,13 +4261,26 @@ def main() -> None:
                     help="Occupiable (probe center): every pore region subject to the clearance rule. Accessible (probe center): only regions that percolate at σ, same clearance rule.",
                 )
                 probe_radius_psd = st.number_input(
-                    "Probe radius (Å)",
+                    "Probe radius σ (Å)",
                     value=1.2,
                     min_value=0.1,
                     max_value=10.0,
                     step=0.05,
                     format="%.2f",
                     help="Radius σ of the probe sphere. PSD sample sites are restricted to grid locations where clearance to the framework surface is ≥ σ.",
+                )
+                min_sphere_center_radius_psd = st.number_input(
+                    "Sphere-center radius (Å)",
+                    value=1.2,
+                    min_value=0.0,
+                    max_value=10.0,
+                    step=0.05,
+                    format="%.2f",
+                    help=
+                        "Minimum clearance for voxels eligible as largest-including-sphere (LIS) "
+                        "centers. Sample sites use all void voxels; the LIS search uses only voxels "
+                        "with dgrid ≥ this value. Set to the probe radius σ to match PoreBlazer "
+                        "(default). Set to 0 to search all void voxels (faster but less physical).",
                 )
 
                 st.subheader("Global PSD (uniform sampling)")
@@ -4309,11 +4335,13 @@ def main() -> None:
             need_occupiable = psd_domain in ("Occupiable only", "Both")
             need_accessible = psd_domain in ("Accessible only", "Both")
 
+            _scr = round(float(min_sphere_center_radius_psd), 3)
             key_occupiable = (
                 effective_key,
                 "occupiable",
                 bool(global_psd_log_bins),
                 round(float(probe_radius_psd), 3),
+                _scr,
                 int(num_samples_total),
                 int(uniform_num_bins),
                 float(uniform_max_diameter),
@@ -4326,6 +4354,7 @@ def main() -> None:
                 "accessible",
                 bool(global_psd_log_bins),
                 round(float(probe_radius_psd), 3),
+                _scr,
                 int(num_samples_total),
                 int(uniform_num_bins),
                 float(uniform_max_diameter),
@@ -4375,6 +4404,7 @@ def main() -> None:
                             return_fig=True,
                             material=material_name,
                             probe_center_min_radius=float(probe_radius_psd),
+                            min_sphere_center_radius=float(min_sphere_center_radius_psd),
                         )
                         uniform_df = make_uniform_psd_dataframe(bins_uniform, uniform_hist)
                         pocket_results = None

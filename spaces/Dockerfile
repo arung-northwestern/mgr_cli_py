@@ -3,8 +3,8 @@
 # when deploying to HF Spaces (see scripts/deploy_to_hf_space.sh).
 
 # Cache-busting: change this timestamp to force a full Docker rebuild on HF Spaces.
-# Last updated: 2026-06-20 (percolation parity + clean prod deploy)
-ARG BUILD_DATE=2026-06-20b
+# Last updated: 2026-06-20 (drop Docker HEALTHCHECK — HF uses app_port probe)
+ARG BUILD_DATE=2026-06-20c
 
 FROM python:3.11-slim AS builder
 
@@ -44,7 +44,7 @@ ENV PYTHONUNBUFFERED=1 \
     MGR_DASK_DASHBOARD_PORT=8787 \
     MGR_DASK_DASHBOARD_HOST_PORT=8787 \
     MGR_DEPLOYMENT=spaces \
-    MGRCLI_BUILD=12
+    MGRCLI_BUILD=13
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -70,10 +70,9 @@ COPY spaces/.streamlit/config.toml /app/.streamlit/config.toml
 RUN uv pip install --system /app/target/wheels/*.whl \
     && chmod +x /app/scripts/docker_entrypoint.sh
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/_stcore/health', timeout=5)"
-
+# HF Spaces probes app_port itself; a Docker HEALTHCHECK can leave the Hub UI stuck on
+# "Starting" even when Streamlit is up and serving on 0.0.0.0:7860.
 EXPOSE 7860
 
 ENTRYPOINT ["/app/scripts/docker_entrypoint.sh"]
-CMD ["streamlit", "run", "python_cli/mgrcli/interactive_app.py", "--server.port=7860", "--server.address=0.0.0.0"]
+CMD ["streamlit", "run", "python_cli/mgrcli/interactive_app.py", "--server.port=7860", "--server.address=0.0.0.0", "--server.headless=true", "--browser.gatherUsageStats=false"]

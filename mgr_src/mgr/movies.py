@@ -12,7 +12,7 @@ from pathlib import Path
 
 # 1. Read a RASPA PDB movie into canonical snapshots
 snapshots = mgr.read_raspa_pdb_movie(
-    "mofography/examples/Movie_LTA96_1.1.1_298.150000_0.000000_component_K_0.pdb",
+    "examples/Movie_LTA96_1.1.1_298.150000_0.000000_component_K_0.pdb",
     max_frames=200,
 )
 
@@ -116,7 +116,6 @@ from ase.io import read
 from ase.neighborlist import natural_cutoffs, neighbor_list
 from matplotlib import colors as mcolors
 from skimage.measure import marching_cubes
-import colorsys
 
 from .analyze import update_with_covalent_bonds
 from .helper import get_fractional_coordinates, interpolate_labels
@@ -124,28 +123,6 @@ from .helper import get_fractional_coordinates, interpolate_labels
 # ---------------------------------------------------------------------------
 # Default styles registry (shared between Plotly and Three.js layers)
 # ---------------------------------------------------------------------------
-
-# Keys passed from ``update_traces(..., {"opacity": ...})`` etc. must merge into
-# ``trace["style"]`` — the Three.js viewer's ``styleFor()`` only reads ``trace.style``.
-_TRACE_STYLE_TOPLEVEL_KEYS = frozenset(
-    {
-        "opacity",
-        "color",
-        "roughness",
-        "metalness",
-        "side",
-        "clearcoat",
-        "clearcoatRoughness",
-        "linewidth",
-        "dashSize",
-        "gapSize",
-        "size",
-        "shininess",
-        "specular",
-        "depthTest",
-    }
-)
-
 
 DEFAULT_STYLES: dict[str, dict[str, Any]] = {
     "framework": {
@@ -175,15 +152,15 @@ DEFAULT_STYLES: dict[str, dict[str, Any]] = {
     },
     "cell": {
         "color": 0xFFA500,
-        "linewidth": 2,
+        "linewidth": 3,
     },
     "internal_maxima": {
         "color": [0.85, 0.85, 0.85],
-        "size": 5.0,
+        "size": 25.0,
     },
     "periodic_maxima": {
         "color": [0.85, 0.85, 0.85],
-        "size": 5.0,
+        "size": 25.0,
         "symbol": "ring",
     },
     "internal_windows": {
@@ -196,20 +173,20 @@ DEFAULT_STYLES: dict[str, dict[str, Any]] = {
     },
     "internal_connections": {
         "color": 0xFF0000,
-        "linewidth": 16,
+        "linewidth": 1.5,
     },
     "periodic_connections": {
         "color": 0xFF0000,
         "dashSize": 0.9,
         "gapSize": 0.5,
-        "linewidth": 16,
+        "linewidth": 1.5,
     },
     "internal_nodes": {
         "color": 0x66CCFF,
-        "size": 5.0,
+        "size": 12.5,
     },
     "periodic_nodes": {
-        "size": 5.0,
+        "size": 12.5,
         "symbol": "ring",
     },
     "aromatic_rings": {
@@ -280,6 +257,8 @@ def _make_trace(
     hover: list[str] | None = None,
     visible: bool = True,
 ) -> dict[str, Any]:
+    from .viz_backend import MOFOGRAPHY_BACKEND_KEY, THREEJS_BACKEND
+
     return {
         "id": trace_id,
         "type": trace_type,
@@ -288,6 +267,7 @@ def _make_trace(
         "style": _resolve_style(style),
         "data": data,
         "hover": hover,
+        MOFOGRAPHY_BACKEND_KEY: THREEJS_BACKEND,
     }
 
 
@@ -312,7 +292,7 @@ def _serialize_trimesh(mesh: trimesh.Trimesh) -> dict[str, Any]:
 
 
 # Keys in trace.data that are large numerical arrays eligible for binary packing.
-_BINARY_PACK_KEYS = frozenset({"positions", "indices", "colors", "radii", "sizes", "start_positions", "end_positions"})
+_BINARY_PACK_KEYS = frozenset({"positions", "indices", "colors", "radii", "sizes"})
 
 
 def _pack_frame_data(frame: dict[str, Any]) -> dict[str, Any]:
@@ -417,24 +397,16 @@ def _framework_vertex_hovertext(
 
 
 def _serialize_framework_mesh(
-    atoms: Atoms,
-    bonds: list[list[int]] | None = None,
-    representation: str = "ball_and_stick",
-    kwargs_spheres: dict[str, Any] | None = None,
-    kwargs_cylinders: dict[str, Any] | None = None,
-    sphere_sections: int = 2,
-    cylinder_sections: int = 15,
+    atoms: Atoms, bonds: list[list[int]] | None = None, representation: str = "ball_and_stick"
 ) -> dict[str, Any]:
     from .visualize import mesh_for_atoms
 
     mesh = mesh_for_atoms(
         atoms,
         bonds=bonds,
-        kwargs_spheres=kwargs_spheres or {"scale": 0.65},
-        kwargs_cylinders=kwargs_cylinders or {"radius": 0.15},
+        kwargs_spheres=dict(scale=0.8),
+        kwargs_cylinders=dict(radius=0.25),
         representation=representation,
-        sphere_sections=sphere_sections,
-        cylinder_sections=cylinder_sections,
     )
     payload = _serialize_trimesh(mesh)
     payload["vertex_hover"] = _framework_vertex_hovertext(mesh, atoms)
@@ -484,6 +456,100 @@ def _apply_taubin_smoothing(
     return mesh
 
 
+DEFAULT_REGION_CSCALE = [
+    [102, 197, 204],
+    [246, 207, 113],
+    [248, 156, 116],
+    [220, 176, 242],
+    [135, 197, 95],
+    [158, 185, 243],
+    [254, 136, 177],
+    [201, 219, 116],
+    [139, 224, 164],
+    [180, 151, 231],
+    [179, 179, 179],
+]
+
+
+def _normalize_cscale(cscale) -> list[list[int]]:
+    """Normalise a cscale value to a list of [R, G, B] integer triplets (0-255).
+
+    Accepts:
+    - None                       → DEFAULT_REGION_CSCALE
+    - str                        → matplotlib colour name or hex
+    - list of plotly hex/rgb strings  → parsed to [R, G, B]
+    - single [r, g, b] triplet   → wrapped into a list of one
+    - list of float triplets     → scaled ×255 → int
+    - list of int triplets       → used as-is
+    - anything else              → DEFAULT_REGION_CSCALE
+    """
+    if cscale is None:
+        return list(DEFAULT_REGION_CSCALE)
+    if isinstance(cscale, str):
+        import matplotlib.colors as mcolors
+        import matplotlib.cm as mcm
+        # Try as a single color name/hex first
+        try:
+            rgba = mcolors.to_rgba(cscale)
+            return [[int(rgba[0] * 255), int(rgba[1] * 255), int(rgba[2] * 255)]]
+        except ValueError:
+            pass
+        # Try as a matplotlib colormap name → sample 10 colors
+        try:
+            cmap = mcm.get_cmap(cscale)
+            return [[int(r * 255), int(g * 255), int(b * 255)]
+                    for r, g, b, _ in (cmap(i / 9) for i in range(10))]
+        except (ValueError, KeyError):
+            pass
+        # Try as a plotly qualitative/sequential attribute name
+        try:
+            import plotly.express as px
+            raw = getattr(px.colors.qualitative, cscale, None)
+            if raw is None:
+                raw = getattr(px.colors.sequential, cscale, None)
+            if raw is not None:
+                return _normalize_cscale(list(raw))
+        except Exception:
+            pass
+        return list(DEFAULT_REGION_CSCALE)
+    # Non-iterable → fallback
+    if not isinstance(cscale, (list, tuple)):
+        return list(DEFAULT_REGION_CSCALE)
+    # list of plotly colour strings like "rgb(102,197,204)" or "#ff0000"
+    if len(cscale) > 0 and isinstance(cscale[0], str):
+        import re
+        out = []
+        for s in cscale:
+            m = re.match(r"rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)", s.strip())
+            if m:
+                out.append([int(m.group(1)), int(m.group(2)), int(m.group(3))])
+            elif s.startswith("#") and len(s) == 7:
+                out.append([int(s[i:i+2], 16) for i in (1, 3, 5)])
+            else:
+                import matplotlib.colors as mcolors
+                rgba = mcolors.to_rgba(s)
+                out.append([int(rgba[0] * 255), int(rgba[1] * 255), int(rgba[2] * 255)])
+        return out if out else list(DEFAULT_REGION_CSCALE)
+    # single bare RGB triplet
+    if all(isinstance(c, (int, float)) for c in cscale) and len(cscale) == 3:
+        triplet = cscale
+        if all(isinstance(v, float) for v in triplet):
+            triplet = [int(v * 255) for v in triplet]
+        return [list(triplet)]
+    # list of RGB triplets
+    if all(isinstance(rgb, (list, tuple)) for rgb in cscale):
+        out = []
+        for rgb in cscale:
+            if all(isinstance(v, float) for v in rgb):
+                out.append([int(v * 255) for v in rgb])
+            else:
+                out.append([int(v) for v in rgb])
+        return out if out else list(DEFAULT_REGION_CSCALE)
+    # fallback
+    return list(DEFAULT_REGION_CSCALE)
+
+
+
 def _serialize_segmentation_surface_mesh(
     atoms: Atoms,
     seg: dict[str, Any],
@@ -524,27 +590,9 @@ def _serialize_segmentation_surface_mesh(
         nu=taubin_nu,
     )
 
-    # Sample region IDs in **grid index space** at marching-cubes vertices (same idea as
-    # mgrcli.plotting.plot_surface_dgrid). Fractional-cell interpolation maps padded
-    # vertices incorrectly into [0,1) and yields label 0 everywhere → flat grey meshes.
-    from scipy.interpolate import RegularGridInterpolator
-
-    regs = np.asarray(regions)
-    nx, ny, nz = regs.shape
-    gx = np.arange(nx, dtype=float)
-    gy = np.arange(ny, dtype=float)
-    gz = np.arange(nz, dtype=float)
-    lbl_interp = RegularGridInterpolator(
-        (gx, gy, gz),
-        regs.astype(float, copy=False),
-        method="nearest",
-        bounds_error=False,
-        fill_value=0,
-    )
-    cell_inv = np.linalg.inv(cell)
-    v_world = np.asarray(mesh.vertices, dtype=float)
-    idx_like = np.dot(v_world, cell_inv.T) * shape_den
-    labels = lbl_interp(idx_like).astype(int)
+    frac = get_fractional_coordinates(np.asarray(mesh.vertices, dtype=float), atoms)
+    interp = interpolate_labels(regions)
+    labels = interp(frac % 1).astype(int)
 
     # Clamp negative labels to 0 (can arise from regions_cluster - 1 in pocket types)
     labels = np.maximum(labels, 0)
@@ -556,28 +604,11 @@ def _serialize_segmentation_surface_mesh(
         nonzero_idx = np.where(~zero_mask)[0]
         zero_idx = np.where(zero_mask)[0]
         from scipy.spatial import cKDTree
-
-        tree = cKDTree(v_world[nonzero_idx])
-        _, nn = tree.query(v_world[zero_idx], k=1)
+        tree = cKDTree(verts_cart[nonzero_idx])
+        _, nn = tree.query(verts_cart[zero_idx], k=1)
         labels[zero_idx] = labels[nonzero_idx[nn]]
 
-    _DEFAULT_CSCALE = [
-        [102, 197, 204],
-        [246, 207, 113],
-        [248, 156, 116],
-        [220, 176, 242],
-        [135, 197, 95],
-        [158, 185, 243],
-        [254, 136, 177],
-        [201, 219, 116],
-        [139, 224, 164],
-        [180, 151, 231],
-        [179, 179, 179],
-    ]
-    if cscale is None:
-        cscale = _DEFAULT_CSCALE
-    else:
-        cscale = [[int(c * 255) for c in rgb] for rgb in cscale]
+    cscale = _normalize_cscale(cscale)
     uniq = sorted([int(x) for x in np.unique(labels) if int(x) > 0])
     cmap = {rid: cscale[i % len(cscale)] for i, rid in enumerate(uniq)}
     colors = np.asarray(
@@ -623,23 +654,7 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
     frac = maxima / grid_shape
     pos = np.dot(cell, frac.T).T
 
-    _DEFAULT_CSCALE = [
-        [102, 197, 204],
-        [246, 207, 113],
-        [248, 156, 116],
-        [220, 176, 242],
-        [135, 197, 95],
-        [158, 185, 243],
-        [254, 136, 177],
-        [201, 219, 116],
-        [139, 224, 164],
-        [180, 151, 231],
-        [179, 179, 179],
-    ]
-    if cscale is None:
-        cscale = _DEFAULT_CSCALE
-    else:
-        cscale = [[int(c * 255) for c in rgb] for rgb in cscale]
+    cscale = _normalize_cscale(cscale)
 
     # Color maxima by their region label for consistency with the surface mesh.
     # Each maxima is at a grid point; we look up its region in the regions array.
@@ -648,13 +663,13 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
     cmap = {rid: cscale[i % len(cscale)] for i, rid in enumerate(uniq_regions)}
     colors = [list(np.asarray(cmap.get(int(r), [180, 180, 180]), dtype=float) / 255.0) for r in region_labels]
 
-    # Marker scale: 3 + 2.5 * norm from cage radii (matches pbc maxima sizing)
+    # Marker scale (~5× former 3 + 2.5 * norm from cage radii)
     vals = np.asarray(cage_radii, dtype=float)
     vmin = float(vals.min()) if len(vals) else 0.0
     vmax = float(vals.max()) if len(vals) else 1.0
     denom = max(vmax - vmin, 1e-12)
     norm = (vals - vmin) / denom
-    sizes = (3.0 + 2.5 * norm).astype(float).tolist()
+    sizes = (15.0 + 12.5 * norm).astype(float).tolist()
     maxima_info = np.asarray(seg.get("maxima_info", []), dtype=int)
     maxima_pbc_dict_raw = seg.get("maxima_pbc_dict", {}) or {}
 
@@ -696,7 +711,6 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
             f"grid: [{int(g[0])}, {int(g[1])}, {int(g[2])}]\n"
             f"xyz: ({float(p[0]):.3f}, {float(p[1]):.3f}, {float(p[2]):.3f})\n"
             f"pore radius (dgrid): {float(r):.3f} A\n"
-            ""
             f"region: {int(rid)}"
         )
 
@@ -717,10 +731,11 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
     def _pack(ids: set[int], *, periodic_display: bool = False):
         if not ids:
             return [], [], [], [], 0
-        n_m = int(len(maxima))
-        valid_ids = sorted(i for i in ids if 1 <= i <= n_m)
-        if not valid_ids:
+        n_max = len(maxima)
+        ids = {i for i in ids if 1 <= i <= n_max}
+        if not ids:
             return [], [], [], [], 0
+        valid_ids = sorted(ids)
         idx = np.asarray([i - 1 for i in valid_ids], dtype=int)
         p = pos[idx]
         s = np.asarray(sizes, dtype=float)[idx]
@@ -728,7 +743,7 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
             c = np.asarray(
                 [
                     _periodic_node_display_color(
-                        int(node_id), n_m, maxima_info, maxima_pbc_dict_raw
+                        int(node_id), n_max, maxima_info, maxima_pbc_dict_raw
                     )
                     for node_id in valid_ids
                 ],
@@ -736,7 +751,7 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
             )
         else:
             c = np.asarray(colors, dtype=float)[idx]
-        h = [hover[int(i)] for i in idx]
+        h = [hover[i] for i in idx]
         return p.reshape(-1).tolist(), s.tolist(), c.reshape(-1).tolist(), h, int(len(valid_ids))
 
     maxima_pbc = np.asarray(seg.get("maxima_pbc", []), dtype=float)
@@ -758,7 +773,7 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
         pbc_regions = regions[tuple(pbc_wrapped.T)]
         pbc_colors = [list(np.asarray(cmap.get(int(r), [180, 180, 180]), dtype=float) / 255.0) for r in pbc_regions]
         pbc_norm = (np.asarray(pbc_radii, dtype=float) - vmin) / denom
-        pbc_sizes_arr = (3.0 + 2.5 * pbc_norm).astype(float)
+        pbc_sizes_arr = (15.0 + 12.5 * pbc_norm).astype(float)
         pbc_hover = [
             (
                 f"trace: maxima pbc\n"
@@ -766,7 +781,6 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
                 f"grid: [{int(g[0])}, {int(g[1])}, {int(g[2])}]\n"
                 f"xyz: ({float(p[0]):.3f}, {float(p[1]):.3f}, {float(p[2]):.3f})\n"
                 f"pore radius (dgrid): {float(r):.3f} A\n"
-                ""
                 f"region: {int(rid)}"
             )
             for i, (g, p, r, rid, s) in enumerate(zip(maxima_pbc, pbc_cart, pbc_radii, pbc_regions, pbc_sizes_arr, strict=False))
@@ -798,11 +812,7 @@ def _serialize_maxima_trace(seg: dict[str, Any], atoms: Atoms, cscale: list[list
     }
 
 
-def _serialize_windows_trace(
-    seg: dict[str, Any],
-    atoms = None,
-    spacing: float | None = None,
-) -> dict[str, Any]:
+def _serialize_windows_trace(seg: dict[str, Any], atoms=None, spacing: float | None = None, reclassify_far_outside: bool = True) -> dict[str, Any]:
     conns = list(seg.get("connections", []))
     internal_windows = []
     internal_hover = []
@@ -810,12 +820,11 @@ def _serialize_windows_trace(
     periodic_windows = []
     periodic_hover = []
     periodic_window_radii: list[float] = []
-
-    # Compute wall tolerance for "close or inside" criteria (same as maxima).
+    # Compute wall tolerance for "close or inside" criteria.
     wall_tol = None
     dgrid_shape = None
     inv_cell = None
-    if atoms is not None and spacing is not None:
+    if reclassify_far_outside and atoms is not None and spacing is not None:
         from .helper import compute_wall_cells
         dgrid = np.asarray(seg.get("dgrid", []))
         if dgrid.size:
@@ -827,11 +836,10 @@ def _serialize_windows_trace(
             except np.linalg.LinAlgError:
                 inv_cell = None
 
-    def _window_grid_coord(cart: np.ndarray) -> np.ndarray | None:
-        """Convert Cartesian window position to grid coordinates."""
+    def _window_grid_coord(cart):
         if inv_cell is None or dgrid_shape is None:
             return None
-        frac = np.dot(cart, inv_cell)
+        frac = inv_cell @ cart
         return frac * dgrid_shape
 
     for c in conns:
@@ -850,7 +858,6 @@ def _serialize_windows_trace(
                 f"size: {float(r):.3f} A"
             )
             if ctype == "internal" and wall_tol is not None and dgrid_shape is not None:
-                # Reclassify far_outside windows as periodic
                 grid_c = _window_grid_coord(wp)
                 if grid_c is not None:
                     from .helper import is_inside_or_close_to_boundary
@@ -955,11 +962,15 @@ def _periodic_node_display_color(
     return _plotly_node_color(color_node, n_nodes)
 
 
+
 def _serialize_connection_traces(
     seg: dict[str, Any], atoms: Atoms
 ) -> dict[str, Any]:
     conns = list(seg.get("connections", []))
-    maxima = np.asarray(seg.get("all_maxima", []), dtype=float)
+    maxima = np.asarray(
+        seg.get("all_maxima_conn", seg.get("all_maxima", [])),
+        dtype=float,
+    )
     if len(conns) == 0 or maxima.size == 0:
         return {
             "internal_segments": [],
@@ -987,8 +998,11 @@ def _serialize_connection_traces(
     vmax = float(vals.max()) if len(vals) else 1.0
     denom = max(vmax - vmin, 1e-12)
     norm = (vals - vmin) / denom
-    maxima_sizes = (3.0 + 2.5 * norm).astype(float)
-    maxima_info = np.asarray(seg.get("maxima_info", []), dtype=int)
+    maxima_sizes = (15.0 + 12.5 * norm).astype(float)
+    maxima_info = np.asarray(
+        seg.get("maxima_info_conn", seg.get("maxima_info", [])),
+        dtype=int,
+    )
     maxima_pbc_dict_raw = seg.get("maxima_pbc_dict", {}) or {}
     n_maxima = int(len(maxima))
     node_positions: dict[int, np.ndarray] = {}
@@ -1073,9 +1087,10 @@ def _serialize_connection_traces(
             )
             idx = int(n) - 1
             if 0 <= idx < len(maxima_sizes):
-                sizes.append(float(maxima_sizes[idx]))
+                # Pore-graph nodes default to half the maxima marker size
+                sizes.append(0.5 * float(maxima_sizes[idx]))
             else:
-                sizes.append(5.0)
+                sizes.append(7.5)
             if periodic_style:
                 rgb = _periodic_node_display_color(
                     n, n_maxima, maxima_info, maxima_pbc_dict_raw
@@ -1088,11 +1103,14 @@ def _serialize_connection_traces(
         a = np.vstack(arr)
         return a.reshape(-1).tolist(), hv, cols, sizes
 
+    # Mutually exclusive with internal nodes (same rule as maxima internal vs outside):
+    # nodes on both internal and periodic edges stay in internal only.
+    periodic_only_nodes = periodic_nodes - internal_nodes
     internal_points, internal_points_hover, internal_point_colors, internal_point_sizes = _pack_nodes(
         internal_nodes, "internal maxima"
     )
     periodic_points, periodic_points_hover, periodic_point_colors, periodic_point_sizes = _pack_nodes(
-        periodic_nodes, "periodic maxima", periodic_style=True
+        periodic_only_nodes, "periodic maxima", periodic_style=True
     )
     return {
         "internal_segments": (
@@ -1455,10 +1473,6 @@ def make_framework_trace(
     name: str = "Framework",
     trace_id: str = "framework",
     representation: str = "ball_and_stick",
-    kwargs_spheres: dict[str, Any] | None = None,
-    kwargs_cylinders: dict[str, Any] | None = None,
-    sphere_sections: int = 2,
-    cylinder_sections: int = 15,
 ) -> dict[str, Any]:
     def _ase_covalent_bonds(a: Atoms, mult: float = 1.05) -> list[list[int]]:
         cutoffs = np.asarray(natural_cutoffs(a, mult=mult), dtype=float)
@@ -1479,21 +1493,15 @@ def make_framework_trace(
         if "covalent_bonds" in atoms.info and atoms.info["covalent_bonds"]:
             mesh_bonds = atoms.info["covalent_bonds"]
         else:
-            atoms.info["covalent_bonds"] = _ase_covalent_bonds(atoms, mult=1.05)
-            mesh_bonds = atoms.info["covalent_bonds"]
+            # Use pymatgen/Voronoi covalent bond detection (same as interactive app).
+            from .analyze import update_with_covalent_bonds
+            atoms = update_with_covalent_bonds(atoms)
+            mesh_bonds = atoms.info.get("covalent_bonds", [])
     elif bonds is None:
         mesh_bonds = None
     elif isinstance(bonds, list):
         mesh_bonds = bonds
-    payload = _serialize_framework_mesh(
-        atoms,
-        bonds=mesh_bonds,
-        representation=representation,
-        kwargs_spheres=kwargs_spheres,
-        kwargs_cylinders=kwargs_cylinders,
-        sphere_sections=sphere_sections,
-        cylinder_sections=cylinder_sections,
-    )
+    payload = _serialize_framework_mesh(atoms, bonds=mesh_bonds, representation=representation)
     return _make_trace(
         trace_id=trace_id,
         trace_type="mesh",
@@ -1503,160 +1511,6 @@ def make_framework_trace(
         hover=payload.get("vertex_hover"),
         visible=True,
     )
-
-
-def make_framework_scatter_trace(
-    atoms: Atoms,
-    bonds: str | list | None = "auto",
-    style: str | dict | None = "framework",
-    name: str = "Framework",
-    trace_id: str = "framework",
-    atom_scale: float = 0.65,
-    bond_color: list[float] | None = None,
-    bond_linewidth: float = 8.0,
-    depth_test: bool = True,
-) -> dict[str, dict[str, Any]]:
-    """Create framework as scatter points + line segments (fast, no mesh).
-
-    Returns dict with ``"atoms"`` and ``"bonds"`` trace dicts suitable for
-    ``MovieFigure.add_trace()``.  Renders atoms as ``THREE.Points`` and bonds
-    as ``THREE.LineSegments`` — orders of magnitude fewer vertices than mesh.
-
-    When *depth_test* is ``True`` (default), framework respects normal depth
-    occlusion (hidden behind opaque surfaces).  Set ``False`` to render
-    framework on top of everything.
-
-    Parameters
-    ----------
-    atoms:
-        ASE Atoms object (framework).
-    bonds:
-        ``"auto"`` (detect from covalent radii), a ``list[list[int]]`` of
-        bond pairs, or ``None`` to skip bonds.
-    style:
-        Style name or dict (passed through to both traces).
-    name:
-        Base display name for the legend.
-    trace_id:
-        Base trace id (will produce ``trace_id + "_atoms"`` and ``"_bonds"``).
-    atom_scale:
-        Scale factor applied to covalent radii for point sizes.
-    bond_color:
-        RGB triple (0-1) for bond line colour.  Defaults to [0.5, 0.5, 0.5].
-    bond_linewidth:
-        Line width for bonds (8.0 = thick; WebGL may clamp on some
-        platforms).
-    depth_test:
-        If ``True``, framework is hidden behind opaque surfaces.  Set
-        ``False`` to always show framework on top.
-    """
-    from ase.data.colors import cpk_colors
-
-    # ---- Resolve bonds ----
-    if bonds == "auto":
-        if "covalent_bonds" in atoms.info and atoms.info["covalent_bonds"]:
-            bond_list = atoms.info["covalent_bonds"]
-        else:
-            cutoffs = np.asarray(natural_cutoffs(atoms, mult=1.05), dtype=float)
-            i_idx, j_idx = neighbor_list("ij", atoms, cutoffs, self_interaction=False)
-            seen: set[tuple[int, int]] = set()
-            bond_list = []
-            for i, j in zip(i_idx, j_idx, strict=False):
-                x, y = int(min(i, j)), int(max(i, j))
-                if x == y or (x, y) in seen:
-                    continue
-                seen.add((x, y))
-                bond_list.append([x, y])
-            atoms.info["covalent_bonds"] = bond_list
-    elif bonds is None:
-        bond_list = []
-    elif isinstance(bonds, list):
-        bond_list = bonds
-    else:
-        bond_list = []
-
-    n_atoms = int(len(atoms))
-    atomic_numbers = atoms.get_atomic_numbers()
-    symbols = atoms.get_chemical_symbols()
-    positions = atoms.get_positions()
-    masses = atomic_masses_table[atomic_numbers]
-
-    # ---- Atom colours from CPK ----
-    atom_colors_rgb = np.array([cpk_colors[an] for an in atomic_numbers], dtype=float)
-    atom_colors_flat = atom_colors_rgb.reshape(-1).tolist()
-
-    # ---- Atom point sizes from covalent radii ----
-    # Same scale as mesh spheres (covalent_radii * atom_scale), mapped to pixels.
-    # At typical camera distance where the unit cell fills ~half viewport height,
-    # a sphere of radius r Å occupies ~r/cell_size * viewport_height px.
-    # Multiplier 14.0 approximates this for common MOF cell sizes (20-40 Å).
-    radii = covalent_radii[atomic_numbers] * atom_scale
-    sizes = (radii * 14.0).tolist()
-
-    # ---- Positions flat ----
-    positions_flat = positions.reshape(-1).tolist()
-
-    # ---- Hover text ----
-    hover = [
-        f"Id: {i}\nElement: {s}\nMass: {m:.3f}\nPosition: {p[0]:.4f} {p[1]:.4f} {p[2]:.4f}"
-        for i, (s, m, p) in enumerate(zip(symbols, masses, positions))
-    ]
-
-    # Atom trace (points)
-    atom_trace = _make_trace(
-        trace_id=f"{trace_id}_atoms",
-        trace_type="points",
-        name=f"{name} (atoms)",
-        data={
-            "positions": positions_flat,
-            "colors": atom_colors_flat,
-            "sizes": sizes,
-            "n_points": n_atoms,
-        },
-        style={
-            "color": [0.7, 0.7, 0.7],
-            "size": float(max(sizes)) if sizes else 2.5,
-            "depthTest": depth_test,
-            "opacity": 0.95,
-        },
-        hover=hover,
-        visible=True,
-    )
-
-    # ---- Bond trace (line segments) ----
-    _bond_color = bond_color if bond_color is not None else [0.5, 0.5, 0.5]
-    if bond_list and len(bond_list) > 0:
-        bond_positions_flat: list[float] = []
-        for a_idx, b_idx in bond_list:
-            if a_idx < n_atoms and b_idx < n_atoms:
-                pa = positions[a_idx]
-                pb = positions[b_idx]
-                bond_positions_flat.extend([float(pa[0]), float(pa[1]), float(pa[2])])
-                bond_positions_flat.extend([float(pb[0]), float(pb[1]), float(pb[2])])
-        n_bond_segments = len(bond_list)
-    else:
-        bond_positions_flat = []
-        n_bond_segments = 0
-
-    bond_hex = int(round(_bond_color[0] * 255)) * 0x10000 + int(round(_bond_color[1] * 255)) * 0x100 + int(round(_bond_color[2] * 255))
-    bond_trace = _make_trace(
-        trace_id=f"{trace_id}_bonds",
-        trace_type="line_segments",
-        name=f"{name} (bonds)",
-        data={
-            "positions": bond_positions_flat,
-            "n_segments": n_bond_segments,
-        },
-        style={
-            "color": bond_hex,
-            "linewidth": bond_linewidth,
-            "depthTest": depth_test,
-        },
-        hover=None,
-        visible=True,
-    )
-
-    return {"atoms": atom_trace, "bonds": bond_trace}
 
 
 def make_surface_trace(
@@ -1700,15 +1554,232 @@ def make_surface_trace(
         visible=True,
     )
 
+def make_framework_scatter_trace(
+    atoms,
+    bonds="auto",
+    style=None,
+    name: str = "Framework",
+    trace_id: str = "framework",
+    atom_scale: float = 0.65,
+    bond_color=None,
+    bond_linewidth: float = 8.0,
+    depth_test: bool = True,
+):
+    """Framework as scatter points + line segments (fast, no mesh geometry).
+
+    Returns {"atoms": trace, "bonds": trace} — suitable for MovieFigure.add_trace().
+    When *depth_test* is False the framework is always rendered on top.
+    """
+    from ase.data import covalent_radii as _cr
+    from ase.data.colors import cpk_colors
+    from ase.data import atomic_masses as atomic_masses_table
+    from ase.neighborlist import natural_cutoffs, neighbor_list
+
+    if style is None:
+        style = "framework"
+
+    # Resolve bonds
+    if bonds == "auto":
+        if "covalent_bonds" in atoms.info and atoms.info["covalent_bonds"]:
+            bond_list = atoms.info["covalent_bonds"]
+        else:
+            cutoffs = np.asarray(natural_cutoffs(atoms, mult=1.05), dtype=float)
+            i_idx, j_idx = neighbor_list("ij", atoms, cutoffs, self_interaction=False)
+            seen: set = set()
+            bond_list = []
+            for i, j in zip(i_idx.tolist(), j_idx.tolist()):
+                x, y = min(int(i), int(j)), max(int(i), int(j))
+                if x == y or (x, y) in seen:
+                    continue
+                seen.add((x, y))
+                bond_list.append([x, y])
+            atoms.info["covalent_bonds"] = bond_list
+    elif bonds is None:
+        bond_list = []
+    else:
+        bond_list = list(bonds)
+
+    n_atoms = int(len(atoms))
+    atomic_numbers = atoms.get_atomic_numbers()
+    symbols = atoms.get_chemical_symbols()
+    positions = atoms.get_positions()
+    masses = np.asarray([atomic_masses_table[an] for an in atomic_numbers])
+
+    atom_colors_rgb = np.array([cpk_colors[an] for an in atomic_numbers], dtype=float)
+    radii = _cr[atomic_numbers] * atom_scale
+    sizes = (radii * 14.0).tolist()
+    hover = [
+        f"Id: {i}\nElement: {s}\nMass: {m:.3f}\nPosition: {p[0]:.4f} {p[1]:.4f} {p[2]:.4f}"
+        for i, (s, m, p) in enumerate(zip(symbols, masses.tolist(), positions.tolist()))
+    ]
+    atom_trace = _make_trace(
+        trace_id=f"{trace_id}_atoms",
+        trace_type="points",
+        name=f"{name} (atoms)",
+        data={
+            "positions": positions.reshape(-1).tolist(),
+            "colors": atom_colors_rgb.reshape(-1).tolist(),
+            "sizes": sizes,
+            "n_points": n_atoms,
+        },
+        style={"color": [0.7, 0.7, 0.7], "size": float(max(sizes)) if sizes else 2.5,
+               "depthTest": depth_test, "opacity": 0.95},
+        hover=hover,
+        visible=True,
+    )
+
+    _bond_color = bond_color if bond_color is not None else [0.5, 0.5, 0.5]
+    if bond_list:
+        bond_positions_flat: list = []
+        for a_idx, b_idx in bond_list:
+            if a_idx < n_atoms and b_idx < n_atoms:
+                pa, pb = positions[a_idx], positions[b_idx]
+                bond_positions_flat.extend([float(pa[0]), float(pa[1]), float(pa[2])])
+                bond_positions_flat.extend([float(pb[0]), float(pb[1]), float(pb[2])])
+        n_bond_segments = len(bond_list)
+    else:
+        bond_positions_flat, n_bond_segments = [], 0
+
+    bond_hex = (int(round(_bond_color[0]*255))<<16) | (int(round(_bond_color[1]*255))<<8) | int(round(_bond_color[2]*255))
+    bond_trace = _make_trace(
+        trace_id=f"{trace_id}_bonds",
+        trace_type="line_segments",
+        name=f"{name} (bonds)",
+        data={"positions": bond_positions_flat, "n_segments": n_bond_segments},
+        style={"color": bond_hex, "linewidth": bond_linewidth, "depthTest": depth_test},
+        hover=None,
+        visible=True,
+    )
+    return {"atoms": atom_trace, "bonds": bond_trace}
+
+
+def make_framework_instanced_trace(
+    atoms,
+    bonds="auto",
+    style=None,
+    name: str = "Framework",
+    trace_id: str = "framework",
+    atom_scale: float = 0.65,
+    bond_color=None,
+    representation: str = "ball_and_stick",
+):
+    """Framework as InstancedMesh spheres + cylinder mesh bonds.
+
+    Sends compact atom data for instanced spheres; browser builds sphere geometry.
+    representation: "ball_and_stick" (default) or "stick" (two-tone CPK bonds).
+    """
+    from ase.data import covalent_radii as _cr
+    from ase.data.colors import cpk_colors
+    from ase.data import atomic_masses as atomic_masses_table
+    from ase.neighborlist import natural_cutoffs, neighbor_list
+
+    if style is None:
+        style = "framework"
+
+    if bonds == "auto":
+        if "covalent_bonds" in atoms.info and atoms.info["covalent_bonds"]:
+            bond_list = atoms.info["covalent_bonds"]
+        else:
+            cutoffs = np.asarray(natural_cutoffs(atoms, mult=1.05), dtype=float)
+            i_idx, j_idx = neighbor_list("ij", atoms, cutoffs, self_interaction=False)
+            seen: set = set()
+            bond_list = []
+            for i, j in zip(i_idx.tolist(), j_idx.tolist()):
+                x, y = min(int(i), int(j)), max(int(i), int(j))
+                if x == y or (x, y) in seen:
+                    continue
+                seen.add((x, y))
+                bond_list.append([x, y])
+            atoms.info["covalent_bonds"] = bond_list
+    elif bonds is None:
+        bond_list = []
+    else:
+        bond_list = list(bonds)
+
+    n_atoms = int(len(atoms))
+    atomic_numbers = atoms.get_atomic_numbers()
+    symbols = atoms.get_chemical_symbols()
+    positions = atoms.get_positions()
+    atom_colors = np.array([cpk_colors[an] for an in atomic_numbers], dtype=float)
+    radii = _cr[atomic_numbers] * atom_scale
+    masses = np.asarray([atomic_masses_table[an] for an in atomic_numbers])
+
+    atom_hover = [
+        f"Id: {i}\nElement: {s}\nMass: {m:.3f}\nPosition: {p[0]:.4f} {p[1]:.4f} {p[2]:.4f}"
+        for i, (s, m, p) in enumerate(zip(symbols, masses.tolist(), positions.tolist()))
+    ]
+    atom_trace = _make_trace(
+        trace_id=f"{trace_id}_atoms",
+        trace_type="instanced_spheres",
+        name=f"{name} (atoms)",
+        data={
+            "positions": positions.reshape(-1).tolist(),
+            "symbols": list(symbols),
+            "colors": atom_colors.reshape(-1).tolist(),
+            "radii": radii.astype(float).tolist(),
+            "n_atoms": n_atoms,
+        },
+        style=style,
+        hover=atom_hover,
+        visible=True,
+    )
+
+    cyl_radius = 0.08 if representation == "stick" else 0.15
+    atom_radii_vals = _cr[atomic_numbers] * (0.15 if representation == "stick" else atom_scale)
+    if bond_list:
+        bond_starts: list = []; bond_ends: list = []
+        bond_colors_l: list = []; bond_hover: list = []
+        for a_idx, b_idx in bond_list:
+            if a_idx >= n_atoms or b_idx >= n_atoms:
+                continue
+            pa, pb = positions[a_idx], positions[b_idx]
+            d = pb - pa; length = float(np.linalg.norm(d))
+            if length < 1e-8:
+                continue
+            unit_d = d / length
+            start = pa + unit_d * atom_radii_vals[a_idx] * 0.98
+            end = pb - unit_d * atom_radii_vals[b_idx] * 0.98
+            ht = f"Bond: {symbols[a_idx]}({a_idx}) ↔ {symbols[b_idx]}({b_idx})\nLength: {length:.3f} Å"
+            if representation == "stick":
+                mid = (start + end) / 2.0
+                bond_starts.extend(start.tolist()); bond_ends.extend(mid.tolist())
+                bond_colors_l.extend(atom_colors[a_idx].tolist())
+                bond_starts.extend(mid.tolist()); bond_ends.extend(end.tolist())
+                bond_colors_l.extend(atom_colors[b_idx].tolist())
+                bond_hover.extend([ht, ht])
+            else:
+                bond_starts.extend(start.tolist()); bond_ends.extend(end.tolist())
+                bond_colors_l.extend([0.5, 0.5, 0.5])
+                bond_hover.append(ht)
+        n_bonds = len(bond_colors_l) // 3
+    else:
+        bond_starts, bond_ends, bond_colors_l, bond_hover, n_bonds = [], [], [], [], 0
+
+    bond_trace = _make_trace(
+        trace_id=f"{trace_id}_bonds",
+        trace_type="instanced_cylinders",
+        name=f"{name} (bonds)",
+        data={
+            "start_positions": bond_starts,
+            "end_positions": bond_ends,
+            "colors": bond_colors_l,
+            "radius": cyl_radius,
+            "n_bonds": n_bonds,
+        },
+        style=style,
+        hover=bond_hover if bond_hover else None,
+        visible=True,
+    )
+    return {"atoms": atom_trace, "bonds": bond_trace}
+
 
 
 def _aromatic_render_mode() -> str:
     import os
-
     return os.environ.get("MGR_AROMATIC_RENDER", "auto").lower()
 
 
-def _ring_pose_from_positions(ring_pos: np.ndarray) -> tuple[np.ndarray, np.ndarray, float, float] | None:
+def _ring_pose_from_positions(ring_pos) -> tuple:
     """Best-fit plane pose: center, unit normal, mean in-plane radius, inner outline radius."""
     n = int(len(ring_pos))
     if n < 3:
@@ -1729,9 +1800,8 @@ def _ring_pose_from_positions(ring_pos: np.ndarray) -> tuple[np.ndarray, np.ndar
     return center, normal, radius, radius * 0.4
 
 
-def _sorted_ring_vertices(ring_pos: np.ndarray, center: np.ndarray, normal: np.ndarray) -> np.ndarray:
+def _sorted_ring_vertices(ring_pos, center, normal):
     from scipy.spatial.transform import Rotation as _Rot
-
     centered = ring_pos - center
     rot, _ = _Rot.align_vectors(normal.reshape(-1, 3), np.array([[0.0, 0.0, 1.0]]))
     ring_rot = rot.apply(centered)
@@ -1739,10 +1809,10 @@ def _sorted_ring_vertices(ring_pos: np.ndarray, center: np.ndarray, normal: np.n
     return centered[np.argsort(angles)]
 
 
-def _merged_aromatic_highlight_payload(cycles: list[list[int]], positions: np.ndarray) -> dict[str, Any]:
-    """Single merged mesh for all ring fills (Plotly Mesh3d + Three.js mesh fallback)."""
-    all_verts: list[np.ndarray] = []
-    all_faces: list[np.ndarray] = []
+def _merged_aromatic_highlight_payload(cycles, positions):
+    """Single merged mesh for all ring fills."""
+    all_verts = []
+    all_faces = []
     for ring in cycles:
         ring_pos = positions[ring]
         pose = _ring_pose_from_positions(ring_pos)
@@ -1769,23 +1839,16 @@ def _merged_aromatic_highlight_payload(cycles: list[list[int]], positions: np.nd
 
 
 def _make_aromatic_rings_instanced_trace(
-    cycles: list[list[int]],
-    positions: np.ndarray,
+    cycles,
+    positions,
     *,
-    style_circles: str | dict | None,
-    style_highlights: str | dict | None,
+    style_circles,
+    style_highlights,
     n_template_segments: int = 16,
-) -> dict[str, dict[str, Any]]:
-    centers_l: list[float] = []
-    normals_l: list[float] = []
-    inner_l: list[float] = []
-    pent_centers: list[float] = []
-    pent_normals: list[float] = []
-    pent_scales: list[float] = []
-    hex_centers: list[float] = []
-    hex_normals: list[float] = []
-    hex_scales: list[float] = []
-
+):
+    centers_l = []; normals_l = []; inner_l = []
+    pent_centers = []; pent_normals = []; pent_scales = []
+    hex_centers = []; hex_normals = []; hex_scales = []
     for ring in cycles:
         ring_pos = positions[ring]
         pose = _ring_pose_from_positions(ring_pos)
@@ -1797,61 +1860,31 @@ def _make_aromatic_rings_instanced_trace(
         inner_l.append(float(inner))
         n_sides = len(ring)
         if n_sides == 5:
-            pent_centers.extend(center.tolist())
-            pent_normals.extend(normal.tolist())
-            pent_scales.append(float(radius))
+            pent_centers.extend(center.tolist()); pent_normals.extend(normal.tolist()); pent_scales.append(float(radius))
         elif n_sides == 6:
-            hex_centers.extend(center.tolist())
-            hex_normals.extend(normal.tolist())
-            hex_scales.append(float(radius))
-
+            hex_centers.extend(center.tolist()); hex_normals.extend(normal.tolist()); hex_scales.append(float(radius))
     n_rings = len(inner_l)
     outlines = _make_trace(
-        "aromatic_rings",
-        "instanced_ring_outlines",
-        "Aromatic rings",
-        {
-            "centers": centers_l,
-            "normals": normals_l,
-            "inner_radii": inner_l,
-            "n_rings": n_rings,
-            "radial_segments": int(n_template_segments),
-        },
+        "aromatic_rings", "instanced_ring_outlines", "Aromatic rings",
+        {"centers": centers_l, "normals": normals_l, "inner_radii": inner_l,
+         "n_rings": n_rings, "radial_segments": int(n_template_segments)},
         style=style_circles if style_circles else "instanced_ring_outlines",
     )
-
-    fills_hex = None
-    fills_pent = None
+    fills_hex = None; fills_pent = None
     if hex_scales:
         fills_hex = _make_trace(
-            "aromatic_highlights_hex",
-            "instanced_ring_fills",
-            "Aromatic highlights (hex)",
-            {
-                "sides": 6,
-                "centers": hex_centers,
-                "normals": hex_normals,
-                "scales": hex_scales,
-                "n_instances": len(hex_scales),
-            },
+            "aromatic_highlights_hex", "instanced_ring_fills", "Aromatic highlights (hex)",
+            {"sides": 6, "centers": hex_centers, "normals": hex_normals,
+             "scales": hex_scales, "n_instances": len(hex_scales)},
             style=style_highlights if style_highlights else "instanced_ring_fills",
         )
     if pent_scales:
         fills_pent = _make_trace(
-            "aromatic_highlights_pent",
-            "instanced_ring_fills",
-            "Aromatic highlights (pent)",
-            {
-                "sides": 5,
-                "centers": pent_centers,
-                "normals": pent_normals,
-                "scales": pent_scales,
-                "n_instances": len(pent_scales),
-            },
+            "aromatic_highlights_pent", "instanced_ring_fills", "Aromatic highlights (pent)",
+            {"sides": 5, "centers": pent_centers, "normals": pent_normals,
+             "scales": pent_scales, "n_instances": len(pent_scales)},
             style=style_highlights if style_highlights else "instanced_ring_fills",
         )
-
-    # Compatibility: highlights key points at hex or pent or empty mesh
     if fills_hex is not None:
         highlights = fills_hex
     elif fills_pent is not None:
@@ -1862,29 +1895,24 @@ def _make_aromatic_rings_instanced_trace(
             {"positions": [], "indices": [], "n_vertices": 0, "n_triangles": 0},
             style=style_highlights,
         )
-
-    out: dict[str, dict[str, Any]] = {"circles": outlines, "highlights": highlights}
-    if fills_pent is not None:
-        out["fills_pent"] = fills_pent
-    if fills_hex is not None:
-        out["fills_hex"] = fills_hex
+    out = {"circles": outlines, "highlights": highlights}
+    if fills_pent is not None: out["fills_pent"] = fills_pent
+    if fills_hex is not None: out["fills_hex"] = fills_hex
     return out
 
 
 def _make_aromatic_rings_legacy_trace(
-    cycles: list[list[int]],
-    positions: np.ndarray,
+    cycles,
+    positions,
     *,
-    style_circles: str | dict | None,
-    style_highlights: str | dict | None,
+    style_circles,
+    style_highlights,
     n_circle_points: int,
-) -> dict[str, dict[str, Any]]:
+):
     from scipy.spatial.transform import Rotation as _Rot
-
     theta = np.linspace(0, 2 * np.pi, n_circle_points, endpoint=False)
     unit_circle = np.column_stack([np.cos(theta), np.sin(theta), np.zeros_like(theta)])
-    line_positions: list[float] = []
-
+    line_positions = []
     for ring in cycles:
         ring_pos = positions[ring]
         pose = _ring_pose_from_positions(ring_pos)
@@ -1897,7 +1925,6 @@ def _make_aromatic_rings_legacy_trace(
             j = (i + 1) % n_circle_points
             line_positions.extend(circle_3d[i].tolist())
             line_positions.extend(circle_3d[j].tolist())
-
     circles_trace = _make_trace(
         "aromatic_rings", "line_segments", "Aromatic rings",
         {"positions": line_positions, "n_segments": len(cycles) * n_circle_points},
@@ -1913,22 +1940,26 @@ def _make_aromatic_rings_legacy_trace(
 
 def make_aromatic_rings_trace(
     atoms: Atoms,
-    cycles: list[list[int]] | None = None,
-    style_circles: str | dict | None = "aromatic_rings",
-    style_highlights: str | dict | None = "aromatic_highlights",
+    cycles: list | None = None,
+    style_circles=None,
+    style_highlights=None,
     n_circle_points: int = 72,
     *,
-    use_instanced: bool | None = None,
+    use_instanced=None,
     n_template_segments: int = 16,
-) -> dict[str, dict[str, Any]]:
+) -> dict:
     """Build aromatic ring traces (instanced torus/ngon when possible).
 
-    Instanced path (5–6 member rings, default): compact instance buffers + shared
-    torus/polygon geometry in the browser (~10 floats/ring vs 72-point circles).
-
-    Legacy path (7–9 sides or ``MGR_AROMATIC_RENDER=legacy``): line_segments + merged mesh.
+    Instanced path (5-6 member rings, default): compact instance buffers +
+    shared torus/polygon geometry in the browser.
+    Legacy path: line_segments outlines + merged mesh fills.
     """
     from .analyze import compute_aromatic_cycles
+
+    if style_circles is None:
+        style_circles = "aromatic_rings"
+    if style_highlights is None:
+        style_highlights = "aromatic_highlights"
 
     if cycles is None:
         try:
@@ -1956,20 +1987,17 @@ def make_aromatic_rings_trace(
 
     if use_instanced:
         return _make_aromatic_rings_instanced_trace(
-            cycles,
-            positions,
+            cycles, positions,
             style_circles=style_circles,
             style_highlights=style_highlights,
             n_template_segments=n_template_segments,
         )
     return _make_aromatic_rings_legacy_trace(
-        cycles,
-        positions,
+        cycles, positions,
         style_circles=style_circles,
         style_highlights=style_highlights,
         n_circle_points=n_circle_points,
     )
-
 
 
 def make_maxima_trace(
@@ -2041,10 +2069,11 @@ def make_windows_trace(
     style: str | dict | None = "internal_windows",
     name: str = "Windows",
     trace_id: str = "windows",
-    atoms = None,
+    atoms: Any | None = None,
     spacing: float | None = None,
+    reclassify_far_outside: bool = True,
 ) -> dict[str, Any]:
-    payload = _serialize_windows_trace(seg, atoms=atoms, spacing=spacing)
+    payload = _serialize_windows_trace(seg, atoms=atoms, spacing=spacing, reclassify_far_outside=reclassify_far_outside)
     internal = _make_trace(
         trace_id=f"{trace_id}_internal",
         trace_type="points",
@@ -2106,7 +2135,7 @@ def make_connections_trace(
         },
         style="periodic_connections",
         hover=payload["periodic_hover"],
-        visible=True,
+        visible=False,
     )
     internal_nodes = _make_trace(
         trace_id=f"{trace_id}_internal_nodes",
@@ -2134,7 +2163,7 @@ def make_connections_trace(
         },
         style="periodic_nodes",
         hover=payload["periodic_points_hover"],
-        visible=True,
+        visible=False,
     )
     return {
         "internal_lines": internal_lines,
@@ -2175,150 +2204,18 @@ def make_guest_trace(
     )
 
 
-def make_framework_instanced_trace(
-    atoms: Atoms,
-    bonds: str | list | None = "auto",
-    style: str | dict | None = "framework",
-    name: str = "Framework",
-    trace_id: str = "framework",
-    atom_scale: float = 0.65,
-    bond_color: list[float] | None = None,
-    representation: str = "ball_and_stick",
-) -> dict[str, dict[str, Any]]:
-    """Create framework as InstancedMesh spheres + cylinder mesh bonds.
-
-    Sends compact atom data (~30 KB) for instanced spheres + triangulated
-    cylinders for bonds (~20 MB).  The browser builds sphere geometry locally.
-
-    representation: "ball_and_stick" (default) or "stick" (two-tone bonds).
-    """
-    from ase.data.colors import cpk_colors
-
-    # Resolve bonds
-    if bonds == "auto":
-        if "covalent_bonds" in atoms.info and atoms.info["covalent_bonds"]:
-            bond_list = atoms.info["covalent_bonds"]
-        else:
-            cutoffs = np.asarray(natural_cutoffs(atoms, mult=1.05), dtype=float)
-            i_idx, j_idx = neighbor_list("ij", atoms, cutoffs, self_interaction=False)
-            seen: set[tuple[int, int]] = set()
-            bond_list = []
-            for i, j in zip(i_idx, j_idx, strict=False):
-                x, y = int(min(i, j)), int(max(i, j))
-                if x == y or (x, y) in seen:
-                    continue
-                seen.add((x, y))
-                bond_list.append([x, y])
-            atoms.info["covalent_bonds"] = bond_list
-    elif bonds is None:
-        bond_list = []
-    elif isinstance(bonds, list):
-        bond_list = bonds
-    else:
-        bond_list = []
-
-    n_atoms = int(len(atoms))
-    atomic_numbers = atoms.get_atomic_numbers()
-    symbols = atoms.get_chemical_symbols()
-    positions = atoms.get_positions()
-
-    # Atom colors (CPK)
-    atom_colors = np.array([cpk_colors[an] for an in atomic_numbers], dtype=float)
-
-    # Atom radii (covalent radii × scale)
-    radii = covalent_radii[atomic_numbers] * atom_scale
-    masses = atomic_masses_table[atomic_numbers]
-
-    # Atom trace (InstancedMesh — one draw call for all atoms)
-    atom_hover = [
-        f"Id: {i}\nElement: {s}\nMass: {m:.3f}\nPosition: {p[0]:.4f} {p[1]:.4f} {p[2]:.4f}"
-        for i, (s, m, p) in enumerate(zip(symbols, masses, positions))
-    ]
-    atom_trace = _make_trace(
-        trace_id=f"{trace_id}_atoms",
-        trace_type="instanced_spheres",
-        name=f"{name} (atoms)",
-        data={
-            "positions": positions.reshape(-1).tolist(),
-            "symbols": list(symbols),
-            "colors": atom_colors.reshape(-1).tolist(),
-            "radii": radii.astype(float).tolist(),
-            "n_atoms": n_atoms,
-        },
-        style=style if style else "framework",
-        hover=atom_hover,
-        visible=True,
-    )
-
-    # Bond trace (compact instanced cylinders — browser builds geometry)
-    # Trim cylinders to start/end near sphere surfaces (not center-to-center).
-    cyl_radius = 0.08 if representation == "stick" else 0.15
-    atom_radii_vals = covalent_radii[atomic_numbers] * (0.15 if representation == "stick" else atom_scale)
-    if bond_list and len(bond_list) > 0:
-        bond_starts: list[float] = []
-        bond_ends: list[float] = []
-        bond_colors: list[float] = []
-        bond_hover: list[str] = []
-        for a_idx, b_idx in bond_list:
-            if a_idx >= n_atoms or b_idx >= n_atoms:
-                continue
-            pa = positions[a_idx]
-            pb = positions[b_idx]
-            d = pb - pa
-            length = np.linalg.norm(d)
-            if length < 1e-8:
-                continue
-            unit_d = d / length
-            # Trim so cylinders don't poke through spheres
-            start = pa + unit_d * atom_radii_vals[a_idx] * 0.98
-            end = pb - unit_d * atom_radii_vals[b_idx] * 0.98
-            bond_starts.extend(start.tolist())
-            bond_ends.extend(end.tolist())
-            ht = f"Bond: {symbols[a_idx]}({a_idx}) \u2194 {symbols[b_idx]}({b_idx})\nLength: {length:.3f} \u00c5"
-            if representation == "stick":
-                mid = (start + end) / 2.0
-                bond_starts.extend(start.tolist())
-                bond_ends.extend(mid.tolist())
-                bond_colors.extend(atom_colors[a_idx].tolist())
-                bond_colors.extend(atom_colors[b_idx].tolist())
-                bond_hover.extend([ht, ht])
-            else:
-                bond_colors.extend([0.5, 0.5, 0.5])
-                bond_hover.append(ht)
-        n_bonds = len(bond_colors) // 3
-    else:
-        bond_starts, bond_ends, bond_colors = [], [], []
-        bond_hover = []
-        n_bonds = 0
-    bond_trace = _make_trace(
-        trace_id=f"{trace_id}_bonds",
-        trace_type="instanced_cylinders",
-        name=f"{name} (bonds)",
-        data={
-            "start_positions": bond_starts,
-            "end_positions": bond_ends,
-            "colors": bond_colors,
-            "radius": cyl_radius,
-            "n_bonds": n_bonds,
-        },
-        style=style if style else "framework",
-        hover=bond_hover if bond_hover else None,
-        visible=True,
-    )
-
-    return {"atoms": atom_trace, "bonds": bond_trace}
-
-
 def _minimum_image_displacement(
     p: np.ndarray, q: np.ndarray, cell: np.ndarray | None
 ) -> np.ndarray:
     if cell is None or np.asarray(cell).size == 0:
         return np.asarray(p, dtype=float) - np.asarray(q, dtype=float)
+    from .helper import mic_frac_diff_batch
+
     C = np.asarray(cell, dtype=float)
-    invC = np.linalg.inv(C.T)
-    df = np.dot(np.asarray(p, dtype=float) - np.asarray(q, dtype=float), invC.T)
-    df -= np.round(df)
-    return np.dot(df, C)
+    cart_diff = np.asarray(p, dtype=float) - np.asarray(q, dtype=float)
+    frac_diff = cart_diff @ np.linalg.inv(C)
+    mic_frac = mic_frac_diff_batch(frac_diff, C.T, xp=np)
+    return mic_frac @ C
 
 
 def _strip_framework_like_atoms(
@@ -2672,43 +2569,41 @@ class _TraceCollection:
         return f"TraceCollection({ids})"
 
 
-def _pack_static_traces(traces: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Pack large numerical arrays in static traces as base64 binary blobs.
 
-    Same logic as _pack_frame_data, applied to the static trace list.
-    Reduces JSON size by ~40% for mesh-heavy payloads.
-    """
-    packed: list[dict[str, Any]] = []
-    for trace in traces:
-        pt = dict(trace)
-        data = trace.get("data")
-        if isinstance(data, dict):
-            pd: dict[str, Any] = {}
-            for key, value in data.items():
-                if key in _BINARY_PACK_KEYS and isinstance(value, list) and len(value) > 0:
-                    if key == "indices":
-                        max_val = max(value) if value else 0
-                        dtype = np.uint16 if max_val < 65536 else np.uint32
-                        arr = np.asarray(value, dtype=dtype)
-                        pd[key] = {
-                            "__binary__": True,
-                            "dtype": "uint16" if dtype == np.uint16 else "uint32",
-                            "count": len(value),
-                            "data": base64.b64encode(arr.tobytes()).decode("ascii"),
-                        }
-                    else:
-                        arr = np.asarray(value, dtype=np.float32)
-                        pd[key] = {
-                            "__binary__": True,
-                            "dtype": "float32",
-                            "count": len(value),
-                            "data": base64.b64encode(arr.tobytes()).decode("ascii"),
-                        }
-                else:
-                    pd[key] = value
-            pt["data"] = pd
-        packed.append(pt)
-    return packed
+
+def _open_threejs_in_browser(fig: "MovieFigure", *, port: int | None = None) -> str:
+    """Write temp HTML, serve on localhost, open browser. Returns viewer URL."""
+    import http.server
+    import socket
+    import tempfile
+    import threading
+    import webbrowser
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="mgr_view_"))
+    html_path = tmp_dir / "figure3d.html"
+    fig.to_html(html_path)
+
+    if port is None:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+
+    class _Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=str(tmp_dir), **kwargs)
+
+        def log_message(self, format, *args):
+            return
+
+    httpd = http.server.HTTPServer(("127.0.0.1", int(port)), _Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+
+    url = f"http://127.0.0.1:{port}/{html_path.name}"
+    print(f"Figure3D viewer: {url}")
+    print(f"(temp HTML: {html_path})")
+    webbrowser.open(url)
+    return url
 
 
 class MovieFigure:
@@ -2759,22 +2654,28 @@ class MovieFigure:
         targets = self.data if frame is None else self.frames[frame]["traces"]
         for t in targets:
             if selector is None or all(t.get(k) == v for k, v in selector.items()):
-                merged = dict(patch)
-                style_ov = {
-                    k: merged.pop(k)
-                    for k in list(merged.keys())
-                    if k in _TRACE_STYLE_TOPLEVEL_KEYS
-                }
-                if style_ov:
-                    st = t.get("style")
-                    if isinstance(st, dict):
-                        st.update(style_ov)
+                # Deep-merge style so opacity/color patches hit the renderer path
+                # (JS reads style.opacity, not top-level opacity).
+                style_patch = patch.get("style")
+                rest = {k: v for k, v in patch.items() if k != "style"}
+                # Plotly-like convenience: top-level opacity/color/size/linewidth → style
+                for key in ("opacity", "color", "size", "linewidth", "roughness", "metalness", "side"):
+                    if key in rest:
+                        if not isinstance(style_patch, dict):
+                            style_patch = {}
+                        style_patch.setdefault(key, rest.pop(key))
+                if isinstance(style_patch, dict) and style_patch:
+                    cur = t.get("style")
+                    if isinstance(cur, str):
+                        cur = dict(DEFAULT_STYLES.get(cur, {}))
+                    elif isinstance(cur, dict):
+                        cur = dict(cur)
                     else:
-                        base = dict(_resolve_style(st))
-                        base.update(style_ov)
-                        t["style"] = base
-                if merged:
-                    t.update(merged)
+                        cur = {}
+                    cur.update(style_patch)
+                    t["style"] = cur
+                if rest:
+                    t.update(rest)
         return self
 
     @staticmethod
@@ -2812,6 +2713,9 @@ class MovieFigure:
             cam["projection"] = projection
         if keyframes is not None:
             cam["keyframes"] = keyframes
+        # Mark explicit so HTML viewer does NOT replace with default [111] cell view
+        if any(v is not None for v in (eye, center, up, projection, keyframes)):
+            cam["explicit"] = True
         return self
 
     def set_appearance(
@@ -2838,6 +2742,73 @@ class MovieFigure:
             ap["title"] = title
         if theme is not None:
             ap["theme"] = theme
+        return self
+
+    def set_lights(
+        self,
+        *,
+        ambient: float | None = None,
+        hemisphere_intensity: float | None = None,
+        hemisphere_sky: str | int | None = None,
+        hemisphere_ground: str | int | None = None,
+        dir_key_intensity: float | None = None,
+        dir_key_position: tuple[float, float, float] | None = None,
+        dir_fill_intensity: float | None = None,
+        dir_fill_position: tuple[float, float, float] | None = None,
+        ssao: bool | None = None,
+        explicit: bool = True,
+    ) -> "MovieFigure":
+        """Set Three.js scene lighting (embedded in exported HTML).
+
+        When *explicit* is True (default), the viewer uses these intensities
+        as-is and does **not** apply the automatic orthographic compensation.
+
+        Parameters
+        ----------
+        ambient
+            Ambient light intensity (0–1 typical).
+        hemisphere_intensity, hemisphere_sky, hemisphere_ground
+            Hemisphere light settings (sky/ground are hex colours).
+        dir_key_intensity, dir_key_position
+            Key directional light.
+        dir_fill_intensity, dir_fill_position
+            Fill directional light.
+        ssao
+            Enable SSAO. Default: off in orthographic, on in perspective.
+        explicit
+            If True, skip orthographic auto-boost of directional lights.
+        """
+        if "lighting" not in self.layout:
+            self.layout["lighting"] = {}
+
+        def _hex(c: str | int) -> str:
+            if isinstance(c, str):
+                return c if c.startswith("#") else f"#{c}"
+            return f"#{int(c):06x}"
+
+        lt = self.layout["lighting"]
+        if ambient is not None:
+            lt["ambient"] = float(ambient)
+        hemi: dict[str, Any] = lt.setdefault("hemisphere", {})
+        if hemisphere_intensity is not None:
+            hemi["intensity"] = float(hemisphere_intensity)
+        if hemisphere_sky is not None:
+            hemi["sky"] = _hex(hemisphere_sky)
+        if hemisphere_ground is not None:
+            hemi["ground"] = _hex(hemisphere_ground)
+        key: dict[str, Any] = lt.setdefault("dir_key", {})
+        if dir_key_intensity is not None:
+            key["intensity"] = float(dir_key_intensity)
+        if dir_key_position is not None:
+            key["position"] = list(dir_key_position)
+        fill: dict[str, Any] = lt.setdefault("dir_fill", {})
+        if dir_fill_intensity is not None:
+            fill["intensity"] = float(dir_fill_intensity)
+        if dir_fill_position is not None:
+            fill["position"] = list(dir_fill_position)
+        if ssao is not None:
+            lt["ssao"] = bool(ssao)
+        lt["explicit"] = bool(explicit)
         return self
 
     @staticmethod
@@ -2910,29 +2881,12 @@ class MovieFigure:
         path: str | Path,
         template: str = "threejs_default",
         sidecar: bool = False,
-        lazy_surfaces: bool = False,
         fps: float = 20.0,
         point_size: float = 0.16,
     ) -> Path:
         out = Path(path).expanduser().resolve()
         out.parent.mkdir(parents=True, exist_ok=True)
         scene = self.to_dict()
-
-        # Lazy surfaces: extract surface trace data to separate file
-        if lazy_surfaces and "static" in scene:
-            surface_ids = {"surface", "surface_pbc", "surface_pocket"}
-            lazy_data: dict[str, dict] = {}
-            for trace in scene["static"].get("traces", []):
-                tid = trace.get("id", "")
-                if tid in surface_ids or (tid and tid.startswith("surface_")):
-                    if "data" in trace:
-                        lazy_data[tid] = trace["data"]
-                        trace["data"] = {"__sidecar__": True, "id": tid}
-            if lazy_data:
-                sidecar_path = out.with_suffix(".surfaces.json")
-                with open(sidecar_path, "w", encoding="utf-8") as fh:
-                    json.dump(lazy_data, fh)
-                scene["sidecar_surfaces"] = str(sidecar_path.name)
 
         if sidecar:
             frames_data = scene.pop("frames")
@@ -2953,9 +2907,6 @@ class MovieFigure:
                 json.dump(offsets, fh)
             scene["sidecar_idx"] = str(idx_path.name)
 
-        # Pack large numerical arrays as base64 binary blobs (~29% smaller JSON)
-        if "static" in scene and "traces" in scene["static"]:
-            scene["static"]["traces"] = _pack_static_traces(scene["static"]["traces"])
         payload_json = json.dumps(scene)
 
         # Default camera
@@ -2964,6 +2915,7 @@ class MovieFigure:
         center = tuple(cam.get("center", [0.0, 0.0, 0.0]))
         up = tuple(cam.get("up", [0.0, 0.0, 1.0]))
         projection = str(cam.get("projection", "perspective"))
+        camera_explicit = bool(cam.get("explicit", False))
 
         ap = scene.get("layout", {}).get("appearance", {})
         theme = ap.get("theme", "dark")
@@ -2986,6 +2938,7 @@ class MovieFigure:
             up=up,
             point_size=point_size,
             projection=projection,
+            camera_explicit="true" if camera_explicit else "false",
             bg_css=bg_css,
             scene_bg=scene_bg,
             font_family=font_family,
@@ -3005,15 +2958,13 @@ class MovieFigure:
         """Render scene to HTML string (no file write)."""
         import json as _json
         scene = self.to_dict()
-        # Pack large numerical arrays as base64 binary blobs (~40% smaller JSON)
-        if "static" in scene and "traces" in scene["static"]:
-            scene["static"]["traces"] = _pack_static_traces(scene["static"]["traces"])
         payload_json = _json.dumps(scene)
         cam = scene.get("layout", {}).get("scene", {}).get("camera", {})
         eye = tuple(cam.get("eye", [2.0, 0.0, 1.35]))
         center = tuple(cam.get("center", [0.0, 0.0, 0.0]))
         up = tuple(cam.get("up", [0.0, 0.0, 1.0]))
         projection = str(cam.get("projection", "perspective"))
+        camera_explicit = bool(cam.get("explicit", False))
         fps = float(scene.get("layout", {}).get("fps", 20.0))
 
         ap = scene.get("layout", {}).get("appearance", {})
@@ -3037,6 +2988,7 @@ class MovieFigure:
             up=up,
             point_size=0.16,
             projection=projection,
+            camera_explicit="true" if camera_explicit else "false",
             bg_css=bg_css,
             scene_bg=scene_bg,
             font_family=font_family,
@@ -3062,31 +3014,107 @@ class MovieFigure:
             f'srcdoc="{escaped}"></iframe>'
         )
 
-    def show(self, renderer: str = "notebook") -> None:
+    def show(self, renderer: str = "notebook", *, port: int | None = None) -> str | None:
         """Display the figure.
 
         Parameters
         ----------
         renderer
             ``"notebook"`` — display inline in Jupyter output cell (default).
-            ``"browser"`` — write a temporary HTML file and open it in the
-            system's default web browser (like ``plotly.io.show(renderer="browser")``).
+            ``"browser"`` — serve HTML on ``127.0.0.1`` (random free port) and
+            open in the system browser (Plotly-style). Also writes a temp HTML
+            backup and prints its path.
+        port
+            Optional fixed port for ``renderer="browser"`` (default: auto).
+
+        Returns
+        -------
+        str or None
+            Viewer URL when ``renderer="browser"``, else None.
         """
         if renderer == "browser":
-            import tempfile
-            import webbrowser
-            tmp = Path(tempfile.mktemp(suffix=".html"))
-            self.to_html(tmp)
-            webbrowser.open(str(tmp))
-        else:
-            try:
-                from IPython.display import HTML, display
-                display(HTML(self._repr_html_()))
-            except ImportError:
-                raise RuntimeError(
-                    "IPython is required for notebook rendering. "
-                    "Use renderer='browser' to open in a web browser instead."
-                )
+            return _open_threejs_in_browser(self, port=port)
+        try:
+            from IPython.display import HTML, display
+            display(HTML(self._repr_html_()))
+        except ImportError:
+            raise RuntimeError(
+                "IPython is required for notebook rendering. "
+                "Use renderer='browser' to open in a web browser instead."
+            )
+        return None
+
+    def export_png(
+        self,
+        path: str | Path,
+        *,
+        resolution_mult: int = 2,
+        width: int | None = None,
+        height: int | None = None,
+        wait_ms: int = 1500,
+    ) -> Path:
+        """Export the current static scene to PNG.
+
+        Uses Playwright headless Chromium when installed::
+
+            pip install playwright
+            playwright install chromium
+
+        Otherwise raises with instructions to use the in-viewer **Export PNG**
+        button after ``.show(renderer="browser")``.
+
+        Parameters
+        ----------
+        path
+            Output ``.png`` path.
+        resolution_mult
+            Supersampling factor (matches the viewer Export PNG control).
+        width, height
+            Browser viewport in pixels (default 1280×720).
+        wait_ms
+            Milliseconds to wait for WebGL scene load before capture.
+        """
+        out = Path(path).expanduser().resolve()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if out.suffix.lower() != ".png":
+            out = out.with_suffix(".png")
+
+        import tempfile
+        tmp_dir = Path(tempfile.mkdtemp(prefix="mgr_figure3d_"))
+        html_path = tmp_dir / "scene.html"
+        self.to_html(html_path)
+
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as exc:
+            raise RuntimeError(
+                "export_png() requires Playwright. Install with:\n"
+                "  pip install playwright\n"
+                "  playwright install chromium\n"
+                "Or open the scene with fig.show(renderer='browser') and "
+                "click Export PNG in the HUD."
+            ) from exc
+
+        w = int(width or 1280)
+        h = int(height or 720)
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page(viewport={"width": w, "height": h})
+            page.goto(html_path.as_uri(), wait_until="networkidle")
+            page.wait_for_timeout(wait_ms)
+            data_url = page.evaluate(
+                "(mult) => window.__mofFigureExportPng(mult)",
+                int(resolution_mult),
+            )
+            browser.close()
+
+        if not data_url or not str(data_url).startswith("data:image/png"):
+            raise RuntimeError("PNG export failed — scene may not have finished loading.")
+
+        import base64
+        b64 = str(data_url).split(",", 1)[1]
+        out.write_bytes(base64.b64decode(b64))
+        return out
 
     # ------------------------------------------------------------------
     # Convenience trace builders (static scenes)
@@ -3097,84 +3125,35 @@ class MovieFigure:
         atoms: Atoms,
         bonds: str | list | None = "auto",
         representation: str = "ball_and_stick",
-        kwargs_spheres: dict[str, Any] | None = None,
-        kwargs_cylinders: dict[str, Any] | None = None,
-        sphere_sections: int = 2,
-        cylinder_sections: int = 15,
-        generate_all_reps: bool = True,
         **style: Any,
     ) -> "MovieFigure":
         """Add framework atoms + bonds as a mesh trace (static).
-
-        representation: "ball_and_stick" (default), "stick", or
-        "space_filling".
-
-        When *generate_all_reps* is ``True`` and representation is
-        ``"ball_and_stick"``, stick and space-filling meshes are also
-        generated (hidden, toggleable in viewer).  Set ``False`` for large
-        structures to avoid 3× generation cost — precomputes ~2.6s for
-        P1-Cu-BTC vs ~0.9s without alternates.
+        representation: "ball_and_stick" (default), "stick", or "space_filling".
+        When called with default representation, both ball-and-stick and stick
+        meshes are added; the stick mesh starts hidden and can be toggled in the viewer.
         """
-        shared = {
-            "sphere_sections": sphere_sections,
-            "cylinder_sections": cylinder_sections,
-        }
         if representation == "ball_and_stick":
-            trace = make_framework_trace(
-                atoms,
-                bonds=bonds,
-                style=style if style else "framework",
-                kwargs_spheres=kwargs_spheres,
-                kwargs_cylinders=kwargs_cylinders,
-                **shared,
-            )
+            trace = make_framework_trace(atoms, bonds=bonds, style=style if style else "framework")
             self.add_trace(trace)
-            if generate_all_reps:
-                # Also add stick and space-filling representations (start hidden)
-                stick_trace = make_framework_trace(
-                    atoms, bonds=bonds, trace_id="framework_stick",
-                    name="Framework (stick)", representation="stick",
-                    style={"visible": False, "side": "FrontSide"},
-                    kwargs_spheres=kwargs_spheres,
-                    kwargs_cylinders=kwargs_cylinders,
-                    **shared,
-                )
-                self.add_trace(stick_trace)
-                sf_trace = make_framework_trace(
-                    atoms, bonds=bonds, trace_id="framework_spacefill",
-                    name="Framework (spacefill)", representation="space_filling",
-                    style={"visible": False, "side": "FrontSide"},
-                    kwargs_spheres=kwargs_spheres,
-                    kwargs_cylinders=kwargs_cylinders,
-                    **shared,
-                )
-                self.add_trace(sf_trace)
+            # Also add stick and space-filling representations (start hidden)
+            stick_trace = make_framework_trace(
+                atoms, bonds=bonds, trace_id="framework_stick",
+                name="Framework (stick)", representation="stick",
+                style={"visible": False}
+            )
+            self.add_trace(stick_trace)
+            sf_trace = make_framework_trace(
+                atoms, bonds=bonds, trace_id="framework_spacefill",
+                name="Framework (spacefill)", representation="space_filling",
+                style={"visible": False}
+            )
+            self.add_trace(sf_trace)
         else:
             trace = make_framework_trace(
                 atoms, bonds=bonds, representation=representation,
-                style=style if style else "framework",
-                kwargs_spheres=kwargs_spheres,
-                kwargs_cylinders=kwargs_cylinders,
-                **shared,
+                style=style if style else "framework"
             )
             self.add_trace(trace)
-        return self
-
-    def add_aromatic_rings(
-        self,
-        atoms: Atoms,
-        cycles: list[list[int]] | None = None,
-        **style: Any,
-    ) -> "MovieFigure":
-        traces = make_aromatic_rings_trace(atoms, cycles=cycles)
-        self.add_trace(traces["circles"])
-        if traces["circles"].get("type") == "instanced_ring_outlines":
-            if traces.get("fills_pent") is not None:
-                self.add_trace(traces["fills_pent"])
-            if traces.get("fills_hex") is not None:
-                self.add_trace(traces["fills_hex"])
-        else:
-            self.add_trace(traces["highlights"])
         return self
 
     def add_cell(self, atoms: Atoms, **style: Any) -> "MovieFigure":
@@ -3202,6 +3181,22 @@ class MovieFigure:
             cscale=cs,
         )
         self.add_trace(trace)
+        return self
+
+    def add_aromatic_rings(
+        self,
+        atoms: Atoms,
+        cycles: list[list[int]] | None = None,
+        **style: Any,
+    ) -> "MovieFigure":
+        traces = make_aromatic_rings_trace(atoms, cycles=cycles)
+        self.add_trace(traces["circles"])
+        self.add_trace(traces["highlights"])
+        # Instanced path emits separate hex/pent fill traces
+        if "fills_hex" in traces:
+            self.add_trace(traces["fills_hex"])
+        if "fills_pent" in traces:
+            self.add_trace(traces["fills_pent"])
         return self
 
     def add_maxima(
@@ -3243,18 +3238,23 @@ class MovieFigure:
         self,
         seg: dict[str, Any],
         hide_periodic: bool = True,
-        atoms = None,
+        atoms: Any | None = None,
         spacing: float | None = None,
+        reclassify_far_outside: bool = True,
         **style: Any,
     ) -> "MovieFigure":
         """Add window points between connected pores (internal + optional periodic).
 
-        When *atoms* and *spacing* are provided, windows inside internal
-        connections that fall far outside the unit cell (beyond the wall
-        tolerance) are reclassified as periodic, so they're hidden by default
-        and don't appear as floating disconnected markers.
+        When *atoms* and *spacing* are supplied and *reclassify_far_outside* is True,
+        windows tagged ``internal`` whose Cartesian position is far outside the unit
+        cell are reclassified as periodic (prevents phantom internal-window markers
+        for non-orthogonal cells).
         """
-        windows = make_windows_trace(seg, style=style if style else "internal_windows", atoms=atoms, spacing=spacing)
+        windows = make_windows_trace(
+            seg, atoms=atoms, spacing=spacing,
+            reclassify_far_outside=reclassify_far_outside,
+            style=style if style else "internal_windows",
+        )
         self.add_trace(windows["internal"])
         if hide_periodic:
             windows["periodic"]["visible"] = False
@@ -3308,8 +3308,8 @@ def build_fixed_framework_movie(
 
     # Static traces — framework in three representations (ball-and-stick default)
     fig.add_trace(make_framework_trace(framework_atoms))
-    fig.add_trace(make_framework_trace(framework_atoms, trace_id="framework_stick", representation="stick", name="Framework (stick)", style={"visible": False, "side": "FrontSide"}))
-    fig.add_trace(make_framework_trace(framework_atoms, trace_id="framework_spacefill", representation="space_filling", name="Framework (spacefill)", style={"visible": False, "side": "FrontSide"}))
+    fig.add_trace(make_framework_trace(framework_atoms, trace_id="framework_stick", representation="stick", name="Framework (stick)", style={"visible": False}))
+    fig.add_trace(make_framework_trace(framework_atoms, trace_id="framework_spacefill", representation="space_filling", name="Framework (spacefill)", style={"visible": False}))
     fig.add_trace(make_cell_trace(framework_atoms))
 
     # Compute segmentation once on the framework
@@ -3324,7 +3324,7 @@ def build_fixed_framework_movie(
     fig.add_trace(maxima["internal"])
     fig.add_trace(maxima["outside"])
 
-    windows = make_windows_trace(seg)
+    windows = make_windows_trace(seg, atoms=framework_atoms, spacing=spacing)
     fig.add_trace(windows["internal"])
     fig.add_trace(windows["periodic"])
 
@@ -3432,9 +3432,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     #hud { position: fixed; right: 0; top: 0; width: 200px; height: 100vh;
       background: {{panel_bg}}; border-left: 1px solid rgba(128,128,128,0.2);
       padding: 10px; display: flex; flex-direction: column; gap: 4px;
-      overflow-y: auto; overflow-x: hidden; overflow-anchor: none;
-      scroll-behavior: auto; resize: horizontal; z-index: 10; font-size: 11px;
-    }
+      overflow-y: auto; overflow-x: hidden; resize: horizontal; z-index: 10; font-size: 11px; }
     #figTitle { font-size: 14px; font-weight: 600; margin-bottom: 4px; text-align: center; }
     #row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
     #frameSlider { width: 100%; }
@@ -3455,7 +3453,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       #app { right: 0; bottom: 140px; }
       #hud { position: fixed; bottom: 0; left: 0; right: 0; top: auto;
         width: 100%; height: 140px; border-left: none; border-top: 1px solid rgba(128,128,128,0.2);
-        flex-direction: row; flex-wrap: wrap; overflow-x: auto; overflow-y: hidden; overflow-anchor: none; }
+        flex-direction: row; flex-wrap: wrap; overflow-x: auto; overflow-y: hidden; }
       .checkrow { flex-direction: row; flex-wrap: wrap; gap: 2px 8px; }
     }
   </style>
@@ -3514,12 +3512,9 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       <label>Representation:
         <select id="reprSelect" style="font-size:10px;width:100%;"><option value="ball_and_stick">Ball-and-stick</option><option value="stick">Stick</option><option value="space_filling">Space-filling</option></select>
       </label>
-      <div id="meshOpacityContainer" style="display:flex;flex-direction:column;gap:2px;max-height:120px;overflow-y:auto;font-size:10px;"></div>
-      <label>Point size: <input id="ptSizeSlider" type="range" min="0.5" max="4.5" step="0.1" value="1" style="width:80px;vertical-align:middle;" /></label>
       <label>Play speed: <input id="speedSlider" type="range" min="0.25" max="4" step="0.25" value="1" style="width:80px;vertical-align:middle;" /></label>
       <label>Ambient: <input id="ambSlider" type="range" min="0" max="1" step="0.05" value="0.28" style="width:80px;vertical-align:middle;" /></label>
       <label>Directional: <input id="dirSlider" type="range" min="0" max="2" step="0.05" value="1" style="width:80px;vertical-align:middle;" /></label>
-      <label><input id="screenDoorToggle" type="checkbox" /> Screen-door transparency</label>
       <label>Dir light xyz:
         <input id="lightDirX" type="number" step="0.1" value="5" style="width:40px;vertical-align:middle;" />
         <input id="lightDirY" type="number" step="0.1" value="10" style="width:40px;vertical-align:middle;" />
@@ -3549,18 +3544,6 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       <label>PNG: <select id="pngRes" style="font-size:10px;vertical-align:middle;"><option value="1">1x</option><option value="2">2x</option><option value="4">4x</option></select></label>
       <label>REC: <select id="recRes" style="font-size:10px;vertical-align:middle;"><option value="1" selected>1x</option><option value="2">2x</option><option value="3">3x</option></select></label>
     </div>
-    <div class="checkrow">
-      <label id="labelShowCell"><input type="checkbox" id="showCell" checked /> Unit cell</label>
-      <label id="labelShowFramework"><input type="checkbox" id="showFramework" checked /> Framework mesh</label>
-      <label id="labelShowSurface"><input type="checkbox" id="showSurface" checked /> Segmentation surface (regions)</label>
-      <label id="labelShowGuests"><input type="checkbox" id="showGuests" checked /> Snapshot adsorbates (mesh spheres)</label>
-      <label id="labelShowGuestBonds"><input type="checkbox" id="showGuestBonds" checked /> Adsorbate bonds</label>
-      <label id="labelShowWindows"><input type="checkbox" id="showWindows" checked /> Internal windows</label>
-      <label id="labelShowPeriodicWindows"><input type="checkbox" id="showPeriodicWindows" /> Periodic windows</label>
-      <label id="labelShowInternalConnections"><input type="checkbox" id="showInternalConnections" checked /> Internal connections</label>
-      <label id="labelShowPeriodicConnections"><input type="checkbox" id="showPeriodicConnections" /> Periodic connections</label>
-      <label id="labelWindowMinThreshold">Min window (Å): <input id="windowMinThreshold" type="number" step="0.05" min="0" placeholder="off" style="width:52px;vertical-align:middle;" title="Hide connections/windows whose radii are all below this threshold" /></label>
-    </div>
     <div class="checkrow" id="groupChecks"></div>
     <button id="toggleLegend" style="font-size:10px;margin-top:2px;" title="Fold/unfold legend entries">Fold Legend ▲</button>
     <input id="frameSlider" type="range" min="0" max="0" step="1" value="0" />
@@ -3580,10 +3563,6 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
   <script src="https://unpkg.com/gif.js@0.2.0/dist/gif.js"></script>
   <script>
     const DATA = {{payload_json}};
-    // Unpack binary arrays in static traces (positions, indices, colors)
-    if (DATA.static && DATA.static.traces) {
-      _unpackBinaryArrays(DATA.static);
-    }
     const MOV = DATA.static && DATA.static.traces ? DATA.static.traces : [];
     const FRAMES = DATA.frames || [];
 
@@ -3746,16 +3725,8 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     const tooltip = document.getElementById("tooltip");
 
     const reprSelect = document.getElementById("reprSelect");
-    const showCell = document.getElementById("showCell");
-    const showFramework = document.getElementById("showFramework");
-    const showSurface = document.getElementById("showSurface");
-    const showGuests = document.getElementById("showGuests");
-    const showGuestBonds = document.getElementById("showGuestBonds");
-    const showWindows = document.getElementById("showWindows");
-    const showPeriodicWindows = document.getElementById("showPeriodicWindows");
-    const showInternalConnections = document.getElementById("showInternalConnections");
-    const showPeriodicConnections = document.getElementById("showPeriodicConnections");
-    const windowMinThresholdInput = document.getElementById("windowMinThreshold");
+    let windowMinThresholdInput = null;
+    let hideEdgesBelowWindowInput = null;
     const pivotSceneBtn = document.getElementById("pivotScene");
     const pivotOriginBtn = document.getElementById("pivotOrigin");
     const resetCamBtn = document.getElementById("resetCam");
@@ -3764,11 +3735,10 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     const rotAxisYInput = document.getElementById("rotAxisY");
     const rotAxisZInput = document.getElementById("rotAxisZ");
     const measureBtn = document.getElementById("measureTool");
-    const ptSizeSlider = document.getElementById("ptSizeSlider");
     const speedSlider = document.getElementById("speedSlider");
     const ambSlider = document.getElementById("ambSlider");
     const dirSlider = document.getElementById("dirSlider");
-    const screenDoorToggle = document.getElementById("screenDoorToggle");
+    let screenDoorToggle = null;
     const lightDirXInput = document.getElementById("lightDirX");
     const lightDirYInput = document.getElementById("lightDirY");
     const lightDirZInput = document.getElementById("lightDirZ");
@@ -3782,10 +3752,10 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     const bgPicker = document.getElementById("bgPicker");
     const pngResSelect = document.getElementById("pngRes");
     const recResSelect = document.getElementById("recRes");
-    let pointSizeMult = 1.0;
-    pointSizeMult = parseFloat(ptSizeSlider.value) || 1.0;
+    const pointSizeMultByTrace = {};
+    const lineWidthMultByTrace = {};
+    const legendEnabledByTrace = {};
     const screenDoorDefault = !!(DATA.layout && DATA.layout.surface_screen_door === true);
-    if (screenDoorToggle) screenDoorToggle.checked = screenDoorDefault;
 
     function getRenderViewport() {
       const hudEl = document.getElementById("hud");
@@ -3876,12 +3846,43 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     // Orthographic toggle
     const toggleOrthoBtn = document.getElementById("toggleOrtho");
     toggleOrthoBtn.textContent = isOrtho ? "Perspective" : "Ortho";
+    const LIGHTING = (DATA.layout && DATA.layout.lighting) || {};
+    const lightingExplicit = !!LIGHTING.explicit;
+
+    function ssaoEnabled() {
+      if (LIGHTING.ssao !== undefined) return !!LIGHTING.ssao;
+      return !isOrtho;
+    }
+
+    function applyLightingFromLayout() {
+      if (!DATA.layout || !DATA.layout.lighting) return;
+      const L = DATA.layout.lighting;
+      if (L.ambient != null) ambient.intensity = L.ambient;
+      const h = L.hemisphere || {};
+      if (h.intensity != null) hemiLight.intensity = h.intensity;
+      if (h.sky) hemiLight.color.set(h.sky);
+      if (h.ground) hemiLight.groundColor.set(h.ground);
+      const k = L.dir_key || {};
+      if (k.intensity != null) dirKey.intensity = k.intensity;
+      if (k.position) dirKey.position.set(k.position[0], k.position[1], k.position[2]);
+      const f = L.dir_fill || {};
+      if (f.intensity != null) dirFill.intensity = f.intensity;
+      if (f.position) dirFill.position.set(f.position[0], f.position[1], f.position[2]);
+      _lightOrig.ambient = ambient.intensity;
+      _lightOrig.hemi = hemiLight.intensity;
+      _lightOrig.key = dirKey.intensity;
+      _lightOrig.fill = dirFill.intensity;
+      lightDirXInput.value = String(dirKey.position.x.toFixed(2));
+      lightDirYInput.value = String(dirKey.position.y.toFixed(2));
+      lightDirZInput.value = String(dirKey.position.z.toFixed(2));
+    }
+
     function recreateComposer() {
       if (composer) {
         try { composer.passes.forEach(function(p) { if (p.dispose) p.dispose(); }); } catch(e) {}
       }
       composer = null; ssaoPass = null;
-      if (!isOrtho) {
+      if (ssaoEnabled()) {
         try {
           composer = new THREE.EffectComposer(renderer);
           composer.addPass(new THREE.RenderPass(scene, camera));
@@ -3929,20 +3930,22 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       updateOrthoFrustum();
       recreateComposer();
 
-      if (isOrtho) {
-        _lightOrig.ambient = ambient.intensity;
-        _lightOrig.hemi = hemiLight.intensity;
-        _lightOrig.key = dirKey.intensity;
-        _lightOrig.fill = dirFill.intensity;
-        ambient.intensity = 0.015;
-        hemiLight.intensity = 0.10;
-        dirKey.intensity = _lightOrig.key * 1.2;
-        dirFill.intensity = _lightOrig.fill * 0.22;
-      } else {
-        ambient.intensity = _lightOrig.ambient;
-        hemiLight.intensity = _lightOrig.hemi;
-        dirKey.intensity = _lightOrig.key;
-        dirFill.intensity = _lightOrig.fill;
+      if (!lightingExplicit) {
+        if (isOrtho) {
+          _lightOrig.ambient = ambient.intensity;
+          _lightOrig.hemi = hemiLight.intensity;
+          _lightOrig.key = dirKey.intensity;
+          _lightOrig.fill = dirFill.intensity;
+          ambient.intensity = 0.015;
+          hemiLight.intensity = 0.10;
+          dirKey.intensity = _lightOrig.key * 1.2;
+          dirFill.intensity = _lightOrig.fill * 0.22;
+        } else {
+          ambient.intensity = _lightOrig.ambient;
+          hemiLight.intensity = _lightOrig.hemi;
+          dirKey.intensity = _lightOrig.key;
+          dirFill.intensity = _lightOrig.fill;
+        }
       }
 
       renderer.domElement.style.filter = "";
@@ -3950,12 +3953,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
 
       Object.values(objectsById).forEach(function(obj) {
         if (obj && obj.material && obj.material.isPointsMaterial) {
-          // Respect forceDepthTest (set by framework scatter) if present
-          if (obj.material.userData && obj.material.userData.forceDepthTest !== undefined) {
-            obj.material.depthTest = obj.material.userData.forceDepthTest;
-          } else {
-            obj.material.depthTest = true;
-          }
+          obj.material.depthTest = true;
           obj.material.depthWrite = false;
           var base = obj.material.userData && obj.material.userData.baseSize ? obj.material.userData.baseSize : obj.material.size;
           applyPointSize(obj, base);
@@ -3978,8 +3976,10 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     lightDirYInput.value = String(dirKey.position.y.toFixed(2));
     lightDirZInput.value = String(dirKey.position.z.toFixed(2));
 
-    // Ortho init: compensate for lack of SSAO with stronger directional contrast
-    if (isOrtho) {
+  if (lightingExplicit) {
+      applyLightingFromLayout();
+    } else if (isOrtho) {
+      // Ortho init: compensate for lack of SSAO with stronger directional contrast
       _lightOrig.ambient = ambient.intensity;
       _lightOrig.hemi = hemiLight.intensity;
       _lightOrig.key = dirKey.intensity;
@@ -3988,24 +3988,25 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       hemiLight.intensity = 0.10;
       dirKey.intensity = _lightOrig.key * 1.2;
       dirFill.intensity = _lightOrig.fill * 0.22;
+    } else {
+      _lightOrig.ambient = ambient.intensity;
+      _lightOrig.hemi = hemiLight.intensity;
+      _lightOrig.key = dirKey.intensity;
+      _lightOrig.fill = dirFill.intensity;
     }
     renderer.domElement.style.filter = "";
 
-    // Post-processing: SSAO in perspective, contrast boost in ortho
+    // Post-processing: SSAO when enabled (layout or perspective default)
     let composer, ssaoPass;
     recreateComposer();
 
     const objectsById = {};
 
     function styleFor(trace) {
-      if (!trace) return {};
-      const s = trace.style;
-      let base = {};
-      if (s && typeof s === "object" && !Array.isArray(s)) base = Object.assign({}, s);
-      else if (typeof s === "string" && STYLES[s]) base = Object.assign({}, STYLES[s]);
-      // Legacy / mistaken top-level keys (see MovieFigure.update_traces on Python side)
-      if (trace.opacity !== undefined) base.opacity = trace.opacity;
-      return base;
+      const s = trace && trace.style;
+      if (s && typeof s === "object" && !Array.isArray(s)) return s;
+      if (typeof s === "string" && STYLES[s]) return STYLES[s];
+      return {};
     }
 
     function hasColorsAttr(obj) {
@@ -4033,6 +4034,23 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       return size;
     }
 
+    function pointSizeMultFor(traceId) {
+      if (traceId && pointSizeMultByTrace[traceId] !== undefined) return pointSizeMultByTrace[traceId];
+      return 1.0;
+    }
+    function lineWidthMultFor(traceId) {
+      if (traceId && lineWidthMultByTrace[traceId] !== undefined) return lineWidthMultByTrace[traceId];
+      return 1.0;
+    }
+    function effectiveLineWidthForTrace(trace, mult) {
+      const style = styleFor(trace);
+      const base = Number(style.linewidth !== undefined ? style.linewidth : 1);
+      const m = mult !== undefined ? mult : lineWidthMultFor(trace.id);
+      return base * m;
+    }
+    function thickLineRadius(effectiveLw) {
+      return 0.04 * Math.max(Number(effectiveLw) || 0, 0.01);
+    }
     function applyPointSize(pointsObj, baseSize) {
       if (!pointsObj || !pointsObj.material || !pointsObj.material.isPointsMaterial) return;
       const base = baseSize !== undefined ? baseSize : (
@@ -4040,8 +4058,188 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           ? pointsObj.material.userData.baseSize
           : pointsObj.material.size
       );
-      pointsObj.material.size = base * pointSizeMult * (isOrtho ? 2.0 : 1.0);
+      pointsObj.material.size = base * pointSizeMultFor(pointsObj.name) * (isOrtho ? 2.0 : 1.0);
       pointsObj.material.needsUpdate = true;
+    }
+    function createThickLineGroup(traceId, pts, color, radius) {
+      const group = new THREE.Group();
+      group.name = traceId;
+      const mat = new THREE.MeshBasicMaterial({ color: color });
+      const unitGeo = new THREE.CylinderGeometry(1, 1, 1, 8, 1);
+      for (let i = 0; i + 5 < pts.length; i += 6) {
+        const start = new THREE.Vector3(pts[i], pts[i + 1], pts[i + 2]);
+        const end = new THREE.Vector3(pts[i + 3], pts[i + 4], pts[i + 5]);
+        const dir = new THREE.Vector3().subVectors(end, start);
+        const len = dir.length();
+        if (len < 1e-8) continue;
+        const mesh = new THREE.Mesh(unitGeo, mat);
+        mesh.position.copy(start).add(end).multiplyScalar(0.5);
+        mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+        mesh.scale.set(radius, len, radius);
+        mesh.userData.segmentLen = len;
+        group.add(mesh);
+      }
+      return group;
+    }
+    function createDashedThickLineGroup(traceId, pts, color, radius, dashSize, gapSize) {
+      const group = new THREE.Group();
+      group.name = traceId;
+      group.userData.dashedThick = true;
+      const mat = new THREE.MeshBasicMaterial({ color: color });
+      const unitGeo = new THREE.CylinderGeometry(1, 1, 1, 8, 1);
+      const radiusScale = Math.max(radius / 0.04, 0.25);
+      const dashLen = Math.max(Number(dashSize || 0.9) * 0.15 * radiusScale, radius * 2.5);
+      const gapLen = Math.max(Number(gapSize !== undefined ? gapSize : 0.5) * 0.15 * radiusScale, radius * 1.5);
+      for (let i = 0; i + 5 < pts.length; i += 6) {
+        const start = new THREE.Vector3(pts[i], pts[i + 1], pts[i + 2]);
+        const end = new THREE.Vector3(pts[i + 3], pts[i + 4], pts[i + 5]);
+        const dir = new THREE.Vector3().subVectors(end, start);
+        const len = dir.length();
+        if (len < 1e-8) continue;
+        const dirN = dir.clone().normalize();
+        let t = 0;
+        while (t < len) {
+          const dashEnd = Math.min(t + dashLen, len);
+          const segLen = dashEnd - t;
+          if (segLen > 1e-6) {
+            const mid = start.clone().add(dirN.clone().multiplyScalar(t + segLen * 0.5));
+            const mesh = new THREE.Mesh(unitGeo, mat);
+            mesh.position.copy(mid);
+            mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dirN);
+            mesh.scale.set(radius, segLen, radius);
+            mesh.userData.segmentLen = segLen;
+            group.add(mesh);
+          }
+          t = dashEnd + gapLen;
+        }
+      }
+      return group;
+    }
+    function buildThickLineGroupForTrace(trace, traceId, pts, effectiveLw) {
+      const style = styleFor(trace);
+      const color = threeColorFromStyle(style.color !== undefined ? style.color : 0xffffff, 0xffffff);
+      const radius = thickLineRadius(Math.max(effectiveLw, 0.15));
+      if (style.dashSize !== undefined) {
+        return createDashedThickLineGroup(
+          traceId, pts, color, radius, style.dashSize,
+          style.gapSize !== undefined ? style.gapSize : 0.5
+        );
+      }
+      return createThickLineGroup(traceId, pts, color, radius);
+    }
+    function updateThickLineGroupRadius(group, radius) {
+      if (!group || !group.children) return;
+      group.children.forEach(function(mesh) {
+        const len = mesh.userData && mesh.userData.segmentLen ? mesh.userData.segmentLen : mesh.scale.y;
+        mesh.scale.set(radius, len, radius);
+      });
+    }
+    function cellPositionsArray(cellObj) {
+      if (cellObj && cellObj.userData && cellObj.userData.originalPositions &&
+          cellObj.userData.originalPositions.length) {
+        return cellObj.userData.originalPositions;
+      }
+      if (cellObj && cellObj.geometry && cellObj.geometry.attributes && cellObj.geometry.attributes.position) {
+        return cellObj.geometry.attributes.position.array;
+      }
+      return null;
+    }
+    function cloneCellOutline(cellObj) {
+      if (!cellObj) return null;
+      if (cellObj instanceof THREE.Group) {
+        const group = new THREE.Group();
+        cellObj.children.forEach(function(child) {
+          group.add(child.clone());
+        });
+        return group;
+      }
+      if (cellObj.geometry) {
+        return new THREE.LineSegments(cellObj.geometry.clone(), cellObj.material.clone());
+      }
+      return null;
+    }
+    function findTraceById(traceId) {
+      const staticHit = staticTraces.find(function(t) { return t.id === traceId; });
+      if (staticHit) return staticHit;
+      if (getFrameCount() > 0 && getFrame(0) && getFrame(0).traces) {
+        return getFrame(0).traces.find(function(t) { return t.id === traceId; }) || null;
+      }
+      return null;
+    }
+    function copyLineTraceUserData(dst, src) {
+      if (!dst || !src || !src.userData) return;
+      Object.keys(src.userData).forEach(function(k) {
+        dst.userData[k] = src.userData[k];
+      });
+    }
+    function disposeLineObject(obj) {
+      if (!obj) return;
+      scene.remove(obj);
+      if (obj instanceof THREE.Group) {
+        obj.traverse(function(c) {
+          if (c.geometry) c.geometry.dispose();
+          if (c.material) c.material.dispose();
+        });
+      } else {
+        if (obj.geometry) obj.geometry.dispose();
+        if (obj.material) obj.material.dispose();
+      }
+    }
+    function connectionLegendEnabled(traceId) {
+      return legendEnabledByTrace[traceId] !== false;
+    }
+    function applyLineWidth(traceId, mult) {
+      lineWidthMultByTrace[traceId] = mult;
+      const trace = findTraceById(traceId);
+      let obj = objectsById[traceId];
+      if (!trace || !obj) return;
+      const pts = obj.userData.originalPositions || trace.data.positions || [];
+      if (!pts.length) return;
+      const style = styleFor(trace);
+      const color = threeColorFromStyle(style.color, 0xffffff);
+      const baseLinewidth = Number(style.linewidth !== undefined ? style.linewidth : 1);
+      const effectiveLw = baseLinewidth * mult;
+      const legendOn = connectionLegendEnabled(traceId);
+      const minLw = 0.05;
+      if (!legendOn || effectiveLw < minLw) {
+        obj.visible = false;
+        return;
+      }
+      const useThick = effectiveLw > 0.35;
+      if (useThick) {
+        const saved = obj.userData || {};
+        disposeLineObject(obj);
+        const group = buildThickLineGroupForTrace(trace, traceId, pts, effectiveLw);
+        group.userData = Object.assign({}, saved);
+        group.userData.baseLinewidth = saved.baseLinewidth !== undefined
+          ? saved.baseLinewidth
+          : baseLinewidth;
+        group.userData.originalPositions = pts.slice();
+        group.userData.thickLines = true;
+        group.userData.lineColor = color.getHex();
+        scene.add(group);
+        objectsById[traceId] = group;
+        group.visible = true;
+        return;
+      }
+      if (!(obj instanceof THREE.LineSegments)) {
+        const saved = obj.userData || {};
+        disposeLineObject(obj);
+        const lines = addLineSegments(trace, color);
+        if (lines) {
+          copyLineTraceUserData(lines, { userData: saved });
+          lines.userData.thickLines = false;
+          objectsById[traceId] = lines;
+          obj = lines;
+        }
+      }
+      if (obj && obj.material) {
+        obj.material.transparent = false;
+        obj.material.opacity = 1;
+        obj.material.depthWrite = true;
+        obj.material.needsUpdate = true;
+      }
+      obj.visible = true;
     }
 
     function isSurfaceMeshId(traceId) {
@@ -4063,8 +4261,12 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       }
       const enabled = !!(screenDoorToggle && screenDoorToggle.checked);
       if (enabled) {
-        const clampedOpacity = Math.max(0.0, Math.min(1.0, mat.opacity !== undefined ? mat.opacity : 1.0));
+        if (obj.userData.screenDoorOpacity === undefined) {
+          obj.userData.screenDoorOpacity = mat.opacity !== undefined ? mat.opacity : 1.0;
+        }
+        const clampedOpacity = Math.max(0.0, Math.min(1.0, obj.userData.screenDoorOpacity));
         mat.userData.screenDoorOpacity = clampedOpacity;
+        mat.opacity = 1.0;
         mat.transparent = false;
         mat.depthWrite = true;
         mat.alphaTest = 0.0;
@@ -4096,21 +4298,16 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
               "    threshold = (x < 1.0) ? 15.0/16.0 : ((x < 2.0) ? 7.0/16.0 : ((x < 3.0) ? 13.0/16.0 : 5.0/16.0));\n" +
               "  }\n" +
               "  if (sdOpacity <= threshold) discard;\n" +
-              "  gl_FragColor.rgb *= sdOpacity;\n" +
               "}\n" +
               "#include <dithering_fragment>"
             );
           }
           mat.userData.screenDoorUniform = shader.uniforms.uScreenDoorOpacity;
         };
-        // Distinct cache key per mesh instance so Three.js never reuses one compiled
-        // program for multiple segmentation surfaces. Shared programs would alias
-        // uScreenDoorOpacity and break screen-door + per-mesh opacity when several
-        // surfaces exist (e.g. regions + PBC + pocket types).
-        const screenDoorMeshKey = (obj && obj.uuid) ? String(obj.uuid) : String(mat.uuid || "");
         mat.customProgramCacheKey = function() {
           const orig = mat.userData.screenDoorOriginalProgramKey;
           const base = (typeof orig === "function") ? orig.call(this) : "";
+          const screenDoorMeshKey = (obj && obj.uuid) ? String(obj.uuid) : String(mat.uuid || "");
           return base + "|screenDoorV3|" + screenDoorMeshKey;
         };
         if (!mat.userData.screenDoorEnabled) mat.needsUpdate = true;
@@ -4119,6 +4316,9 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           mat.userData.screenDoorUniform.value = clampedOpacity;
         }
       } else {
+        if (obj.userData.screenDoorOpacity !== undefined) {
+          mat.opacity = obj.userData.screenDoorOpacity;
+        }
         mat.transparent = mat.opacity < 1.0;
         mat.depthWrite = mat.opacity >= 0.999;
         mat.alphaTest = 0.0;
@@ -4182,15 +4382,13 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           depthWrite: isOpaque,
         });
       }
-      // Apply style color when no per-vertex colors (e.g. aromatic highlights)
-      if (!hasColors && style.color !== undefined) {
-        mat.color.copy(threeColorFromStyle(style.color, 0xffffff));
-      }
       const mesh = new THREE.Mesh(geo, mat);
       mesh.name = trace.id;
       mesh.userData.originalSide = mat.side;
-      mesh.userData.originalOpacity = mat.opacity;
-      if (isSurfaceMeshId(trace.id)) applySurfaceScreenDoorForObject(mesh);
+      if (isSurfaceMeshId(trace.id)) {
+        mesh.userData.screenDoorOpacity = opacity;
+        applySurfaceScreenDoorForObject(mesh);
+      }
       scene.add(mesh);
       objectsById[trace.id] = mesh;
       return mesh;
@@ -4199,11 +4397,29 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     function addLineSegments(trace, colorOverride) {
       const pts = trace.data.positions || [];
       if (!pts.length) { console.warn("Skipping empty line trace:", trace.id); return null; }
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
       const style = styleFor(trace);
       const raw = colorOverride !== undefined ? colorOverride : (style.color !== undefined ? style.color : 0xffffff);
       const color = threeColorFromStyle(raw, 0xffffff);
+      const baseLinewidth = Number(style.linewidth !== undefined ? style.linewidth : 1);
+      const effectiveLw = effectiveLineWidthForTrace(trace);
+      if (effectiveLw > 0.35) {
+        const group = buildThickLineGroupForTrace(trace, trace.id, pts, effectiveLw);
+        group.userData.originalPositions = pts.slice();
+        group.userData.baseLinewidth = baseLinewidth;
+        group.userData.thickLines = true;
+        if (trace.data.segment_window_radii) {
+          group.userData.segmentWindowRadii = trace.data.segment_window_radii;
+          group.userData.originalHover = trace.hover ? trace.hover.slice() : [];
+          group.userData.activeHover = group.userData.originalHover.slice();
+          group.userData.windowFilterKind = "connection_lines";
+        }
+        scene.add(group);
+        objectsById[trace.id] = group;
+        if (trace.visible === false) group.visible = false;
+        return group;
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
       let mat;
       if (style.dashSize !== undefined) {
         mat = new THREE.LineDashedMaterial({
@@ -4225,8 +4441,10 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       if (style.dashSize !== undefined) lines.computeLineDistances();
       lines.name = trace.id;
       lines.userData.originalOpacity = mat.opacity !== undefined ? mat.opacity : 1.0;
+      lines.userData.originalPositions = pts.slice();
+      lines.userData.baseLinewidth = baseLinewidth;
+      lines.userData.thickLines = false;
       if (trace.data.segment_window_radii) {
-        lines.userData.originalPositions = pts.slice();
         lines.userData.segmentWindowRadii = trace.data.segment_window_radii;
         lines.userData.originalHover = trace.hover ? trace.hover.slice() : [];
         lines.userData.activeHover = lines.userData.originalHover.slice();
@@ -4234,6 +4452,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       }
       scene.add(lines);
       objectsById[trace.id] = lines;
+      if (trace.visible === false) lines.visible = false;
       return lines;
     }
 
@@ -4247,7 +4466,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       }
       const style = styleFor(trace);
       const baseSize = (sizeOverride !== undefined ? sizeOverride : pointsBaseSize(trace)) * 1.3;
-      const size = baseSize * pointSizeMult * (isOrtho ? 2.0 : 1.0);
+      const size = baseSize * pointSizeMultFor(trace.id) * (isOrtho ? 2.0 : 1.0);
       const sym = style.symbol || "circle";
       const tex = spriteTextures[sym] || spriteTextures["circle"];
       const mat = new THREE.PointsMaterial({
@@ -4259,12 +4478,6 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         opacity: 0.95,
       });
       mat.userData.baseSize = baseSize;
-      // Support style.depthTest (default true; set false for framework scatter).
-      // Store original so ortho toggle does not stomp it.
-      if (style.depthTest !== undefined) {
-        mat.depthTest = !!style.depthTest;
-        mat.userData.forceDepthTest = !!style.depthTest;
-      }
       if (colorOverride !== undefined && (!trace.data.colors || !trace.data.colors.length)) {
         mat.color.copy(threeColorFromStyle(colorOverride, 0xffffff));
       } else if (!trace.data.colors || !trace.data.colors.length) {
@@ -4272,12 +4485,12 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       }
       const points = new THREE.Points(geo, mat);
       points.name = trace.id;
-      if (trace.data.window_radii) {
-        points.userData.originalPositions = pts.slice();
-        points.userData.windowRadii = trace.data.window_radii;
+      points.userData.originalPositions = pts.slice();
+      if (trace.data.window_radii && trace.data.window_radii.length) {
+        points.userData.windowRadii = trace.data.window_radii.slice();
         points.userData.originalHover = trace.hover ? trace.hover.slice() : [];
         points.userData.activeHover = points.userData.originalHover.slice();
-        points.userData.windowFilterKind = "window_points";
+        points.userData.windowFilterKind = "windows";
       }
       scene.add(points);
       objectsById[trace.id] = points;
@@ -4312,8 +4525,6 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const mesh = new THREE.InstancedMesh(geo, mat, n);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       if (mesh.instanceColor) mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
-
-      // Populate instance transforms (position + scale per atom)
       const radii = trace.data.radii || [];
       const colors = trace.data.colors || [];
       const dummy = new THREE.Object3D();
@@ -4332,7 +4543,6 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       }
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-
       mesh.name = trace.id;
       mesh.userData.originalOpacity = mat.opacity;
       scene.add(mesh);
@@ -4347,7 +4557,6 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const colors = trace.data.colors || [];
       const radius = trace.data.radius || 0.08;
       const style = styleFor(trace);
-      // Unit cylinder: height 1 along Y, centered at origin
       const geo = new THREE.CylinderGeometry(1.0, 1.0, 1.0, 10);
       const hasColors = colors.length >= 3;
       const col = hasColors ? new THREE.Color(1, 1, 1) : new THREE.Color(0x808080);
@@ -4364,13 +4573,11 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const mesh = new THREE.InstancedMesh(geo, mat, n);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       if (mesh.instanceColor) mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
-
       const _up = new THREE.Vector3(0, 1, 0);
       const _dir = new THREE.Vector3();
       const _mid = new THREE.Vector3();
       const _quat = new THREE.Quaternion();
       const dummy = new THREE.Object3D();
-
       for (let b = 0; b < n; b++) {
         const sx = starts[b * 3], sy = starts[b * 3 + 1], sz = starts[b * 3 + 2];
         const ex = ends[b * 3], ey = ends[b * 3 + 1], ez = ends[b * 3 + 2];
@@ -4397,127 +4604,24 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       return mesh;
     }
 
-
-    const _ringFillGeoCache = {};
-    function makeRingFillGeometry(sides) {
-      if (_ringFillGeoCache[sides]) return _ringFillGeoCache[sides];
-      const verts = [];
-      const indices = [];
-      for (let i = 0; i < sides; i++) {
-        const a = 2 * Math.PI * i / sides;
-        verts.push(Math.cos(a), Math.sin(a), 0);
-      }
-      verts.push(0, 0, 0);
-      const centerIdx = sides;
-      for (let i = 0; i < sides; i++) {
-        indices.push(centerIdx, i, (i + 1) % sides);
-      }
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
-      geo.setIndex(indices);
-      geo.computeVertexNormals();
-      _ringFillGeoCache[sides] = geo;
-      return geo;
-    }
-
-    const _zUpRing = new THREE.Vector3(0, 0, 1);
-    const _ringNormal = new THREE.Vector3();
-    const _ringQuat = new THREE.Quaternion();
-    const _ringDummy = new THREE.Object3D();
-
-    function orientRingInstance(dummy, cx, cy, cz, nx, ny, nz, scale) {
-      _ringNormal.set(nx, ny, nz);
-      if (_ringNormal.lengthSq() < 1e-16) _ringNormal.set(0, 0, 1);
-      else _ringNormal.normalize();
-      _ringQuat.setFromUnitVectors(_zUpRing, _ringNormal);
-      dummy.position.set(cx, cy, cz);
-      dummy.quaternion.copy(_ringQuat);
-      dummy.scale.set(scale, scale, scale);
-      dummy.updateMatrix();
-    }
-
-    function addInstancedRingOutlines(trace) {
-      const n = trace.data.n_rings || 0;
-      if (!n) { console.warn("Skipping empty instanced ring outlines:", trace.id); return null; }
-      const centers = trace.data.centers || [];
-      const normals = trace.data.normals || [];
-      const innerRadii = trace.data.inner_radii || [];
-      const radialSeg = trace.data.radial_segments || 16;
-      const style = styleFor(trace);
-      const geo = new THREE.TorusGeometry(1.0, 0.05, 8, radialSeg);
-      const mat = new THREE.MeshPhongMaterial({
-        color: threeColorFromStyle(style.color !== undefined ? style.color : 0xffffff, 0xffffff),
-        shininess: style.shininess !== undefined ? style.shininess : 10,
-        specular: style.specular !== undefined ? style.specular : 0x151515,
-      });
-      if (style.opacity !== undefined) {
-        mat.transparent = style.opacity < 1.0;
-        mat.opacity = style.opacity;
-      }
-      const mesh = new THREE.InstancedMesh(geo, mat, n);
-      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      for (let i = 0; i < n; i++) {
-        const r = innerRadii[i] || 1.0;
-        orientRingInstance(
-          _ringDummy,
-          centers[i * 3], centers[i * 3 + 1], centers[i * 3 + 2],
-          normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2],
-          r
-        );
-        mesh.setMatrixAt(i, _ringDummy.matrix);
-      }
-      mesh.instanceMatrix.needsUpdate = true;
-      mesh.name = trace.id;
-      mesh.userData.originalOpacity = mat.opacity !== undefined ? mat.opacity : 1.0;
-      scene.add(mesh);
-      objectsById[trace.id] = mesh;
-      return mesh;
-    }
-
-    function addInstancedRingFills(trace) {
-      const n = trace.data.n_instances || 0;
-      const sides = trace.data.sides || 6;
-      if (!n) { console.warn("Skipping empty instanced ring fills:", trace.id); return null; }
-      const centers = trace.data.centers || [];
-      const normals = trace.data.normals || [];
-      const scales = trace.data.scales || [];
-      const style = styleFor(trace);
-      const geo = makeRingFillGeometry(sides);
-      const opacity = style.opacity !== undefined ? style.opacity : 0.3;
-      const isOpaque = opacity >= 1.0;
-      const mat = new THREE.MeshStandardMaterial({
-        color: threeColorFromStyle(style.color, 0x3399ee),
-        transparent: !isOpaque,
-        opacity: opacity,
-        roughness: style.roughness !== undefined ? style.roughness : 0.38,
-        metalness: style.metalness !== undefined ? style.metalness : 0.0,
-        side: style.side === "FrontSide" ? THREE.FrontSide : THREE.DoubleSide,
-        depthWrite: isOpaque,
-      });
-      const mesh = new THREE.InstancedMesh(geo, mat, n);
-      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      for (let i = 0; i < n; i++) {
-        const s = scales[i] || 1.0;
-        orientRingInstance(
-          _ringDummy,
-          centers[i * 3], centers[i * 3 + 1], centers[i * 3 + 2],
-          normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2],
-          s
-        );
-        mesh.setMatrixAt(i, _ringDummy.matrix);
-      }
-      mesh.instanceMatrix.needsUpdate = true;
-      mesh.name = trace.id;
-      mesh.userData.originalSide = mat.side;
-      mesh.userData.originalOpacity = mat.opacity;
-      scene.add(mesh);
-      objectsById[trace.id] = mesh;
-      return mesh;
-    }
-
     function addUnitCellLines(trace) {
+      // WebGL ignores LineBasicMaterial.linewidth (always ~1px). For linewidth > 1,
+      // draw cell edges as thin cylinders so thickness is visible in exports.
       const st = styleFor(trace);
       const c = st.color !== undefined ? st.color : 0xffa500;
+      const pts = trace.data.positions || [];
+      if (!pts.length) { console.warn("Skipping empty cell trace:", trace.id); return null; }
+      const effectiveLw = effectiveLineWidthForTrace(trace);
+      if (effectiveLw > 0.35) {
+        const color = threeColorFromStyle(c, 0xffa500);
+        const group = createThickLineGroup(trace.id, pts, color, thickLineRadius(effectiveLw));
+        group.userData.originalPositions = pts.slice();
+        group.userData.baseLinewidth = Number(st.linewidth !== undefined ? st.linewidth : 1);
+        group.userData.thickLines = true;
+        scene.add(group);
+        objectsById[trace.id] = group;
+        return group;
+      }
       return addLineSegments(trace, c);
     }
 
@@ -4607,45 +4711,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       else if (trace.type === "instanced_cylinders") {
         addInstancedCylinders(trace);
       }
-      else if (trace.type === "instanced_ring_outlines") {
-        addInstancedRingOutlines(trace);
-      }
-      else if (trace.type === "instanced_ring_fills") {
-        addInstancedRingFills(trace);
-      }
     });
-
-    // ---- Lazy surface loading ----
-    // When surfaces are stored in a separate sidecar file, fetch and load them
-    // after the initial scene is rendered (framework, cell, maxima appear instantly).
-    if (DATA.sidecar_surfaces) {
-      const surfCount = staticTraces.filter(t => t.data && t.data.__sidecar__).length;
-      if (surfCount > 0) {
-        const statusEl = document.getElementById("status");
-        if (statusEl) statusEl.textContent = "Loading surfaces…";
-        fetch(DATA.sidecar_surfaces)
-          .then(r => r.json())
-          .then(surfaceData => {
-            staticTraces.forEach(trace => {
-              if (trace.data && trace.data.__sidecar__ && surfaceData[trace.data.id]) {
-                trace.data = surfaceData[trace.data.id];
-                _unpackBinaryArrays({traces: [trace]});
-                const obj = objectsById[trace.id];
-                if (obj && trace.type === "mesh") {
-                  replaceMeshGeometry(obj, trace);
-                }
-              }
-            });
-            if (statusEl) statusEl.textContent = "";
-            // Refresh legend/surface controls after lazy load
-            applySurfaceScreenDoorAll();
-          })
-          .catch(e => {
-            console.warn("Lazy surface load failed:", e);
-            if (statusEl) statusEl.textContent = "";
-          });
-      }
-    }
 
     // Traces that exist only on animation frames (e.g. flexible framework) — create once from frame 0
     const firstFrameTraces = (getFrameCount() > 0 && getFrame(0) && getFrame(0).traces) ? getFrame(0).traces : [];
@@ -4655,9 +4721,11 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       else if (trace.type === "line_segments") addLineSegments(trace);
       else if (trace.type === "points") addPoints(trace);
       else if (trace.type === "unit_cell_lines") addUnitCellLines(trace);
+      else if (trace.type === "instanced_spheres") {
+        if (trace.id === "guests" || trace.id.startsWith("guests_")) return;
+        addInstancedSpheres(trace, 14, 14);
+      }
       else if (trace.type === "instanced_cylinders") addInstancedCylinders(trace);
-      else if (trace.type === "instanced_ring_outlines") addInstancedRingOutlines(trace);
-      else if (trace.type === "instanced_ring_fills") addInstancedRingFills(trace);
     });
 
     // Guest instanced meshes for animation (supports multi-component ids like guests_CO2)
@@ -4696,92 +4764,296 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       }
     });
 
-    function setVisibleIfPresent(labelId, predicate) {
-      const el = document.getElementById(labelId);
-      if (!el) return;
-      el.style.display = predicate ? "" : "none";
+    function ensureTraceObject(traceId) {
+      if (objectsById[traceId]) return objectsById[traceId];
+      const trace = findTraceById(traceId);
+      if (!trace) return null;
+      if (trace.type === "line_segments") return addLineSegments(trace);
+      if (trace.type === "points") return addPoints(trace);
+      if (trace.type === "unit_cell_lines") return addUnitCellLines(trace);
+      if (trace.type === "mesh") return addMesh(trace);
+      return null;
     }
-    function hasStaticOrFrameTrace(pred) {
-      if (staticTraces.some(pred)) return true;
-      if (!DATA.sidecar) {
-        return FRAMES.some(fr => (fr && fr.traces ? fr.traces : []).some(pred));
-      }
-      const first = getFrame(0);
-      return first && first.traces ? first.traces.some(pred) : false;
-    }
-    setVisibleIfPresent("labelShowCell", hasStaticOrFrameTrace(t => t.id === "cell"));
-    setVisibleIfPresent("labelShowFramework", hasStaticOrFrameTrace(t => t.id === "framework" || t.id === "framework_atoms" || t.id === "framework_bonds"));
-    setVisibleIfPresent("labelShowSurface", hasStaticOrFrameTrace(t => t.id === "surface"));
-    setVisibleIfPresent("labelShowGuests", hasStaticOrFrameTrace(t => t.id === "guests" || (t.id && t.id.startsWith("guests_"))));
-    setVisibleIfPresent("labelShowGuestBonds", hasStaticOrFrameTrace(t => t.id && t.id.startsWith("guestbonds_")));
-    setVisibleIfPresent("labelShowWindows", hasStaticOrFrameTrace(t => t.id === "windows_internal"));
-    setVisibleIfPresent("labelShowPeriodicWindows", hasStaticOrFrameTrace(t => t.id === "windows_periodic"));
-    setVisibleIfPresent("labelShowInternalConnections", hasStaticOrFrameTrace(t => t.id === "connections_internal" || t.id === "connections_internal_nodes" || t.id === "maxima_internal"));
-    setVisibleIfPresent("labelShowPeriodicConnections", hasStaticOrFrameTrace(t => t.id === "connections_periodic" || t.id === "connections_periodic_nodes" || t.id === "maxima_outside"));
-    setVisibleIfPresent("labelWindowMinThreshold", hasStaticOrFrameTrace(t => t.id === "connections_internal" || t.id === "connections_periodic" || t.id === "windows_internal" || t.id === "windows_periodic"));
 
-    // Populate dynamic group checkboxes from DATA.groups
-    const groupChecksDiv = document.getElementById("groupChecks");
-    const groups = DATA.groups || {};
-    const mergedGroups = Object.assign({}, groups);
-    const groupedTraceIds = new Set();
-    Object.values(groups).forEach(function(g) {
-      (g && g.traces ? g.traces : []).forEach(function(tid) { groupedTraceIds.add(tid); });
-    });
-    // Fallback: if surface traces exist but caller did not declare groups,
-    // auto-register legend entries so legend and mesh-opacity controls stay in sync.
-    [
-      ["surface", "Surface"],
-      ["surface_regions_raw", "Regions (raw)"],
-      ["surface_pbc", "Surface (PBC)"],
-      ["surface_regions_pbc", "Regions (PBC merged)"],
-      ["surface_pocket", "Pocket types"],
-      ["surface_regions_cluster", "Pocket types (cluster)"],
-    ].forEach(function(defn) {
-      const tid = defn[0];
-      const label = defn[1];
-      if (objectsById[tid] && !groupedTraceIds.has(tid)) {
-        mergedGroups["__auto_" + tid] = { traces: [tid], label: label };
+    function ensurePoreGraphNodesDrawOnTop() {
+      ["maxima_internal", "maxima_outside", "maxima_pbc"].forEach(function(tid) {
+        const obj = objectsById[tid];
+        if (obj && obj.material) {
+          obj.material.depthWrite = false;
+          obj.material.needsUpdate = true;
+        }
+      });
+      ["connections_internal_nodes", "connections_periodic_nodes"].forEach(function(tid) {
+        const obj = objectsById[tid];
+        if (!obj) return;
+        obj.renderOrder = 2;
+        scene.remove(obj);
+        scene.add(obj);
+      });
+    }
+    ensurePoreGraphNodesDrawOnTop();
+
+    scene.userData.fwLegendEnabled = true;
+
+    // Schema-driven legend: one foldable section per category, sliders under each entry.
+    const TRACE_LEGEND_SECTIONS = [
+      {
+        key: "framework",
+        label: "Framework",
+        defaultOpen: true,
+        entries: [
+          { id: "cell", label: "Unit cell", traceIds: ["cell"], control: "lineWidth", lineMin: 0.05 },
+          { id: "framework", label: "Framework", traceIds: ["framework_atoms", "framework_bonds", "framework", "framework_stick", "framework_spacefill"], control: "opacity", fwMerge: true },
+        ],
+      },
+      {
+        key: "surfaces",
+        label: "Segmentation surfaces",
+        defaultOpen: true,
+        entries: [
+          { id: "surface", label: "Segmentation surface", traceIds: ["surface", "surface_regions_raw"], control: "opacity" },
+          { id: "surface_pbc", label: "Segmentation (PBC)", traceIds: ["surface_regions_pbc", "surface_pbc"], control: "opacity", pickFirst: true },
+          { id: "surface_pocket", label: "Pocket types", traceIds: ["surface_regions_cluster", "surface_pocket"], control: "opacity", pickFirst: true },
+        ],
+      },
+      {
+        key: "maxima",
+        label: "Maxima",
+        defaultOpen: true,
+        entries: [
+          { id: "maxima_internal", label: "Local maxima", traceIds: ["maxima_internal"], control: "pointSize" },
+          { id: "maxima_pbc", label: "Maxima (PBC reps)", traceIds: ["maxima_pbc"], control: "pointSize", defaultOff: true },
+          { id: "maxima_outside", label: "Maxima (periodic)", traceIds: ["maxima_outside"], control: "pointSize", defaultOff: true },
+        ],
+      },
+      {
+        key: "windows",
+        label: "Windows",
+        defaultOpen: true,
+        entries: [
+          { id: "windows_internal", label: "Internal windows", traceIds: ["windows_internal"], control: "pointSize" },
+          { id: "windows_periodic", label: "Periodic windows", traceIds: ["windows_periodic"], control: "pointSize", defaultOff: true },
+        ],
+      },
+      {
+        key: "pore_graph",
+        label: "Pore graph",
+        defaultOpen: true,
+        entries: [
+          { id: "connections_internal_nodes", label: "Internal nodes", traceIds: ["connections_internal_nodes"], control: "pointSize" },
+          { id: "connections_periodic_nodes", label: "Periodic nodes", traceIds: ["connections_periodic_nodes"], control: "pointSize", defaultOff: true },
+          { id: "connections_internal", label: "Internal connections", traceIds: ["connections_internal"], control: "lineWidth", lineMin: 0.05 },
+          { id: "connections_periodic", label: "Periodic connections", traceIds: ["connections_periodic"], control: "lineWidth", lineMin: 0.05, defaultOff: true },
+        ],
+      },
+      {
+        key: "adsorbates",
+        label: "Adsorbates",
+        defaultOpen: false,
+        entries: [
+          { id: "guests", label: "Adsorbates", traceIds: ["guests"], control: "opacity", guestPrefix: true },
+          { id: "guestbonds", label: "Adsorbate bonds", traceIds: [], control: "opacity", guestBondPrefix: true },
+        ],
+      },
+    ];
+    const FW_MERGE_IDS = ["framework", "framework_stick", "framework_spacefill", "framework_atoms", "framework_bonds", "framework_stick_atoms", "framework_stick_bonds", "aromatic_rings", "aromatic_highlights", "aromatic_highlights_hex", "aromatic_highlights_pent"];
+    function resolveLegendTraceIds(entry) {
+      if (entry.fwMerge) {
+        return FW_MERGE_IDS.filter(function(tid) { return !!objectsById[tid]; });
       }
-    });
-    const seenGroupKeys = new Set();
-    Object.entries(mergedGroups).forEach(function(entry) {
-      const groupId = entry[0];
-      const group = entry[1];
-      const traces = group.traces || [];
-      if (!traces.some(function(tid) { return objectsById[tid]; })) return;
-      const groupKey = (group.label || groupId) + "::" + traces.join(",");
-      if (seenGroupKeys.has(groupKey)) return;
-      seenGroupKeys.add(groupKey);
+      if (entry.guestPrefix) {
+        return Object.keys(objectsById).filter(function(tid) {
+          return tid === "guests" || (tid && tid.indexOf("guests_") === 0);
+        });
+      }
+      if (entry.guestBondPrefix) {
+        return Object.keys(objectsById).filter(function(tid) {
+          return tid && tid.indexOf("guestbonds_") === 0;
+        });
+      }
+      if (entry.pickFirst) {
+        for (let i = 0; i < entry.traceIds.length; i++) {
+          if (objectsById[entry.traceIds[i]]) return [entry.traceIds[i]];
+        }
+        return [];
+      }
+      return entry.traceIds.filter(function(tid) {
+        return !!objectsById[tid] || !!findTraceById(tid);
+      });
+    }
+    function applyOpacityToTraceIds(traceIds, val, fwMerge) {
+      const ids = fwMerge ? FW_MERGE_IDS.filter(function(tid) { return objectsById[tid]; }) : traceIds.slice();
+      ids.forEach(function(tid) {
+        const obj = objectsById[tid];
+        if (!obj || !obj.material) return;
+        const isFw = FW_MERGE_IDS.indexOf(tid) >= 0;
+        const hiddenByOpacity = val <= 0.001;
+        if (obj.userData && obj.userData.originalCastShadow === undefined) {
+          obj.userData.originalCastShadow = obj.castShadow;
+          obj.userData.originalReceiveShadow = obj.receiveShadow;
+        }
+        if (obj.userData && obj.userData.originalOpacity === undefined) {
+          obj.userData.originalOpacity = obj.material.opacity;
+        }
+        const baseOp = obj.userData.originalOpacity || 1.0;
+        const opaqueEnough = val >= 0.999;
+        const isSurface = isSurfaceMeshId(tid);
+        const screenDoorOn = !!(screenDoorToggle && screenDoorToggle.checked && isSurface);
+        if (screenDoorOn) {
+          obj.userData.screenDoorOpacity = val;
+          obj.visible = !hiddenByOpacity;
+          obj.castShadow = hiddenByOpacity ? false : !!(obj.userData && obj.userData.originalCastShadow);
+          obj.receiveShadow = hiddenByOpacity ? false : !!(obj.userData && obj.userData.originalReceiveShadow);
+          obj.material.opacity = 1.0;
+          obj.material.transparent = false;
+          obj.material.depthWrite = true;
+          if (obj.userData && obj.userData.originalSide !== undefined) {
+            obj.material.side = obj.userData.originalSide;
+          }
+          applySurfaceScreenDoorForObject(obj);
+          return;
+        }
+        if (isFw) {
+          const scaledOpacity = val * baseOp;
+          obj.material.opacity = scaledOpacity;
+          obj.material.transparent = scaledOpacity < 1.0;
+          obj.material.depthWrite = true;
+          obj.material.depthTest = true;
+          obj.material.side = THREE.FrontSide;
+          obj.visible = val > 0.001;
+          obj.castShadow = val > 0.999;
+          obj.receiveShadow = val > 0.999;
+        } else {
+          obj.visible = !hiddenByOpacity;
+          obj.castShadow = hiddenByOpacity ? false : !!(obj.userData && obj.userData.originalCastShadow);
+          obj.receiveShadow = hiddenByOpacity ? false : !!(obj.userData && obj.userData.originalReceiveShadow);
+          obj.material.opacity = val;
+          obj.material.transparent = val < 1.0;
+          obj.material.depthWrite = opaqueEnough;
+        }
+        if (obj.userData && obj.userData.originalSide !== undefined) {
+          obj.material.side = obj.userData.originalSide;
+        }
+        if (isSurfaceMeshId(tid)) applySurfaceScreenDoorForObject(obj);
+        obj.material.needsUpdate = true;
+      });
+      if (fwMerge) updateFrameworkVisibility();
+    }
+    function appendLegendControlSlider(parent, entry, traceIds, legendCb) {
+      const primaryId = traceIds[0];
+      const trace = findTraceById(primaryId);
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:4px;margin:2px 0 4px 18px;";
+      const slider = document.createElement("input");
+      slider.type = "range";
+      slider.style.cssText = "flex:1;";
+      if (entry.control === "opacity") {
+        slider.min = "0"; slider.max = "1"; slider.step = "0.05";
+        const st = trace ? styleFor(trace) : {};
+        slider.value = String((st && st.opacity !== undefined) ? st.opacity : 1.0);
+        slider.addEventListener("input", function() {
+          applyOpacityToTraceIds(traceIds, parseFloat(slider.value), !!entry.fwMerge);
+        });
+      } else if (entry.control === "pointSize") {
+        slider.min = "0.25"; slider.max = "4.5"; slider.step = "0.1"; slider.value = "1";
+        slider.addEventListener("input", function() {
+          traceIds.forEach(function(tid) {
+            pointSizeMultByTrace[tid] = parseFloat(slider.value) || 1.0;
+            const obj = objectsById[tid];
+            if (obj && obj.material && obj.material.isPointsMaterial) {
+              const base = obj.material.userData && obj.material.userData.baseSize
+                ? obj.material.userData.baseSize : obj.material.size;
+              applyPointSize(obj, base);
+            }
+          });
+        });
+      } else if (entry.control === "lineWidth") {
+        slider.min = entry.lineMin || "0.05"; slider.max = "4"; slider.step = "0.05"; slider.value = "1";
+        slider.addEventListener("input", function() {
+          if (legendCb && !legendCb.checked) return;
+          const mult = parseFloat(slider.value) || 1.0;
+          traceIds.forEach(function(tid) {
+            lineWidthMultByTrace[tid] = mult;
+            if (edgeFilterThreshold() !== null) {
+              rebuildLineSegmentsForThreshold(tid);
+            } else {
+              applyLineWidth(tid, mult);
+            }
+          });
+        });
+      }
+      row.appendChild(slider);
+      parent.appendChild(row);
+    }
+    function appendLegendEntry(parent, entry) {
+      const traceIds = resolveLegendTraceIds(entry);
+      if (!traceIds.length) return;
+      const wrap = document.createElement("div");
+      wrap.style.cssText = "margin:2px 0 4px 0;";
       const label = document.createElement("label");
+      label.style.cssText = "display:block;font-size:10px;margin-left:8px;";
       const cb = document.createElement("input");
       cb.type = "checkbox";
-      const startOff = !!group.default_off;
+      const startOff = !!entry.defaultOff;
       cb.checked = !startOff;
+      traceIds.forEach(function(tid) {
+        legendEnabledByTrace[tid] = !startOff;
+      });
       if (startOff) {
-        (group.traces || []).forEach(function(tid) {
+        traceIds.forEach(function(tid) {
           const obj = objectsById[tid];
           if (obj) obj.visible = false;
         });
       }
       cb.addEventListener("change", function() {
-        (group.traces || []).forEach(function(tid) {
-          const obj = objectsById[tid];
-          if (obj) obj.visible = cb.checked;
-        });
+        if (entry.fwMerge) {
+          scene.userData.fwLegendEnabled = cb.checked;
+          updateFrameworkVisibility();
+        } else if (entry.id === "connections_internal" || entry.id === "connections_periodic") {
+          traceIds.forEach(function(tid) {
+            legendEnabledByTrace[tid] = cb.checked;
+          });
+          applyWindowThresholdFilter();
+        } else {
+          traceIds.forEach(function(tid) {
+            legendEnabledByTrace[tid] = cb.checked;
+            let obj = objectsById[tid];
+            if (cb.checked && !obj) obj = ensureTraceObject(tid);
+            if (obj) obj.visible = cb.checked;
+          });
+          if (cb.checked) ensurePoreGraphNodesDrawOnTop();
+          if (cb.checked && entry.control === "lineWidth") {
+            const slider = wrap.querySelector('input[type="range"]');
+            if (slider) {
+              traceIds.forEach(function(tid) {
+                const mult = parseFloat(slider.value) || 1.0;
+                lineWidthMultByTrace[tid] = mult;
+                if (edgeFilterThreshold() !== null) {
+                  rebuildLineSegmentsForThreshold(tid);
+                } else {
+                  applyLineWidth(tid, mult);
+                }
+              });
+            }
+          }
+        }
+        if (entry.id === "cell") {
+          scene.children.forEach(function(c) {
+            if (c.name && c.name.startsWith("axisLabel_")) c.visible = cb.checked;
+          });
+        }
         updateCellCopyVisibility();
         updateSurfaceCellVisibility();
         updateFrameworkCellVisibility();
       });
       label.appendChild(cb);
-      label.appendChild(document.createTextNode(" " + (group.label || groupId)));
-      // Isolate button — shows only this group, hides everything else
+      label.appendChild(document.createTextNode(" " + entry.label));
       const isoBtn = document.createElement("button");
       isoBtn.type = "button";
       isoBtn.textContent = "⊕";
-      isoBtn.title = "Isolate: show only this, hide everything else. Click again to restore.";
+      isoBtn.title = "Isolate this trace";
       isoBtn.style.cssText = "font-size:10px;padding:0 3px;margin-left:4px;cursor:pointer;background:none;border:1px solid #666;border-radius:2px;color:inherit;";
-      (function(gid, traces) {
+      (function(idsRef) {
         var isoActive = false;
         var savedVisibility = null;
         function deactivateIsolate() {
@@ -4795,46 +5067,166 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           }
           isoActive = false;
           isoBtn.textContent = "⊕";
+          isoBtn.classList.remove("isolateActive");
           updateCellCopyVisibility();
           updateSurfaceCellVisibility();
           updateFrameworkCellVisibility();
         }
         isoBtn.addEventListener("click", function(e) {
           e.stopPropagation();
-          if (isoActive) {
-            deactivateIsolate();
-          } else {
-            // Deactivate any other active isolate button
-            var others = document.querySelectorAll("#groupChecks button.isolateActive");
-            others.forEach(function(b) { b.click(); });
-            // Save current visibility of all objects
-            savedVisibility = {};
-            Object.entries(objectsById).forEach(function(e2) {
-              if (e2[1]) savedVisibility[e2[0]] = e2[1].visible;
-            });
-            // Hide everything
-            Object.values(objectsById).forEach(function(obj) {
-              if (obj) obj.visible = false;
-            });
-            // Show only this group
-            (traces || []).forEach(function(tid) {
-              var obj = objectsById[tid];
-              if (obj) obj.visible = true;
-            });
-            isoActive = true;
-            isoBtn.textContent = "⊖";
-            isoBtn.classList.add("isolateActive");
-            updateCellCopyVisibility();
-            updateSurfaceCellVisibility();
-            updateFrameworkCellVisibility();
-          }
+          if (isoActive) { deactivateIsolate(); return; }
+          document.querySelectorAll("#groupChecks button.isolateActive").forEach(function(b) {
+            if (b !== isoBtn && b._deactivate) b._deactivate();
+          });
+          savedVisibility = {};
+          Object.entries(objectsById).forEach(function(e2) {
+            if (e2[1]) savedVisibility[e2[0]] = e2[1].visible;
+          });
+          Object.values(objectsById).forEach(function(obj) { if (obj) obj.visible = false; });
+          idsRef.forEach(function(tid) {
+            var obj = objectsById[tid];
+            if (obj) obj.visible = true;
+          });
+          isoActive = true;
+          isoBtn.textContent = "⊖";
+          isoBtn.classList.add("isolateActive");
+          updateCellCopyVisibility();
+          updateSurfaceCellVisibility();
+          updateFrameworkCellVisibility();
         });
-        // Store deactivate ref for cross-button coordination
         isoBtn._deactivate = deactivateIsolate;
-      })(groupId, group.traces || []);
+      })(traceIds);
       label.appendChild(isoBtn);
-      groupChecksDiv.appendChild(label);
+      wrap.appendChild(label);
+      if (entry.control) appendLegendControlSlider(wrap, entry, traceIds, cb);
+      parent.appendChild(wrap);
+    }
+    const groupChecksDiv = document.getElementById("groupChecks");
+    const claimedLegendIds = new Set();
+    function appendWindowFilterControls(parent) {
+      const wrap = document.createElement("div");
+      wrap.style.cssText = "margin:4px 0 6px 0;border-top:1px solid rgba(128,128,128,0.35);padding-top:4px;font-size:10px;display:flex;flex-direction:column;gap:3px;";
+      const thrLabel = document.createElement("label");
+      thrLabel.id = "labelWindowMinThreshold";
+      thrLabel.style.cssText = "margin-left:8px;";
+      thrLabel.appendChild(document.createTextNode("Min window (Å): "));
+      const thrInput = document.createElement("input");
+      thrInput.id = "windowMinThreshold";
+      thrInput.type = "number";
+      thrInput.step = "0.05";
+      thrInput.min = "0";
+      thrInput.placeholder = "off";
+      thrInput.style.cssText = "width:52px;vertical-align:middle;";
+      thrInput.title = "Hide windows below this size; optionally hide edges whose max window is below it";
+      thrLabel.appendChild(thrInput);
+      const edgeLabel = document.createElement("label");
+      edgeLabel.id = "labelHideEdgesBelowWindow";
+      edgeLabel.style.cssText = "margin-left:8px;";
+      const edgeCb = document.createElement("input");
+      edgeCb.type = "checkbox";
+      edgeCb.id = "hideEdgesBelowWindow";
+      edgeCb.checked = true;
+      edgeLabel.appendChild(edgeCb);
+      edgeLabel.appendChild(document.createTextNode(" Hide edges with max window below threshold"));
+      wrap.appendChild(thrLabel);
+      wrap.appendChild(edgeLabel);
+      parent.appendChild(wrap);
+      windowMinThresholdInput = thrInput;
+      hideEdgesBelowWindowInput = edgeCb;
+      thrInput.addEventListener("input", applyWindowThresholdFilter);
+      thrInput.addEventListener("change", applyWindowThresholdFilter);
+      edgeCb.addEventListener("change", applyWindowThresholdFilter);
+    }
+    TRACE_LEGEND_SECTIONS.forEach(function(sec) {
+      let sectionHasEntries = false;
+      const sectionWrap = document.createElement("div");
+      sectionWrap.style.cssText = "margin-top:4px;border-top:1px solid rgba(128,128,128,0.35);padding-top:4px;";
+      const body = document.createElement("div");
+      var sectionOpen = !!sec.defaultOpen;
+      const toggleBtn = document.createElement("button");
+      toggleBtn.type = "button";
+      toggleBtn.textContent = sec.label + (sectionOpen ? " \u25B2" : " \u25BC");
+      toggleBtn.style.cssText = "font-size:10px;width:100%;text-align:left;background:none;border:none;color:inherit;cursor:pointer;padding:2px 0;";
+      sec.entries.forEach(function(entry) {
+        const ids = resolveLegendTraceIds(entry);
+        if (!ids.length) return;
+        sectionHasEntries = true;
+        ids.forEach(function(tid) { claimedLegendIds.add(tid); });
+        appendLegendEntry(body, entry);
+      });
+      if (sec.key === "surfaces") {
+        sectionHasEntries = true;
+        const sdWrap = document.createElement("div");
+        sdWrap.style.cssText = "margin:4px 0 6px 8px;font-size:10px;";
+        const sdLabel = document.createElement("label");
+        const sdCb = document.createElement("input");
+        sdCb.type = "checkbox";
+        sdCb.id = "screenDoorToggle";
+        sdCb.checked = screenDoorDefault;
+        sdCb.addEventListener("change", function() {
+          applySurfaceScreenDoorAll();
+        });
+        screenDoorToggle = sdCb;
+        sdLabel.appendChild(sdCb);
+        sdLabel.appendChild(document.createTextNode(" Screen-door transparency"));
+        sdWrap.appendChild(sdLabel);
+        body.appendChild(sdWrap);
+        if (screenDoorDefault) applySurfaceScreenDoorAll();
+      }
+      if (!sectionHasEntries) return;
+      body.style.display = sectionOpen ? "block" : "none";
+      toggleBtn.addEventListener("click", function() {
+        sectionOpen = !sectionOpen;
+        body.style.display = sectionOpen ? "block" : "none";
+        toggleBtn.textContent = sec.label + (sectionOpen ? " \u25B2" : " \u25BC");
+      });
+      sectionWrap.appendChild(toggleBtn);
+      sectionWrap.appendChild(body);
+      groupChecksDiv.appendChild(sectionWrap);
+      if (sec.key === "windows") {
+        appendWindowFilterControls(groupChecksDiv);
+      }
     });
+    ["connections_periodic", "connections_periodic_nodes"].forEach(function(tid) {
+      legendEnabledByTrace[tid] = false;
+      const obj = objectsById[tid];
+      if (obj) obj.visible = false;
+    });
+    // Residual traces (percolation, etc.) in a catch-all section.
+    const otherIds = Object.keys(objectsById).filter(function(tid) {
+      if (!tid || claimedLegendIds.has(tid)) return false;
+      if (tid.indexOf("cell_") === 0 || tid.indexOf("axisLabel_") === 0) return false;
+      return true;
+    });
+    if (otherIds.length) {
+      const sectionWrap = document.createElement("div");
+      sectionWrap.style.cssText = "margin-top:4px;border-top:1px solid rgba(128,128,128,0.35);padding-top:4px;";
+      const body = document.createElement("div");
+      var otherOpen = false;
+      const toggleBtn = document.createElement("button");
+      toggleBtn.type = "button";
+      toggleBtn.textContent = "Other \u25BC";
+      toggleBtn.style.cssText = "font-size:10px;width:100%;text-align:left;background:none;border:none;color:inherit;cursor:pointer;padding:2px 0;";
+      otherIds.forEach(function(tid) {
+        const tr = findTraceById(tid);
+        appendLegendEntry(body, {
+          id: tid,
+          label: (tr && tr.name) ? tr.name : tid,
+          traceIds: [tid],
+          control: (tr && tr.type === "points") ? "pointSize"
+            : ((tr && (tr.type === "line_segments" || tr.type === "unit_cell_lines")) ? "lineWidth" : "opacity"),
+        });
+      });
+      body.style.display = "none";
+      toggleBtn.addEventListener("click", function() {
+        otherOpen = !otherOpen;
+        body.style.display = otherOpen ? "block" : "none";
+        toggleBtn.textContent = "Other " + (otherOpen ? "\u25B2" : "\u25BC");
+      });
+      sectionWrap.appendChild(toggleBtn);
+      sectionWrap.appendChild(body);
+      groupChecksDiv.appendChild(sectionWrap);
+    }
 
     // Fallback: if nothing expanded the bounding box (no objects created),
     // force a minimal scene center so camera doesn't look at NaN.
@@ -4846,10 +5238,10 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     });
     // Also expand by unit cell corners if cell trace exists
     const cellObj = objectsById["cell"];
-    if (cellObj && cellObj.geometry && cellObj.geometry.attributes && cellObj.geometry.attributes.position) {
-      const pos = cellObj.geometry.attributes.position.array;
-      for (let i = 0; i < pos.length; i += 3) {
-        sceneBox.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
+    const cellPosArr = cellPositionsArray(cellObj);
+    if (cellPosArr) {
+      for (let i = 0; i < cellPosArr.length; i += 3) {
+        sceneBox.expandByPoint(new THREE.Vector3(cellPosArr[i], cellPosArr[i+1], cellPosArr[i+2]));
       }
     }
     const sceneCenter = new THREE.Vector3();
@@ -4867,7 +5259,11 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
 
         slider.max = String(Math.max(getFrameCount() - 1, 0));
     metaEl.textContent = `Frames: ${getFrameCount()}`;
-    controls.target.copy(sceneCenter);
+    if ({{camera_explicit}}) {
+      controls.target.set(centerArr[0], centerArr[1], centerArr[2]);
+    } else {
+      controls.target.copy(sceneCenter);
+    }
     controls.update();
 
     // Override default camera to 1.5 * (la, lb, lc) from scene center along (1,1,1)
@@ -4879,8 +5275,8 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       new THREE.Vector3(0, 0, 1),  // c-hat
     ];
     let _camOverridePos = null;
-    if (cellObj && cellObj.geometry && cellObj.geometry.attributes && cellObj.geometry.attributes.position) {
-      const cpos = cellObj.geometry.attributes.position.array;
+    if (cellPosArr && cellPosArr.length >= 18) {
+      const cpos = cellPosArr;
       // Cell wireframe edges encode the lattice vectors directly:
       //   cpos[0..2]  = origin, cpos[3..5]  = a-vector
       //   cpos[6..8]  = origin, cpos[9..11]  = b-vector
@@ -4896,13 +5292,16 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         new THREE.Vector3(cpos[15], cpos[16], cpos[17]).normalize(),
       ];
       _camOverridePos = new THREE.Vector3(1.5 * la, 1.5 * lb, 1.5 * lc);
-      [perspectiveCam, orthoCam].forEach(function(cam) {
-        cam.position.copy(_camOverridePos);
-        cam.lookAt(sceneCenter);
-      });
-      controls.target.copy(sceneCenter);
-      controls.update();
-      updateOrthoFrustum();
+      // Only apply [111]-style default when set_camera was NOT called (explicit=false).
+      if (!{{camera_explicit}}) {
+        [perspectiveCam, orthoCam].forEach(function(cam) {
+          cam.position.copy(_camOverridePos);
+          cam.lookAt(sceneCenter);
+        });
+        controls.target.copy(sceneCenter);
+        controls.update();
+        updateOrthoFrustum();
+      }
       // Dynamic slider max: largest cell dimension / 6 + 1.0 cushion for extra separation
       const maxLen = Math.max(la, lb, lc);
       explodeSlider.max = (maxLen / 6.0 + 1.0).toFixed(2);
@@ -4922,187 +5321,41 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       { ids: ["surface_pbc", "surface_regions_pbc", "maxima_pbc", "cell_pbc"], x: 0, y: 1 },
       { ids: ["surface_pocket", "surface_regions_cluster", "cell_pocket"], x: 0, y: -1 },
     ];
-
-    const _explodeOrig = {};
+    const _explodeOrig = {};  // must be declared before updateFrameworkVisibility() runs
 
     // Create unit-cell copies for exploded view — each group gets its own copy
     let cellCopy = null;
     let cellFramework = null;
     let cellPbc = null;
     let cellPocket = null;
-    if (cellObj && cellObj.geometry) {
-      cellCopy = new THREE.LineSegments(cellObj.geometry.clone(), cellObj.material.clone());
-      cellCopy.name = "cell_copy";
-      cellCopy.visible = false;
-      scene.add(cellCopy);
-      objectsById["cell_copy"] = cellCopy;
-
-      cellFramework = new THREE.LineSegments(cellObj.geometry.clone(), cellObj.material.clone());
-      cellFramework.name = "cell_framework";
-      cellFramework.visible = false;
-      scene.add(cellFramework);
-      objectsById["cell_framework"] = cellFramework;
-
-      cellPbc = new THREE.LineSegments(cellObj.geometry.clone(), cellObj.material.clone());
-      cellPbc.name = "cell_pbc";
-      cellPbc.visible = false;
-      scene.add(cellPbc);
-      objectsById["cell_pbc"] = cellPbc;
-
-      cellPocket = new THREE.LineSegments(cellObj.geometry.clone(), cellObj.material.clone());
-      cellPocket.name = "cell_pocket";
-      cellPocket.visible = false;
-      scene.add(cellPocket);
-      objectsById["cell_pocket"] = cellPocket;
-    }
-
-    // Populate per-mesh opacity controls (skip alt-representation meshes)
-    const meshOpacityContainer = document.getElementById("meshOpacityContainer");
-    if (meshOpacityContainer) {
-      const meshTraces = [];
-      const _opacityTypes = ["mesh", "instanced_spheres", "instanced_cylinders", "instanced_ring_outlines", "instanced_ring_fills"];
-      staticTraces.forEach(t => { if (_opacityTypes.indexOf(t.type) >= 0) meshTraces.push(t); });
-      if (getFrameCount() > 0 && getFrame(0) && getFrame(0).traces) {
-        getFrame(0).traces.forEach(t => {
-          if (_opacityTypes.indexOf(t.type) >= 0 && !meshTraces.some(mt => mt.id === t.id)) meshTraces.push(t);
-        });
+    if (cellObj) {
+      cellCopy = cloneCellOutline(cellObj);
+      if (cellCopy) {
+        cellCopy.name = "cell_copy";
+        cellCopy.visible = false;
+        scene.add(cellCopy);
+        objectsById["cell_copy"] = cellCopy;
       }
-      // IDs of all framework sub-traces that should NOT get individual sliders
-      const fwSubIds = ["framework", "framework_stick", "framework_spacefill", "framework_atoms", "framework_bonds", "framework_stick_atoms", "framework_stick_bonds", "aromatic_rings", "aromatic_highlights", "aromatic_highlights_hex", "aromatic_highlights_pent"];
-      meshTraces.forEach(trace => {
-        // Skip framework sub-traces — they get a single merged slider below
-        if (fwSubIds.indexOf(trace.id) >= 0) return;
-        // Skip percolation cluster meshes — grouped by direction in legend
-        if (trace.id && trace.id.startsWith("percolation_clusters_")) return;
-        const wrapper = document.createElement("div");
-        wrapper.style.cssText = "display:flex;align-items:center;gap:4px;";
-        const label = document.createElement("label");
-        label.style.cssText = "font-size:10px;white-space:nowrap;width:70px;overflow:hidden;text-overflow:ellipsis;";
-        label.textContent = (trace.name || trace.id);
-        const opacitySlider = document.createElement("input");
-        opacitySlider.type = "range";
-        opacitySlider.min = "0";
-        opacitySlider.max = "1";
-        opacitySlider.step = "0.05";
-        const st = styleFor(trace);
-        var initOpacity = (st && st.opacity !== undefined) ? st.opacity : 1.0;
-        opacitySlider.value = initOpacity;
-        opacitySlider.style.cssText = "flex:1;";
-        opacitySlider.dataset.traceId = trace.id;
-        opacitySlider.addEventListener("input", () => {
-          const val = parseFloat(opacitySlider.value);
-          const targetIds = [trace.id];
-          // If this is any framework slider, also update linked traces
-          if (trace.id === "framework" || trace.id === "framework_atoms" || trace.id === "framework_bonds") {
-            targetIds.push("framework_atoms", "framework_bonds", "framework_stick_atoms", "framework_stick_bonds", "aromatic_rings", "aromatic_highlights", "aromatic_highlights_hex", "aromatic_highlights_pent");
-          }
-          targetIds.forEach(tid => {
-            const obj = objectsById[tid];
-            if (obj && obj.material) {
-              var isFw = tid === "framework" || tid === "framework_stick" || tid === "framework_spacefill" || tid === "framework_atoms" || tid === "framework_bonds" || tid === "framework_stick_atoms" || tid === "framework_stick_bonds" || tid === "aromatic_rings" || tid === "aromatic_highlights" || tid === "aromatic_highlights_hex" || tid === "aromatic_highlights_pent";
-              var hiddenByOpacity = val <= 0.001;
-              if (obj.userData && obj.userData.originalCastShadow === undefined) {
-                obj.userData.originalCastShadow = obj.castShadow;
-                obj.userData.originalReceiveShadow = obj.receiveShadow;
-              }
-              if (obj.userData && obj.userData.originalOpacity === undefined) {
-                obj.userData.originalOpacity = obj.material.opacity;
-              }
-              const baseOp = obj.userData.originalOpacity || 1.0;
-              const opaqueEnough = val >= 0.999;
-              if (isFw) {
-                const scaledOpacity = val * baseOp;
-                obj.material.opacity = scaledOpacity;
-                obj.material.transparent = scaledOpacity < 1.0;
-                // Keep depth writes on so bonds stay occluded by atoms even when translucent.
-                obj.material.depthWrite = true;
-                obj.material.depthTest = true;
-                if (obj.userData && obj.userData.originalSide !== undefined) {
-                  obj.material.side = obj.userData.originalSide;
-                }
-                obj.visible = val > 0.001;
-
-                obj.castShadow = val > 0.999;
-                obj.receiveShadow = val > 0.999;
-              } else {
-                obj.visible = !hiddenByOpacity;
-                obj.castShadow = hiddenByOpacity ? false : !!(obj.userData && obj.userData.originalCastShadow);
-                obj.receiveShadow = hiddenByOpacity ? false : !!(obj.userData && obj.userData.originalReceiveShadow);
-                obj.material.opacity = val;
-                obj.material.transparent = val < 1.0;
-                obj.material.depthWrite = opaqueEnough;
-              }
-              if (obj.userData && obj.userData.originalSide !== undefined) {
-                obj.material.side = obj.userData.originalSide;
-              }
-              if (isSurfaceMeshId(tid)) {
-                applySurfaceScreenDoorForObject(obj);
-              }
-              obj.material.needsUpdate = true;
-            }
-          });
-          if (trace.id === "framework" || trace.id === "framework_atoms" || trace.id === "framework_bonds") {
-            updateFrameworkVisibility();
-            const activeId = reprSelect.value === "stick"
-              ? "framework_stick"
-              : (reprSelect.value === "space_filling" ? "framework_spacefill" : "framework");
-            const active = objectsById[activeId];
-            if (active) active.visible = showFramework.checked && val > 0.001;
-            // Also handle scatter traces
-            ["framework_atoms", "framework_bonds", "framework_stick_atoms", "framework_stick_bonds"].forEach(function(sid) {
-              const sobj = objectsById[sid];
-              if (sobj) sobj.visible = showFramework.checked && val > 0.001;
-            });
-          }
-        });
-        wrapper.appendChild(label);
-        wrapper.appendChild(opacitySlider);
-        meshOpacityContainer.appendChild(wrapper);
-      });
-      // Single merged framework slider — controls all framework sub-traces together
-      var hasFwSub = false;
-      fwSubIds.forEach(function(sid) { if (objectsById[sid]) hasFwSub = true; });
-      if (hasFwSub) {
-        const fwWrapper = document.createElement("div");
-        fwWrapper.style.cssText = "display:flex;align-items:center;gap:4px;";
-        const fwLabel = document.createElement("label");
-        fwLabel.style.cssText = "font-size:10px;white-space:nowrap;width:70px;overflow:hidden;text-overflow:ellipsis;";
-        fwLabel.textContent = "Framework";
-        const fwSlider = document.createElement("input");
-        fwSlider.type = "range"; fwSlider.min = "0"; fwSlider.max = "1"; fwSlider.step = "0.05";
-        fwSlider.value = "1";
-        fwSlider.style.cssText = "flex:1;";
-        fwSlider.addEventListener("input", () => {
-          const v = parseFloat(fwSlider.value);
-          fwSubIds.forEach(tid => {
-            const o = objectsById[tid];
-            if (!o || !o.material) return;
-            if (o.userData.originalOpacity === undefined) o.userData.originalOpacity = o.material.opacity;
-            const b = o.userData.originalOpacity || 1.0;
-            const sv = v * b;
-            o.material.opacity = sv;
-            o.material.transparent = sv < 1.0;
-            // Keep depth writes on so framework pieces stay seated when translucent.
-            o.material.depthWrite = true;
-            o.material.depthTest = true;
-            if (o.userData.originalSide !== undefined) o.material.side = o.userData.originalSide;
-            o.visible = v > 0.001;
-            o.castShadow = v > 0.999;
-            o.receiveShadow = v > 0.999;
-            o.material.needsUpdate = true;
-          });
-          updateFrameworkVisibility();
-        });
-        fwWrapper.appendChild(fwLabel);
-        fwWrapper.appendChild(fwSlider);
-        meshOpacityContainer.appendChild(fwWrapper);
+      cellFramework = cloneCellOutline(cellObj);
+      if (cellFramework) {
+        cellFramework.name = "cell_framework";
+        cellFramework.visible = false;
+        scene.add(cellFramework);
+        objectsById["cell_framework"] = cellFramework;
       }
-      // Stacking-order note for overlapping mesh traces (e.g. multiple surfaces)
-      if (meshTraces.length > 0) {
-        const note = document.createElement("div");
-        note.style.cssText = "font-size:9px;color:#aaa;margin-top:4px;font-style:italic;";
-        note.textContent = "Tip: turn off upper surfaces to see through to lower ones";
-        meshOpacityContainer.appendChild(note);
+      cellPbc = cloneCellOutline(cellObj);
+      if (cellPbc) {
+        cellPbc.name = "cell_pbc";
+        cellPbc.visible = false;
+        scene.add(cellPbc);
+        objectsById["cell_pbc"] = cellPbc;
+      }
+      cellPocket = cloneCellOutline(cellObj);
+      if (cellPocket) {
+        cellPocket.name = "cell_pocket";
+        cellPocket.visible = false;
+        scene.add(cellPocket);
+        objectsById["cell_pocket"] = cellPocket;
       }
     }
 
@@ -5178,13 +5431,9 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       playBtn.textContent = playing ? "Pause" : "Play";
     });
 
-    showCell.addEventListener("change", () => {
-      const obj = objectsById["cell"];
-      if (obj) obj.visible = showCell.checked;
-      scene.children.forEach(function(c) { if (c.name && c.name.startsWith("axisLabel_")) c.visible = showCell.checked; });
-    });
     function updateFrameworkVisibility() {
       const val = reprSelect.value;
+      const fwOn = scene.userData.fwLegendEnabled !== false;
       const fw = objectsById["framework"];
       const stick = objectsById["framework_stick"];
       const sf = objectsById["framework_spacefill"];
@@ -5195,25 +5444,24 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const scatterBonds = objectsById["framework_bonds"];
       const stickAtoms = objectsById["framework_stick_atoms"];
       const stickBonds = objectsById["framework_stick_bonds"];
-      if (fw) fw.visible = showFramework.checked && val === "ball_and_stick";
-      if (stick) stick.visible = showFramework.checked && val === "stick";
-      if (sf) sf.visible = showFramework.checked && val === "space_filling";
-      if (stickAtoms) stickAtoms.visible = showFramework.checked && val === "stick";
-      if (stickBonds) stickBonds.visible = showFramework.checked && val === "stick";
+      if (fw) fw.visible = fwOn && val === "ball_and_stick";
+      if (stick) stick.visible = fwOn && val === "stick";
+      if (sf) sf.visible = fwOn && val === "space_filling";
+      if (stickAtoms) stickAtoms.visible = fwOn && val === "stick";
+      if (stickBonds) stickBonds.visible = fwOn && val === "stick";
       // Instanced/scatter ball-and-stick: show atoms+bonds for ball_and_stick selection
-      if (scatterAtoms && !fw) scatterAtoms.visible = showFramework.checked && val === "ball_and_stick";
-      if (scatterBonds && !fw) scatterBonds.visible = showFramework.checked && val === "ball_and_stick";
-      if (arRings) arRings.visible = showFramework.checked;
-      if (arHigh) arHigh.visible = showFramework.checked;
+      if (scatterAtoms && !fw) scatterAtoms.visible = fwOn && val === "ball_and_stick";
+      if (scatterBonds && !fw) scatterBonds.visible = fwOn && val === "ball_and_stick";
+      if (arRings) arRings.visible = fwOn;
+      if (arHigh) arHigh.visible = fwOn;
       ["aromatic_highlights_hex", "aromatic_highlights_pent"].forEach(function(id) {
         const o = objectsById[id];
-        if (o) o.visible = showFramework.checked;
+        if (o) o.visible = fwOn;
       });
       updateFrameworkCellVisibility();
-      // Re-apply exploded offsets so newly active representations land in the right cell.
+      // Re-apply exploded offsets so newly-active representations land in the right cell.
       applyExplodeOffsets();
     }
-    showFramework.addEventListener("change", updateFrameworkVisibility);
     reprSelect.addEventListener("change", updateFrameworkVisibility);
     // Hide representation selector when only scatter traces exist (no mesh variants)
     if (!objectsById["framework"] && !objectsById["framework_stick"] && !objectsById["framework_spacefill"]
@@ -5223,26 +5471,6 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     }
     // Initialize visibility so only the selected representation is shown
     updateFrameworkVisibility();
-    showSurface.addEventListener("change", () => {
-      // "Segmentation surface" checkbox controls only the non-PBC/raw surface.
-      // PBC/cluster overlays are controlled by their own legend group toggles.
-      ["surface", "surface_regions_raw"].forEach(function(id) {
-        const obj = objectsById[id];
-        if (obj) obj.visible = showSurface.checked;
-      });
-      updateSurfaceCellVisibility();
-    });
-    showGuests.addEventListener("change", () => {
-      Object.values(guestMeshes).forEach(m => { if (m) m.visible = showGuests.checked; });
-    });
-    showGuestBonds.addEventListener("change", () => {
-      Object.keys(objectsById).forEach(id => {
-        if (id && id.startsWith("guestbonds_")) {
-          const obj = objectsById[id];
-          if (obj) obj.visible = showGuestBonds.checked;
-        }
-      });
-    });
     // Helpers to keep exploded cell-copy visibility in sync with actual trace visibility
     // (works for individual checkboxes, group checkboxes, and any other toggle mechanism)
     function updateCellCopyVisibility() {
@@ -5275,44 +5503,96 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     function updateFrameworkCellVisibility() {
       const exploded = parseFloat(explodeSlider.value) > 0;
       if (cellFramework) {
-        const ids = ["framework", "framework_stick", "framework_spacefill", "framework_atoms", "framework_bonds", "framework_stick_atoms", "framework_stick_bonds"];
+        const ids = [
+          "framework", "framework_stick", "framework_spacefill",
+          "framework_atoms", "framework_bonds", "framework_stick_atoms", "framework_stick_bonds",
+          "aromatic_rings", "aromatic_highlights", "aromatic_highlights_hex", "aromatic_highlights_pent",
+        ];
+        const fwOn = scene.userData.fwLegendEnabled !== false;
         const anyVisible = ids.some(id => { const obj = objectsById[id]; return obj && obj.visible; });
-        cellFramework.visible = exploded && anyVisible;
+        cellFramework.visible = exploded && fwOn && anyVisible;
       }
     }
 
-    function readWindowMinThreshold() {
+function readWindowMinThreshold() {
       if (!windowMinThresholdInput) return null;
       const raw = (windowMinThresholdInput.value || "").trim();
       if (!raw) return null;
       const v = parseFloat(raw);
       return Number.isFinite(v) ? v : null;
     }
+    function edgeFilterThreshold() {
+      if (!hideEdgesBelowWindowInput || !hideEdgesBelowWindowInput.checked) return null;
+      return readWindowMinThreshold();
+    }
     function connectionPassesWindowThreshold(segmentRadii, threshold) {
       if (threshold === null) return true;
       if (!segmentRadii || !segmentRadii.length) return true;
-      return !segmentRadii.every(function(r) { return r < threshold; });
+      let maxR = -Infinity;
+      for (let i = 0; i < segmentRadii.length; i++) {
+        const r = Number(segmentRadii[i]);
+        if (Number.isFinite(r)) maxR = Math.max(maxR, r);
+      }
+      if (!Number.isFinite(maxR)) return true;
+      return maxR >= threshold;
     }
     function rebuildLineSegmentsForThreshold(traceId) {
       const obj = objectsById[traceId];
       if (!obj || !obj.userData.originalPositions) return;
-      const threshold = readWindowMinThreshold();
+      const threshold = edgeFilterThreshold();
+      const legendOn = connectionLegendEnabled(traceId);
       const orig = obj.userData.originalPositions;
       const radii = obj.userData.segmentWindowRadii || [];
       const origHover = obj.userData.originalHover || [];
       const nSeg = radii.length || Math.floor(orig.length / 6);
+      if (threshold === null) {
+        if (!obj.userData.filteredByThreshold) {
+          obj.visible = legendOn;
+          return;
+        }
+      }
       const filtered = [];
       const filteredHover = [];
-      for (let i = 0; i < nSeg; i++) {
-        const segRadii = radii[i] || [];
-        if (!connectionPassesWindowThreshold(segRadii, threshold)) continue;
-        const base = i * 6;
-        for (let j = 0; j < 6; j++) filtered.push(orig[base + j]);
-        if (origHover[i] !== undefined) filteredHover.push(origHover[i]);
+      if (threshold === null) {
+        for (let i = 0; i < nSeg; i++) {
+          const base = i * 6;
+          for (let j = 0; j < 6; j++) filtered.push(orig[base + j]);
+          if (origHover[i] !== undefined) filteredHover.push(origHover[i]);
+        }
+      } else {
+        for (let i = 0; i < nSeg; i++) {
+          const segRadii = radii[i] || [];
+          if (!connectionPassesWindowThreshold(segRadii, threshold)) continue;
+          const base = i * 6;
+          for (let j = 0; j < 6; j++) filtered.push(orig[base + j]);
+          if (origHover[i] !== undefined) filteredHover.push(origHover[i]);
+        }
+      }
+      const trace = findTraceById(traceId);
+      const effectiveLw = trace ? effectiveLineWidthForTrace(trace) : 1;
+      const useThick = effectiveLw > 0.35;
+      const pts = filtered.length ? filtered : [];
+      if (!pts.length) {
+        obj.visible = false;
+        return;
+      }
+      if (useThick || obj instanceof THREE.Group) {
+        const saved = obj.userData;
+        disposeLineObject(obj);
+        const group = buildThickLineGroupForTrace(trace, traceId, pts, effectiveLw);
+        group.userData = Object.assign({}, saved);
+        group.userData.activeHover = threshold === null ? origHover.slice() : filteredHover;
+        group.userData.filteredByThreshold = threshold !== null;
+        group.visible = legendOn;
+        scene.add(group);
+        objectsById[traceId] = group;
+        return;
       }
       const geo = obj.geometry;
-      geo.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(filtered), 3));
-      obj.userData.activeHover = filteredHover;
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(pts), 3));
+      obj.userData.activeHover = threshold === null ? origHover.slice() : filteredHover;
+      obj.userData.filteredByThreshold = threshold !== null;
+      obj.visible = legendOn;
       if (obj.material && obj.material.dashSize !== undefined) obj.computeLineDistances();
     }
     function rebuildPointsForThreshold(traceId) {
@@ -5341,42 +5621,6 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       ["windows_internal", "windows_periodic"].forEach(rebuildPointsForThreshold);
     }
 
-    showWindows.addEventListener("change", () => {
-      const obj = objectsById["windows_internal"];
-      if (obj) obj.visible = showWindows.checked;
-      updateCellCopyVisibility();
-    });
-    showPeriodicWindows.addEventListener("change", () => {
-      const obj = objectsById["windows_periodic"];
-      if (obj) obj.visible = showPeriodicWindows.checked;
-      updateCellCopyVisibility();
-    });
-    showInternalConnections.addEventListener("change", () => {
-      const lineObj = objectsById["connections_internal"];
-      const nodeObj = objectsById["connections_internal_nodes"];
-      const maxObj = objectsById["maxima_internal"];
-      if (lineObj) lineObj.visible = showInternalConnections.checked;
-      if (nodeObj) nodeObj.visible = showInternalConnections.checked;
-      if (maxObj) maxObj.visible = showInternalConnections.checked;
-      updateCellCopyVisibility();
-    });
-    showPeriodicConnections.addEventListener("change", () => {
-      const lineObj = objectsById["connections_periodic"];
-      const nodeObj = objectsById["connections_periodic_nodes"];
-      const maxObj = objectsById["maxima_outside"];
-      if (lineObj) lineObj.visible = showPeriodicConnections.checked;
-      if (nodeObj) nodeObj.visible = showPeriodicConnections.checked;
-      if (maxObj) maxObj.visible = showPeriodicConnections.checked;
-      updateCellCopyVisibility();
-    });
-    if (windowMinThresholdInput) {
-      const onWindowThresholdChange = () => {
-        applyWindowThresholdFilter();
-      };
-      windowMinThresholdInput.addEventListener("input", onWindowThresholdChange);
-      windowMinThresholdInput.addEventListener("change", onWindowThresholdChange);
-    }
-    applyWindowThresholdFilter();
     pivotSceneBtn.addEventListener("click", () => {
       controls.target.copy(sceneCenter);
       controls.update();
@@ -5387,8 +5631,15 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     });
 
     // ---- New dynamic controls ----
-    const _camOrigPos = _camOverridePos ? _camOverridePos.clone() : new THREE.Vector3(scaledEyeArr[0], scaledEyeArr[1], scaledEyeArr[2]);
-    const _camOrig = { pos: _camOrigPos, target: sceneCenter.clone() };
+    const _camOrigPos = ({{camera_explicit}} || !_camOverridePos)
+      ? new THREE.Vector3(scaledEyeArr[0], scaledEyeArr[1], scaledEyeArr[2])
+      : _camOverridePos.clone();
+    const _camOrig = {
+      pos: _camOrigPos,
+      target: {{camera_explicit}}
+        ? new THREE.Vector3(centerArr[0], centerArr[1], centerArr[2])
+        : sceneCenter.clone(),
+    };
     resetCamBtn.addEventListener("click", () => {
       camera.position.copy(_camOrig.pos);
       controls.target.copy(_camOrig.target);
@@ -5472,22 +5723,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       toggleRotateBtn.textContent = autoRotating ? "Stop Rotate" : "Auto-Rotate";
     });
 
-    // Per-mesh opacity sliders are populated dynamically after scene init
-
-    ptSizeSlider.addEventListener("input", () => {
-      pointSizeMult = parseFloat(ptSizeSlider.value) || 1.0;
-      Object.values(objectsById).forEach(function(obj) {
-        if (obj && obj.material && obj.material.isPointsMaterial) {
-          var base = obj.material.userData && obj.material.userData.baseSize ? obj.material.userData.baseSize : obj.material.size;
-          applyPointSize(obj, base);
-        }
-      });
-    });
-    if (screenDoorToggle) {
-      screenDoorToggle.addEventListener("change", () => {
-        applySurfaceScreenDoorAll();
-      });
-    }
+    // Per-trace point size sliders are populated dynamically after scene init
 
     let speedMult = 1.0;
     speedSlider.addEventListener("input", () => {
@@ -5673,22 +5909,6 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           const s = gt.data.symbols[idx] || "?";
           txt = `trace: ${hit.object.name}\nframe: ${frame}\natom: ${idx}\nelement: ${s}\nxyz: (${p[0].toFixed(3)}, ${p[1].toFixed(3)}, ${p[2].toFixed(3)})`;
         }
-      } else if (hit.object.name === "framework_atoms" || hit.object.name === "framework_stick_atoms" || hit.object.name === "framework_spacefill") {
-        const idx = hit.instanceId ?? -1;
-        if (idx >= 0) {
-          const trace = staticTraces.find(t => t.id === hit.object.name);
-          if (trace && trace.hover && idx < trace.hover.length) {
-            txt = trace.hover[idx];
-          }
-        }
-      } else if (hit.object.name === "framework_bonds" || hit.object.name === "framework_stick_bonds") {
-        const idx = hit.instanceId ?? -1;
-        if (idx >= 0) {
-          const trace = staticTraces.find(t => t.id === hit.object.name);
-          if (trace && trace.hover && idx < trace.hover.length) {
-            txt = trace.hover[idx];
-          }
-        }
       } else if (hit.object.name && objectsById[hit.object.name]) {
         const frNow = getFrame(frame);
         const tracesNow = frNow && frNow.traces ? frNow.traces : [];
@@ -5727,7 +5947,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
               if (d < bestDist && ms[k/3] !== undefined) { bestDist = d; bestSize = ms[k/3]; }
             }
           });
-          // maxima marker size removed from hover (cosmetic, not physical)
+          if (bestSize !== null && bestDist < 100) txt += `\nnearest maxima size: ${bestSize.toFixed(3)} A`;
         }
       }
       if (!txt || !String(txt).trim()) {
@@ -5844,40 +6064,60 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     });
     window.dispatchEvent(new Event("resize"));
 
-    // Export PNG button
-    document.getElementById("exportPng").addEventListener("click", function() {
-      const resMult = parseInt(pngResSelect.value, 10) || 1;
-      // Screen-door (shader-discard) can produce moire-like export artifacts
-      // at high-resolution readback. Export with standard alpha path, then restore.
+    // Export PNG (programmatic API: window.__mofFigureExportPng(mult))
+    window.__mofFigureExportPng = function(resMult) {
+      resMult = parseInt(resMult, 10) || 1;
       const restoreScreenDoor = !!(screenDoorToggle && screenDoorToggle.checked);
       if (restoreScreenDoor) {
         screenDoorToggle.checked = false;
         applySurfaceScreenDoorAll();
       }
-      const oldW = renderer.domElement.width;
-      const oldH = renderer.domElement.height;
+      const vp = getRenderViewport();
+      const cssW = vp.w;
+      const cssH = vp.h;
+      const oldPixelRatio = renderer.getPixelRatio();
       if (resMult > 1) {
-        renderer.setSize(oldW * resMult, oldH * resMult, false);
-        camera.aspect = (oldW * resMult) / (oldH * resMult);
-        camera.updateProjectionMatrix();
+        renderer.setPixelRatio(oldPixelRatio * resMult);
+        renderer.setSize(cssW, cssH, false);
+        if (camera.isPerspectiveCamera) {
+          camera.aspect = cssW / cssH;
+          camera.updateProjectionMatrix();
+        }
         updateOrthoFrustum();
+        if (composer) {
+          composer.setSize(cssW, cssH);
+          if (ssaoPass && ssaoPass.setSize) ssaoPass.setSize(cssW, cssH);
+        }
       }
       if (composer) { composer.render(); } else { renderer.render(scene, camera); }
-      const link = document.createElement("a");
-      link.download = "figure3d_export_" + resMult + "x.png";
-      link.href = renderer.domElement.toDataURL("image/png");
-      link.click();
+      const dataUrl = renderer.domElement.toDataURL("image/png");
       if (resMult > 1) {
-        renderer.setSize(oldW, oldH, false);
-        camera.aspect = oldW / oldH;
-        camera.updateProjectionMatrix();
+        renderer.setPixelRatio(oldPixelRatio);
+        renderer.setSize(cssW, cssH, false);
+        if (camera.isPerspectiveCamera) {
+          camera.aspect = cssW / cssH;
+          camera.updateProjectionMatrix();
+        }
         updateOrthoFrustum();
+        if (composer) {
+          composer.setSize(cssW, cssH);
+          if (ssaoPass && ssaoPass.setSize) ssaoPass.setSize(cssW, cssH);
+        }
       }
       if (restoreScreenDoor) {
         screenDoorToggle.checked = true;
         applySurfaceScreenDoorAll();
         if (composer) { composer.render(); } else { renderer.render(scene, camera); }
       }
+      return dataUrl;
+    };
+
+    document.getElementById("exportPng").addEventListener("click", function() {
+      const resMult = parseInt(pngResSelect.value, 10) || 1;
+      const link = document.createElement("a");
+      link.download = "figure3d_export_" + resMult + "x.png";
+      link.href = window.__mofFigureExportPng(resMult);
+      link.click();
     });
 
     // Record video (WebM) via MediaRecorder + canvas.captureStream
@@ -6127,13 +6367,6 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       nextBtn.disabled = true;
       statusEl.textContent = "No frames";
     }
-    Object.values(guestMeshes).forEach(m => { if (m) m.visible = showGuests.checked; });
-    Object.keys(objectsById).forEach(id => {
-      if (id && id.startsWith("guestbonds_")) {
-        const obj = objectsById[id];
-        if (obj) obj.visible = showGuestBonds.checked;
-      }
-    });
     setFrame(0);
     requestAnimationFrame(animate);
   </script>
@@ -6253,7 +6486,7 @@ def make_sparse_multicomponent_movie(
             maxima = make_maxima_trace(seg, framework_atoms)
             fig.add_trace(maxima["internal"], frame=local_frame)
             fig.add_trace(maxima["outside"], frame=local_frame)
-            windows = make_windows_trace(seg)
+            windows = make_windows_trace(seg, atoms=framework_atoms, spacing=spacing)
             fig.add_trace(windows["internal"], frame=local_frame)
             fig.add_trace(windows["periodic"], frame=local_frame)
             conns = make_connections_trace(seg, framework_atoms)
@@ -6276,7 +6509,7 @@ def make_sparse_multicomponent_movie(
             maxima = make_maxima_trace(seg, framework_atoms)
             fig.add_trace(maxima["internal"])
             fig.add_trace(maxima["outside"])
-            windows = make_windows_trace(seg)
+            windows = make_windows_trace(seg, atoms=framework_atoms, spacing=spacing)
             fig.add_trace(windows["internal"])
             fig.add_trace(windows["periodic"])
             conns = make_connections_trace(seg, framework_atoms)
@@ -6452,9 +6685,14 @@ def compute_maxima_data(
     return _serialize_maxima_trace(seg, atoms)
 
 
-def compute_windows_data(seg: dict[str, Any]) -> dict[str, Any]:
-    """Compute window-point data from connection list."""
-    return _serialize_windows_trace(seg)
+def compute_windows_data(seg: dict[str, Any], atoms: Any | None = None, spacing: float | None = None, reclassify_far_outside: bool = True) -> dict[str, Any]:
+    """Compute window-point data from connection list.
+
+    When *atoms* and *spacing* are supplied and *reclassify_far_outside* is True,
+    internal windows whose Cartesian position is far outside the unit cell are
+    reclassified as periodic.
+    """
+    return _serialize_windows_trace(seg, atoms=atoms, spacing=spacing, reclassify_far_outside=reclassify_far_outside)
 
 
 def compute_connection_data(
@@ -6544,16 +6782,9 @@ def build_static_scene(
     return fig
 
 
-# ---------------------------------------------------------------------------
-# User-friendly alias
-# ---------------------------------------------------------------------------
-
-Figure3D = MovieFigure
-
-
 
 # ---------------------------------------------------------------------------
-# Percolation cluster trace builder (added for mgr_cli_py Three.js backend)
+# Percolation cluster meshes and windows (Three.js)
 # ---------------------------------------------------------------------------
 
 
@@ -6577,6 +6808,8 @@ def _parse_color_to_rgb(color, fallback=(99, 110, 250)):
 
 def _adjust_hls(rgb, light_factor=1.0, sat_factor=1.0, hue_deg=0.0):
     """Adjust RGB color via HLS space."""
+    import colorsys
+
     r, g, b = rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0
     h, l, s = colorsys.rgb_to_hls(r, g, b)
     l = max(0.0, min(1.0, l * light_factor))
@@ -6619,14 +6852,12 @@ def _serialize_percolation_cluster_mesh(
     verts_cart = np.dot(cell, (verts / shape_den).T).T
     mesh = trimesh.Trimesh(vertices=verts_cart, faces=faces, process=False)
 
-    # For face filtering, use grid-coordinate interpolation directly on marching-cubes
-    # verts (matching Plotly's approach) to avoid fractional-coord round-trip errors
-    # near cell boundaries that can cause patches of skipped faces.
     from scipy.interpolate import RegularGridInterpolator as RGI
+
     xx = np.linspace(0, regions.shape[0] - 1, regions.shape[0])
     yy = np.linspace(0, regions.shape[1] - 1, regions.shape[1])
     zz = np.linspace(0, regions.shape[2] - 1, regions.shape[2])
-    rl = RGI((xx, yy, zz), regions, method='nearest', bounds_error=False, fill_value=0)
+    rl = RGI((xx, yy, zz), regions, method="nearest", bounds_error=False, fill_value=0)
 
     comp_set = set(int(x) for x in component_regions)
     vert_labels = rl(verts).astype(int)
@@ -6748,7 +6979,7 @@ def make_percolation_clusters_trace(
         if entry is None:
             raise ValueError(f"No percolation data found for probe radius {probe_radius}")
 
-    threshold, components = entry
+    _threshold, components = entry
 
     unique_components = {}
     for axis, comp_list in components.items():
@@ -6761,19 +6992,32 @@ def make_percolation_clusters_trace(
 
     try:
         import plotly.express as px
+
         default_palette = px.colors.qualitative.Plotly
     except Exception:
         default_palette = [
-            "#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A", "#19D3F3",
-            "#FF6692", "#B6E880", "#FF97FF", "#FECB52",
+            "#636EFA",
+            "#EF553B",
+            "#00CC96",
+            "#AB63FA",
+            "#FFA15A",
+            "#19D3F3",
+            "#FF6692",
+            "#B6E880",
+            "#FF97FF",
+            "#FECB52",
         ]
 
     user_cscale = cscale
     traces = []
 
     for i, (comp, axes) in enumerate(unique_components.items(), 1):
-        dir_labels = ['x' if 0 in axes else '', 'y' if 1 in axes else '', 'z' if 2 in axes else '']
-        dir_str = ''.join(dir_labels)
+        dir_labels = [
+            "x" if 0 in axes else "",
+            "y" if 1 in axes else "",
+            "z" if 2 in axes else "",
+        ]
+        dir_str = "".join(dir_labels)
 
         palette = None
         if user_cscale is not None:
@@ -6782,9 +7026,12 @@ def make_percolation_clusters_trace(
             elif isinstance(user_cscale, str):
                 try:
                     import plotly.express as px
+
                     palette = list(getattr(px.colors.qualitative, user_cscale))
                 except Exception:
                     try:
+                        import plotly.express as px
+
                         palette = list(getattr(px.colors.sequential, user_cscale))
                     except Exception:
                         palette = None
@@ -6816,7 +7063,9 @@ def make_percolation_clusters_trace(
             trace_type="mesh",
             name=f"Component {i}_{dir_str}",
             data=payload,
-            style={"opacity": float(cluster_opacity), "side": "DoubleSide"} if style == "surface" else style,
+            style={"opacity": float(cluster_opacity), "side": "DoubleSide"}
+            if style == "surface"
+            else style,
             hover=None,
             visible=True,
         )
@@ -6831,37 +7080,16 @@ def make_percolation_windows_trace(
     probe_radius: float | None = None,
     pld_tolerance: float = 0.25,
 ) -> dict[str, dict[str, Any]]:
-    """Build Three.js traces for windows along percolating clusters.
-
-    Returns two traces:
-    - ``"windows"`` — yellow circles for all windows in percolating components
-    - ``"pld_critical"`` — red diamonds for windows within ±*pld_tolerance* of PLD
-
-    Parameters
-    ----------
-    analysis:
-        Percolation analysis dict with keys: percolation_history, connections,
-        dgrid, regions, pld.
-    atoms:
-        ASE Atoms for cell information.
-    probe_radius:
-        Selected probe radius. If None, uses the last entry in percolation_history.
-    pld_tolerance:
-        Radius tolerance for PLD-critical windows (default ±0.25 Å).
-    """
-    import numpy as np
-
+    """Build Three.js traces for windows along percolating clusters."""
     percolation_history = analysis.get("percolation_history", [])
     connections = analysis.get("connections", [])
-    dgrid = np.asarray(analysis.get("dgrid", []))
     regions = np.asarray(analysis.get("regions", []))
     pld = float(analysis.get("pld", 0.0))
-    pld_probe_radius = pld / 2.0  # PLD is a diameter; compare against radius
+    pld_probe_radius = pld / 2.0
 
     if not percolation_history:
         return {"windows": {}, "pld_critical": {}}
 
-    # Find the entry for the selected probe radius
     if probe_radius is None:
         entry = percolation_history[-1]
     else:
@@ -6871,7 +7099,6 @@ def make_percolation_windows_trace(
 
     _threshold, components = entry
 
-    # Collect all unique percolating region sets
     unique_components: dict[tuple, list] = {}
     for axis, comp_list in components.items():
         for comp in comp_list:
@@ -6880,7 +7107,6 @@ def make_percolation_windows_trace(
                 unique_components[key] = []
             unique_components[key].append(axis)
 
-    # Collect all region labels in percolating components
     all_comp_regions: set[int] = set()
     for comp in unique_components:
         all_comp_regions.update(comp)
@@ -6888,25 +7114,25 @@ def make_percolation_windows_trace(
     if not all_comp_regions:
         return {"windows": {}, "pld_critical": {}}
 
-    # Map maxima label → region label using the regions array
     maxima_info = np.asarray(analysis.get("maxima_info", []), dtype=int)
     maxima_to_region: dict[int, int] = {}
     if maxima_info.ndim == 2 and maxima_info.shape[1] >= 7:
         for row in maxima_info:
             label = int(row[0])
-            # maxima_info columns: (label, z, y, x, offset_z, offset_y, offset_x)
             gz, gy, gx = int(row[1]), int(row[2]), int(row[3])
             oz, oy, ox = int(row[4]), int(row[5]), int(row[6])
-            # Global grid position in the padded grid, then wrapped to primary cell
             gz_w = (gz + oz * regions.shape[0]) % regions.shape[0]
             gy_w = (gy + oy * regions.shape[1]) % regions.shape[1]
             gx_w = (gx + ox * regions.shape[2]) % regions.shape[2]
-            if 0 <= gz_w < regions.shape[0] and 0 <= gy_w < regions.shape[1] and 0 <= gx_w < regions.shape[2]:
+            if (
+                0 <= gz_w < regions.shape[0]
+                and 0 <= gy_w < regions.shape[1]
+                and 0 <= gx_w < regions.shape[2]
+            ):
                 rl = int(regions[gz_w, gy_w, gx_w])
                 if rl > 0:
                     maxima_to_region[label] = rl
 
-    # Collect windows from connections whose maxima are both in percolating regions
     all_window_positions: list[list[float]] = []
     all_window_radii: list[float] = []
     all_window_hover: list[str] = []
@@ -6943,14 +7169,17 @@ def make_percolation_windows_trace(
                 all_window_radii.append(radius)
                 all_window_hover.append(hover)
 
-    # Regular windows trace (yellow circles)
     window_trace = _make_trace(
         trace_id="percolation_windows",
         trace_type="points",
         name="Percolation windows",
         data={
-            "positions": np.array(all_window_positions).reshape(-1).tolist() if all_window_positions else [],
-            "colors": ([1.0, 1.0, 0.0] * len(all_window_positions)) if all_window_positions else [],  # yellow, flat
+            "positions": np.array(all_window_positions).reshape(-1).tolist()
+            if all_window_positions
+            else [],
+            "colors": ([1.0, 1.0, 0.0] * len(all_window_positions))
+            if all_window_positions
+            else [],
             "sizes": [12.0] * len(all_window_positions),
             "n_points": len(all_window_positions),
         },
@@ -6959,14 +7188,15 @@ def make_percolation_windows_trace(
         visible=True,
     )
 
-    # PLD-critical windows trace (red diamonds)
     pld_trace = _make_trace(
         trace_id="percolation_windows_pld",
         trace_type="points",
         name="PLD-critical windows",
         data={
-            "positions": np.array(pld_positions).reshape(-1).tolist() if pld_positions else [],
-            "colors": ([1.0, 0.2, 0.2] * len(pld_positions)) if pld_positions else [],  # red, flat
+            "positions": np.array(pld_positions).reshape(-1).tolist()
+            if pld_positions
+            else [],
+            "colors": ([1.0, 0.2, 0.2] * len(pld_positions)) if pld_positions else [],
             "sizes": [16.0] * len(pld_positions),
             "n_points": len(pld_positions),
         },
@@ -6976,3 +7206,10 @@ def make_percolation_windows_trace(
     )
 
     return {"windows": window_trace, "pld_critical": pld_trace}
+
+# ---------------------------------------------------------------------------
+# User-friendly alias
+# ---------------------------------------------------------------------------
+
+Figure3D = MovieFigure
+

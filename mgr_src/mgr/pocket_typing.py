@@ -99,7 +99,7 @@ ENV_CLUSTER_MERGE_GAP_THRESHOLD_A = 0.20 # gap boundary between tight and loose 
 # Tight: for gaps in (initial_band_gap, merge_gap_threshold] — prevents spurious merges
 # Loose: for gaps > merge_gap_threshold — allows genuine same-family merges (e.g. ZIF cages)
 ENV_CLUSTER_MERGE_COSINE = 0.90          # tight cosine (small-gap candidates)
-ENV_CLUSTER_MERGE_COSINE_LARGE_GAP = 0.80  # loose cosine (large-gap candidates)
+ENV_CLUSTER_MERGE_COSINE_LARGE_GAP = 0.90  # loose cosine (large-gap candidates; same bar as tight tier)
 
 
 @dataclass
@@ -522,7 +522,7 @@ def compute_pocket_fingerprints(
             for r in frag_group
             if r in props_frag
         )
-        mr = max_probe_radius_for_fragment_group(regions, dgrid_max_r, frag_group)
+        mr = max_probe_radius_for_fragment_group(regions_pbc, dgrid_max_r, frag_group)
         psd_vec = p.get("psd_vec")
         fps[rep] = compute_pocket_fingerprint(
             regions_pbc,
@@ -922,9 +922,10 @@ def assign_pocket_types_env_cluster(
     merge_cosine : 0.90
         Tight cosine threshold for gaps ≤ merge_gap_threshold_a (prevents spurious
         merges of similar-but-different window types, e.g. ZIF-20 2.56 vs 2.74 Å).
-    merge_cosine_large_gap : 0.80
-        Loose cosine threshold for gaps > merge_gap_threshold_a (allows genuine family
-        merges, e.g. ZIF-20 large cages 7.26 vs 7.61 Å, mean cosine ~0.87).
+    merge_cosine_large_gap : 0.90
+        Loose cosine threshold for gaps > merge_gap_threshold_a.  Set equal to
+        merge_cosine so adjacent bands merge only when fingerprints are truly
+        near-unity (e.g. keeps ZIF-20 large cages 7.26 vs 7.61 Å separate).
     """
     if not pockets:
         return 0, {}, {"method": METHOD_ENV_CLUSTER, "n_initial_bands": 0, "n_merges": 0}
@@ -1132,11 +1133,10 @@ def regions_cluster_from_rep_types(
     rep_to_type: Mapping[int, int],
     pbc_groups: Sequence[Sequence[int]],
 ) -> np.ndarray:
-    """Paint the fragment ``regions`` grid from PBC group → rep → type.
+    """Paint a fragment label grid from PBC group → rep → type.
 
-    Follows the same idea as ``mgr.compute.clustering_grid_from_regions``:
-    each fragment label in a PBC group is assigned the type of that group's
-    representative, not only the representative voxel label.
+    Pass ``regions_pbc`` (when present) so surface colouring matches PBC-aware
+    pocket footprints and ``max_r`` banding. Falls back to central-cell ``regions``.
     """
     regions = np.asarray(regions)
     label_to_type = build_fragment_label_to_type(rep_to_type, pbc_groups)
@@ -1321,10 +1321,11 @@ def assign_pocket_types_from_segmentation(
             }
 
         regions = np.asarray(segmentation["regions"])
+        regions_pbc = np.asarray(segmentation.get("regions_pbc", regions))
         label_to_rep = build_fragment_label_to_rep(pbc_groups)
         label_to_type = build_fragment_label_to_type(rep_to_type, pbc_groups)
         regions_cluster = regions_cluster_from_rep_types(
-            regions, rep_to_type, pbc_groups,
+            regions_pbc, rep_to_type, pbc_groups,
         )
         type_summary = summarize_types(pockets, rep_to_type, fps)
 

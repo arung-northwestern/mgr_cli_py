@@ -335,7 +335,8 @@ def compute_psd_analysis(dgrid, mat_atoms, regions_pbc=None, spacing=None,
                         num_samples_total=10000, num_samples_per_region=1000,
                         uniform_max_diameter=50.0, pocket_max_diameter=50.0,
                         uniform_num_bins=200, pocket_num_bins=200,
-                        probe_center_min_radius=None, uniform_log_bins=False):
+                        probe_center_min_radius=None, uniform_log_bins=False,
+                        min_sphere_center_radius=None):
     """Compute pore size distribution analysis.
 
     This function calculates:
@@ -387,6 +388,7 @@ def compute_psd_analysis(dgrid, mat_atoms, regions_pbc=None, spacing=None,
             density=False,
             return_fig=False,
             probe_center_min_radius=probe_center_min_radius,
+            min_sphere_center_radius=min_sphere_center_radius,
         )
         # Handle different return formats
         if isinstance(uniform_result, tuple):

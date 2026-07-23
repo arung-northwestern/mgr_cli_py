@@ -5755,12 +5755,13 @@ fn detect_maxima_adaptive_h(
 /// Compute pore sizes by sampling uniformly across the unit cell
 /// This is a simplified version that samples uniformly without region constraints
 #[pyfunction]
-#[pyo3(text_signature = "(dgrid, cell, num_samples_total=10000)")]
+#[pyo3(text_signature = "(dgrid, cell, num_samples_total=10000, min_sphere_center_radius=None)")]
 fn compute_pore_sizes_uniform(
     py: Python<'_>,
     dgrid: PyReadonlyArray3<'_, f32>,
     cell: PyReadonlyArray2<'_, f64>,
     num_samples_total: Option<usize>,
+    min_sphere_center_radius: Option<f32>,
 ) -> PyResult<PyObject> {
     use ndarray::{Array1, Array2};
     use std::collections::HashMap;
@@ -5769,11 +5770,8 @@ fn compute_pore_sizes_uniform(
     let dgrid_arr = dgrid.as_array();
     let cell_arr = cell.as_array();
     let (nx, ny, nz) = dgrid_arr.dim();
-
     let n_samples = num_samples_total.unwrap_or(10000);
-
-    // Initialize RNG for reproducible sampling
-    let mut rng = Pcg64::from_entropy();
+    let center_threshold = min_sphere_center_radius.unwrap_or(0.0);
 
     // Pre-compute cell components for fast PBC calculations
     let c00 = cell_arr[[0, 0]];
@@ -5786,38 +5784,49 @@ fn compute_pore_sizes_uniform(
     let c21 = cell_arr[[2, 1]];
     let c22 = cell_arr[[2, 2]];
 
-    // Pre-compute sorted dgrid values for the entire grid (no region filtering)
-    let mut sorted_voxels: Vec<(f32, [usize; 3])> = Vec::new();
+    // Void voxels (dgrid > 0) for Monte Carlo sample sites — matches PoreBlazer g_cubes.
+    let mut void_voxels: Vec<[usize; 3]> = Vec::new();
+    // Probe-center-eligible voxels for largest-including-sphere search — matches PoreBlazer n_cubes.
+    let mut center_voxels: Vec<(f32, [usize; 3])> = Vec::new();
 
     for i in 0..nx {
         for j in 0..ny {
             for k in 0..nz {
                 let dgrid_val = dgrid_arr[[i, j, k]];
-                if dgrid_val > 0.00 {  // Only include pore space with meaningful d values
-                    sorted_voxels.push((dgrid_val, [i, j, k]));
+                if dgrid_val > 0.00 {
+                    void_voxels.push([i, j, k]);
+                    if dgrid_val >= center_threshold {
+                        center_voxels.push((dgrid_val, [i, j, k]));
+                    }
                 }
             }
         }
     }
 
-    // Sort by dgrid value in descending order
-    sorted_voxels.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    center_voxels.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    if void_voxels.is_empty() || center_voxels.is_empty() {
+        let py_sample_points = PyArray2::from_owned_array(
+            py,
+            Array2::<f64>::zeros((0, 3)),
+        );
+        let py_pore_sizes = PyArray1::from_vec(py, Vec::<f32>::new());
+        let result_tuple = (py_sample_points, py_pore_sizes);
+        return Ok(result_tuple.into_py(py));
+    }
 
     // Pre-allocate result vectors
     let mut sample_points_cart = Vec::with_capacity(n_samples);
     let mut pore_sizes = Vec::with_capacity(n_samples);
 
-    // Sample from known pore voxels in parallel
-    // This ensures we never sample from framework regions while maximizing performance
+    // Sample from void voxels; search sphere centers only on probe-eligible voxels.
     let sample_data: Vec<(f64, f64, f64, f32)> = (0..n_samples)
         .into_par_iter()
         .map(|_| {
             // Create thread-local RNG for safe parallel sampling
             let mut local_rng = Pcg64::from_entropy();
 
-            // Randomly select a pore voxel from our pre-filtered list
-            let voxel_idx = local_rng.gen_range(0..sorted_voxels.len());
-            let (_, grid_coords) = sorted_voxels[voxel_idx];
+            let grid_coords = void_voxels[local_rng.gen_range(0..void_voxels.len())];
 
             // Convert grid coordinates to fractional coordinates
             let frac_coords = [
@@ -5831,7 +5840,7 @@ fn compute_pore_sizes_uniform(
                 &dgrid_arr,
                 &cell_arr,
                 &frac_coords,
-                &sorted_voxels,
+                &center_voxels,
             );
 
             // Convert fractional to Cartesian coordinates
@@ -5928,13 +5937,14 @@ fn rayon_num_threads() -> PyResult<usize> {
 
 /// Sample points within each watershed region and compute pore sizes for pocket level psd
 #[pyfunction]
-#[pyo3(text_signature = "(dgrid, regions_pbc, cell, samples_per_region=5000)")]
+#[pyo3(text_signature = "(dgrid, regions_pbc, cell, samples_per_region=5000, lis_regions=None)")]
 fn compute_pore_sizes_for_psd_pocketwise(
     py: Python<'_>,
     dgrid: PyReadonlyArray3<'_, f32>,
     regions_pbc: PyReadonlyArray3<'_, u32>,
     cell: PyReadonlyArray2<'_, f64>,
     samples_per_region: Option<usize>,
+    lis_regions: Option<PyReadonlyArray3<'_, u32>>,
 ) -> PyResult<PyObject> {
     use ndarray::{Array1, Array2};
     use std::collections::HashMap;
@@ -5942,13 +5952,18 @@ fn compute_pore_sizes_for_psd_pocketwise(
 
     let dgrid_arr = dgrid.as_array();
     let regions_arr = regions_pbc.as_array();
+    let lis_arr = lis_regions.as_ref().map(|r| r.as_array());
+    if let Some(lis) = lis_arr {
+        if lis.dim() != dgrid_arr.dim() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "lis_regions shape must match dgrid",
+            ));
+        }
+    }
     let cell_arr = cell.as_array();
     let (nx, ny, nz) = dgrid_arr.dim();
 
     let n_samples_per_region = samples_per_region.unwrap_or(5000);
-
-    // Initialize RNG for reproducible sampling
-    let mut rng = Pcg64::from_entropy();
 
     // Pre-compute cell components for fast PBC calculations
     let c00 = cell_arr[[0, 0]];
@@ -5970,21 +5985,28 @@ fn compute_pore_sizes_for_psd_pocketwise(
     }
     let unique_regions: Vec<u32> = unique_regions.into_iter().collect();
 
-    // Pre-compute voxel lists for each region for fast sampling
+    // Pre-compute voxel lists for each sample region for fast sampling
     let mut region_voxels: HashMap<u32, Vec<[usize; 3]>> = HashMap::new();
     // Pre-sort voxels by dgrid value (descending) for efficient sphere finding
-    let mut sorted_voxels_by_region: HashMap<u32, Vec<(f32, [usize; 3])>> = HashMap::new();
+    let mut sorted_voxels_for_lis: HashMap<u32, Vec<(f32, [usize; 3])>> = HashMap::new();
 
     for i in 0..nx {
         for j in 0..ny {
             for k in 0..nz {
                 let region_id = regions_arr[[i, j, k]];
+                let dgrid_val = dgrid_arr[[i, j, k]];
                 if region_id > 0 {
-                    let dgrid_val = dgrid_arr[[i, j, k]];
                     region_voxels.entry(region_id)
                         .or_insert_with(Vec::new)
                         .push([i, j, k]);
-                    sorted_voxels_by_region.entry(region_id)
+                }
+                let lis_key = if let Some(lis) = lis_arr {
+                    lis[[i, j, k]]
+                } else {
+                    region_id
+                };
+                if lis_key > 0 {
+                    sorted_voxels_for_lis.entry(lis_key)
                         .or_insert_with(Vec::new)
                         .push((dgrid_val, [i, j, k]));
                 }
@@ -5992,8 +6014,8 @@ fn compute_pore_sizes_for_psd_pocketwise(
         }
     }
 
-    // Sort voxels by dgrid value in descending order for each region
-    for voxels in sorted_voxels_by_region.values_mut() {
+    // Sort voxels by dgrid value in descending order for each LIS pool
+    for voxels in sorted_voxels_for_lis.values_mut() {
         voxels.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     }
 
@@ -6032,13 +6054,19 @@ fn compute_pore_sizes_for_psd_pocketwise(
                         k as f64 / (nz - 1) as f64,
                     ];
 
+                    let lis_key = if let Some(lis) = lis_arr {
+                        lis[[i, j, k]]
+                    } else {
+                        region_id
+                    };
+
                     // Compute pore size at this point using sorted search
                     let pore_size = find_largest_including_sphere(
                         &dgrid_arr,
                         &cell_arr,
                         &frac_coords,
-                        region_id,
-                        &sorted_voxels_by_region,
+                        lis_key,
+                        &sorted_voxels_for_lis,
                     );
 
                     // Convert fractional to Cartesian coordinates
