@@ -2074,6 +2074,7 @@ def make_windows_trace(
     reclassify_far_outside: bool = True,
 ) -> dict[str, Any]:
     payload = _serialize_windows_trace(seg, atoms=atoms, spacing=spacing, reclassify_far_outside=reclassify_far_outside)
+    win_style = style if style else "internal_windows"
     internal = _make_trace(
         trace_id=f"{trace_id}_internal",
         trace_type="points",
@@ -2083,7 +2084,7 @@ def make_windows_trace(
             "n_points": payload["internal_n_points"],
             "window_radii": payload["internal_window_radii"],
         },
-        style="internal_windows",
+        style=win_style,
         hover=payload["internal_hover"],
         visible=True,
     )
@@ -4190,8 +4191,13 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     }
     function applyLineWidth(traceId, mult) {
       lineWidthMultByTrace[traceId] = mult;
+      const obj0 = objectsById[traceId];
+      if (edgeFilterThreshold() !== null || (obj0 && obj0.userData && obj0.userData.filteredByThreshold)) {
+        rebuildLineSegmentsForThreshold(traceId);
+        return;
+      }
       const trace = findTraceById(traceId);
-      let obj = objectsById[traceId];
+      let obj = obj0;
       if (!trace || !obj) return;
       const pts = obj.userData.originalPositions || trace.data.positions || [];
       if (!pts.length) return;
@@ -4316,20 +4322,20 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           mat.userData.screenDoorUniform.value = clampedOpacity;
         }
       } else {
-        if (obj.userData.screenDoorOpacity !== undefined) {
-          mat.opacity = obj.userData.screenDoorOpacity;
-        }
-        mat.transparent = mat.opacity < 1.0;
-        mat.depthWrite = mat.opacity >= 0.999;
-        mat.alphaTest = 0.0;
-        mat.dithering = false;
         if (mat.userData.screenDoorEnabled) {
+          if (obj.userData.screenDoorOpacity !== undefined) {
+            mat.opacity = obj.userData.screenDoorOpacity;
+          }
           mat.onBeforeCompile = mat.userData.screenDoorOriginalOnBeforeCompile || function(shader) {};
           mat.customProgramCacheKey = mat.userData.screenDoorOriginalProgramKey || function() { return ""; };
           mat.userData.screenDoorUniform = null;
           mat.userData.screenDoorEnabled = false;
           mat.needsUpdate = true;
         }
+        mat.transparent = mat.opacity < 1.0;
+        mat.depthWrite = mat.opacity >= 0.999;
+        mat.alphaTest = 0.0;
+        mat.dithering = false;
       }
     }
 
@@ -4913,6 +4919,9 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           applySurfaceScreenDoorForObject(obj);
           return;
         }
+        if (isSurface) {
+          obj.userData.screenDoorOpacity = val;
+        }
         if (isFw) {
           const scaledOpacity = val * baseOp;
           obj.material.opacity = scaledOpacity;
@@ -4934,7 +4943,9 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         if (obj.userData && obj.userData.originalSide !== undefined) {
           obj.material.side = obj.userData.originalSide;
         }
-        if (isSurfaceMeshId(tid)) applySurfaceScreenDoorForObject(obj);
+        if (isSurface) {
+          applySurfaceScreenDoorForObject(obj);
+        }
         obj.material.needsUpdate = true;
       });
       if (fwMerge) updateFrameworkVisibility();
@@ -5127,7 +5138,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       edgeCb.id = "hideEdgesBelowWindow";
       edgeCb.checked = true;
       edgeLabel.appendChild(edgeCb);
-      edgeLabel.appendChild(document.createTextNode(" Hide edges with max window below threshold"));
+      edgeLabel.appendChild(document.createTextNode(" Hide edges with bottleneck window below threshold"));
       wrap.appendChild(thrLabel);
       wrap.appendChild(edgeLabel);
       parent.appendChild(wrap);
@@ -5525,24 +5536,46 @@ function readWindowMinThreshold() {
       if (!hideEdgesBelowWindowInput || !hideEdgesBelowWindowInput.checked) return null;
       return readWindowMinThreshold();
     }
+    function ensureConnectionWindowRadii(obj, traceId) {
+      if (!obj || !obj.userData) return [];
+      if (obj.userData.segmentWindowRadii && obj.userData.segmentWindowRadii.length) {
+        return obj.userData.segmentWindowRadii;
+      }
+      const trace = findTraceById(traceId);
+      if (trace && trace.data && trace.data.segment_window_radii && trace.data.segment_window_radii.length) {
+        obj.userData.segmentWindowRadii = trace.data.segment_window_radii;
+        if (!obj.userData.originalHover && trace.hover) {
+          obj.userData.originalHover = trace.hover.slice();
+        }
+        return obj.userData.segmentWindowRadii;
+      }
+      return [];
+    }
     function connectionPassesWindowThreshold(segmentRadii, threshold) {
       if (threshold === null) return true;
-      if (!segmentRadii || !segmentRadii.length) return true;
-      let maxR = -Infinity;
+      if (!segmentRadii || !segmentRadii.length) return false;
+      let minR = Infinity;
       for (let i = 0; i < segmentRadii.length; i++) {
         const r = Number(segmentRadii[i]);
-        if (Number.isFinite(r)) maxR = Math.max(maxR, r);
+        if (Number.isFinite(r)) minR = Math.min(minR, r);
       }
-      if (!Number.isFinite(maxR)) return true;
-      return maxR >= threshold;
+      if (!Number.isFinite(minR)) return false;
+      return minR >= threshold;
     }
     function rebuildLineSegmentsForThreshold(traceId) {
       const obj = objectsById[traceId];
-      if (!obj || !obj.userData.originalPositions) return;
+      if (!obj) return;
+      if (!obj.userData.originalPositions) {
+        const trace0 = findTraceById(traceId);
+        if (trace0 && trace0.data && trace0.data.positions && trace0.data.positions.length) {
+          obj.userData.originalPositions = trace0.data.positions.slice();
+        }
+      }
+      if (!obj.userData.originalPositions) return;
       const threshold = edgeFilterThreshold();
       const legendOn = connectionLegendEnabled(traceId);
       const orig = obj.userData.originalPositions;
-      const radii = obj.userData.segmentWindowRadii || [];
+      const radii = ensureConnectionWindowRadii(obj, traceId);
       const origHover = obj.userData.originalHover || [];
       const nSeg = radii.length || Math.floor(orig.length / 6);
       if (threshold === null) {
@@ -5577,10 +5610,10 @@ function readWindowMinThreshold() {
         return;
       }
       if (useThick || obj instanceof THREE.Group) {
-        const saved = obj.userData;
+        const saved = Object.assign({}, obj.userData);
         disposeLineObject(obj);
         const group = buildThickLineGroupForTrace(trace, traceId, pts, effectiveLw);
-        group.userData = Object.assign({}, saved);
+        group.userData = saved;
         group.userData.activeHover = threshold === null ? origHover.slice() : filteredHover;
         group.userData.filteredByThreshold = threshold !== null;
         group.visible = legendOn;

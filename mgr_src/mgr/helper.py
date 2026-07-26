@@ -339,6 +339,33 @@ def trim_connections_to_unique_regions(connections, unique_regions):
         return list(connections)
     return [c for c in connections if np.any(np.isin(c[0], unique))]
 
+
+def classify_connections_by_close_or_inside(
+    connections,
+    close_or_inside_region_ids,
+    remap_dict=None,
+):
+    """Set ``c[2]`` to internal or periodic from close-or-inside node IDs.
+
+    Internal only when **both** endpoints are in *close_or_inside_region_ids*
+    (``results['close_or_inside_regions']``). Apply after padding-ghost reindex
+    when *remap_dict* maps pre-remap labels to final node IDs.
+    """
+    import numpy as np
+
+    remap = remap_dict or {}
+    internal_ids = {
+        int(remap.get(int(rid), int(rid)))
+        for rid in np.asarray(close_or_inside_region_ids, dtype=int).reshape(-1)
+    }
+    for c in connections:
+        if len(c) < 3 or not c[1]:
+            continue
+        n1, n2 = int(c[0][0]), int(c[0][1])
+        c[2] = "internal" if (n1 in internal_ids and n2 in internal_ids) else "periodic"
+    return connections
+
+
 def compute_wall_cells(ase_atoms, spacing, wall_thickness=0.05):
     import numpy as np
     from ase.geometry import complete_cell

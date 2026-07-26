@@ -109,6 +109,14 @@ def show_mof_threejs(
     resolve_plot_surface_taubin_params(defaults, options)
 
     show_periodic = bool(defaults.get("plot_show_periodic", False))
+    _cell = mat_atoms.get_cell().array.T
+    _lengths = np.linalg.norm(_cell, axis=0)
+    _shape = np.asarray(dgrid.shape, dtype=float)
+    spacing = (
+        float(defaults["plot_spacing"])
+        if defaults.get("plot_spacing") is not None
+        else float(np.mean(_lengths / np.maximum(_shape, 1.0)))
+    )
 
     if not defaults.get("plot_enable", True):
         for key in ("plot_cell", "plot_framework", "plot_maxima",
@@ -331,84 +339,45 @@ def show_mof_threejs(
             selector={"id": "surface_regions_cluster"},
         )
 
-    # Connections / Pore graph
+    # Connections / pore graph, windows, maxima (full maxima index for graph traces)
+    seg_dict = {
+        "dgrid": dgrid,
+        "regions": regions,
+        "all_maxima": all_maxima_plot,
+        "all_maxima_conn": am_full,
+        "maxima_pbc": maxima_pbc if maxima_pbc is not None else np.zeros((0, 3), dtype=int),
+        "maxima_info": maxima_info_plot,
+        "maxima_info_conn": (
+            np.asarray(maxima_info, dtype=int)
+            if maxima_info is not None
+            else np.zeros((0, 7), dtype=int)
+        ),
+        "maxima_pbc_dict": maxima_pbc_dict if maxima_pbc_dict else {},
+        "connections": connections,
+    }
+
     if defaults.get("plot_connections", True) and connections:
         _emit(_step_labels[_step_idx])
-        # Build minimal seg dict for connections trace
-        seg = {
-            "dgrid": dgrid,
-            "regions": regions,
-            "all_maxima": all_maxima if all_maxima is not None else np.zeros((0, 3)),
-            "maxima_pbc": maxima_pbc if maxima_pbc is not None else np.zeros((0, 3), dtype=int),
-            "maxima_info": maxima_info if maxima_info is not None else np.zeros((0, 7), dtype=int),
-            "maxima_pbc_dict": maxima_pbc_dict if maxima_pbc_dict is not None else {},
-            "connections": connections,
-        }
-        fig.add_connections(seg, mat_atoms, hide_periodic=not show_periodic)
+        fig.add_connections(seg_dict, mat_atoms, hide_periodic=not show_periodic)
 
-    # Windows
     if defaults.get("plot_windows", True) and connections:
         _emit(_step_labels[_step_idx])
-        seg = {
-            "dgrid": dgrid,
-            "regions": regions,
-            "all_maxima": all_maxima if all_maxima is not None else np.zeros((0, 3)),
-            "maxima_pbc": maxima_pbc if maxima_pbc is not None else np.zeros((0, 3), dtype=int),
-            "maxima_info": maxima_info if maxima_info is not None else np.zeros((0, 7), dtype=int),
-            "maxima_pbc_dict": maxima_pbc_dict if maxima_pbc_dict is not None else {},
-            "connections": connections,
-        }
-        fig.add_windows(seg, hide_periodic=not show_periodic, atoms=mat_atoms, spacing=_dgrid_spacing(mat_atoms, dgrid))
+        _win_style = defaults.get("plot_windows_style") or {}
+        fig.add_windows(
+            seg_dict,
+            hide_periodic=not show_periodic,
+            atoms=mat_atoms,
+            spacing=spacing,
+            reclassify_far_outside=defaults.get("plot_windows_reclassify_far_outside", True),
+            **_win_style,
+        )
 
-    # Maxima
     if defaults.get("plot_maxima", True) and len(all_maxima_plot):
         _emit(_step_labels[_step_idx])
-        seg = {
-            "dgrid": dgrid,
-            "regions": regions,
-            "all_maxima": all_maxima_plot,
-            "maxima_pbc": maxima_pbc if maxima_pbc is not None else np.zeros((0, 3), dtype=int),
-            "maxima_info": maxima_info_plot,
-            "maxima_pbc_dict": maxima_pbc_dict if maxima_pbc_dict is not None else {},
-            "connections": connections,
-        }
-        fig.add_maxima(seg, mat_atoms, hide_periodic=not show_periodic)
+        fig.add_maxima(seg_dict, mat_atoms, hide_periodic=not show_periodic)
 
-    trace_ids = {t.get("id") for t in fig.data}
-
-    # Keep framework/cell/raw-surface on dedicated HUD checkboxes only.
-    # Avoid duplicating them in dynamic group legend.
-    if (
-        defaults.get("plot_surface_pbc", True)
-        and regions_pbc is not None
-        and "surface_regions_pbc" in trace_ids
-    ):
-        fig.groups["surface_regions_pbc"] = {
-            "traces": ["surface_regions_pbc"],
-            "label": "Regions (PBC merged)",
-        }
-    if (
-        results.get("pocket_types_detected", False)
-        and "regions_cluster" in results
-        and defaults.get("plot_surface", True)
-        and "surface_regions_cluster" in trace_ids
-    ):
-        fig.groups["surface_regions_cluster"] = {
-            "traces": ["surface_regions_cluster"],
-            "label": "Pocket types (cluster)",
-        }
-    # Keep a dedicated maxima legend entry so users can toggle the local-maxima
-    # scatter trace directly from the trace legend.
-    if defaults.get("plot_maxima", True) and "maxima_internal" in trace_ids:
-        fig.groups["maxima_internal"] = {
-            "traces": ["maxima_internal"],
-            "label": "Local maxima",
-        }
-    if defaults.get("plot_maxima", True) and "maxima_pbc" in trace_ids:
-        fig.groups["maxima_pbc"] = {
-            "traces": ["maxima_pbc"],
-            "label": "Maxima (PBC reps)",
-        }
+    # Schema-driven legend in the HTML template (no duplicate HUD group checkboxes).
+    fig.groups = {}
 
     # Camera
     fig.set_camera(

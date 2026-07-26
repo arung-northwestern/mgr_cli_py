@@ -1008,12 +1008,6 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.05, h=0.2,
             np.array([c[0], c[1], c[2], c[3], c[4]], dtype="object")
             for c in connections_list
         ]
-        # Periodic = edge touches a region outside the unit-cell label set (padding ghosts),
-        # not merely a far-outside maximum on an in-cell region.
-        unit_cell_region_labels = np.delete(np.unique(regions), 0)
-        for c in connections_list:
-            if np.any(~np.isin(c[0], unit_cell_region_labels)):
-                c[2] = "periodic"
         logger.info(
             "TIME(s): %.2f Done with computing connections\n"
             % np.round(time() - start_time, decimals=2)
@@ -1055,6 +1049,13 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.05, h=0.2,
                 if ci in remap_dict2:
                     # reindx the connections list
                     connections_list_copy[i][0][j] = remap_dict2[ci]
+        from .helper import classify_connections_by_close_or_inside
+
+        classify_connections_by_close_or_inside(
+            connections_list_copy,
+            valid_maxima_ids,
+            remap_dict=remap_dict2,
+        )
         maxima_info_copy_copy = copy.deepcopy(maxima_info_copy)
         for k, v in remap_dict2.items():
             # print(f"replace label {k} with {v}")
