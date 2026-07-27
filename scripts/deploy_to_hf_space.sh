@@ -34,6 +34,9 @@ rsync -a \
   --exclude='build_space' \
   --exclude='hts_output' \
   --exclude='graphify-out' \
+  --exclude='.todos' \
+  --exclude='.pytest_cache' \
+  --exclude='.cursor' \
   --exclude='docs/theme_detection_issue.md' \
   --exclude='docs/*.png' \
   --exclude='docs/*.pdf' \
