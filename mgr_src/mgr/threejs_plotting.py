@@ -379,13 +379,9 @@ def show_mof_threejs(
     # Schema-driven legend in the HTML template (no duplicate HUD group checkboxes).
     fig.groups = {}
 
-    # Camera
-    fig.set_camera(
-        eye=(2.0, 0.0, 1.35),
-        center=(0.0, 0.0, 0.0),
-        up=(0.0, 0.0, 1.0),
-        projection="orthographic" if orthographic else "perspective",
-    )
+    # Default camera: HTML viewer fits to unit-cell center + 1.5×(la,lb,lc) [111] eye.
+    if orthographic:
+        fig.set_camera(projection="orthographic")
 
     # Appearance / layout
     layout = defaults.get("plot_layout", "dark")
@@ -530,14 +526,6 @@ def show_percolation_threejs(
             fig.add_trace(window_traces["windows"])
         if window_traces.get("pld_critical", {}).get("data", {}).get("n_points", 0):
             fig.add_trace(window_traces["pld_critical"])
-
-    # Camera
-    fig.set_camera(
-        eye=(2.0, 0.0, 1.35),
-        center=(0.0, 0.0, 0.0),
-        up=(0.0, 0.0, 1.0),
-        projection="perspective",
-    )
 
     # Appearance
     layout = opts.get("layout", "dark")

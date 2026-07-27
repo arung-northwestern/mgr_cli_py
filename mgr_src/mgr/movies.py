@@ -2714,8 +2714,8 @@ class MovieFigure:
             cam["projection"] = projection
         if keyframes is not None:
             cam["keyframes"] = keyframes
-        # Mark explicit so HTML viewer does NOT replace with default [111] cell view
-        if any(v is not None for v in (eye, center, up, projection, keyframes)):
+        # Only lock eye/center when user set them; projection alone keeps auto cell fit.
+        if any(v is not None for v in (eye, center, up, keyframes)):
             cam["explicit"] = True
         return self
 
@@ -5302,7 +5302,9 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         new THREE.Vector3(cpos[9], cpos[10], cpos[11]).normalize(),
         new THREE.Vector3(cpos[15], cpos[16], cpos[17]).normalize(),
       ];
-      _camOverridePos = new THREE.Vector3(1.5 * la, 1.5 * lb, 1.5 * lc);
+      _camOverridePos = sceneCenter.clone().add(
+        new THREE.Vector3(1.5 * la, 1.5 * lb, 1.5 * lc)
+      );
       // Only apply [111]-style default when set_camera was NOT called (explicit=false).
       if (!{{camera_explicit}}) {
         [perspectiveCam, orthoCam].forEach(function(cam) {
