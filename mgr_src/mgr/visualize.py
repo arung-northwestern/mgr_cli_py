@@ -1171,7 +1171,12 @@ def plot_aromatic_rings(ase_atoms, isomorphic_aromatic_cycles=None,
                                         legendgroup='aromatics', legendgrouptitle_text='Aromatic rings', name='Aromatic rings'),
                         kwargs_highlight=dict(color='skyblue', opacity=0.5, showlegend=False,
                         legendgroup='aromatics', legendgrouptitle_text='Aromatic rings', name='Aromatic highlights')):
-    """Plotly traces for aromatic rings: 16-pt circle outlines + one merged Mesh3d fill."""
+    """Plotly traces for aromatic rings: circle outlines + merged Mesh3d fills.
+
+    When ``isomorphic_aromatic_cycles`` is ``None``, calls
+    :func:`~mgr.analyze.compute_aromatic_cycles` (same path as Three.js;
+    cached on ``ase_atoms.info["aromatic_cycles"]``).
+    """
     from .analyze import compute_aromatic_cycles, update_with_covalent_bonds
     from .movies import _merged_aromatic_highlight_payload, _ring_pose_from_positions
     import plotly.graph_objects as go
@@ -1182,11 +1187,7 @@ def plot_aromatic_rings(ase_atoms, isomorphic_aromatic_cycles=None,
         ase_atoms = update_with_covalent_bonds(ase_atoms)
 
     if isomorphic_aromatic_cycles is None:
-        print('isomorphic aromatic cycles is None, trying to calculate')
-        try:
-            isomorphic_aromatic_cycles = compute_aromatic_cycles(ase_atoms)
-        except Exception as exc:
-            raise Exception('Cannot find aromatic cycles from structure! Please provide as input.') from exc
+        isomorphic_aromatic_cycles = compute_aromatic_cycles(ase_atoms)
 
     if not isomorphic_aromatic_cycles:
         return tuple()

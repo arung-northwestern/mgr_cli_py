@@ -74,6 +74,24 @@ def test_compute_aromatic_cycles_cache():
     assert atoms.info.get("aromatic_cycles") is a
 
 
+def test_plot_aromatic_rings_matches_compute_aromatic_cycles():
+    """Plotly ring path uses the same detector as Three.js."""
+    from ase.io import read
+    from mgr.analyze import compute_aromatic_cycles, update_with_covalent_bonds
+    from mgr.visualize import plot_aromatic_rings
+
+    cif = FIXTURES / "NU-1000_S1.cif"
+    if not cif.is_file():
+        pytest.skip("missing NU-1000 fixture")
+    atoms = update_with_covalent_bonds(read(cif))
+    expected = compute_aromatic_cycles(atoms, force_recompute=True)
+    atoms.info.pop("aromatic_cycles", None)
+    atoms.info.pop("aromatic_cycles_key", None)
+    plot_aromatic_rings(atoms)
+    assert atoms.info.get("aromatic_cycles") == expected
+    assert len(expected) == 48
+
+
 def test_strict_legacy_parity_when_no_extra_aromatic_types(monkeypatch):
     """With high order min, new basis should match legacy on NU-1000."""
     monkeypatch.setenv("MGR_AROMATIC_ORDER_MIN", "2.0")

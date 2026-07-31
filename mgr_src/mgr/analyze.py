@@ -1137,41 +1137,92 @@ def _cycle_has_chord(graph, cycle):
     return False
 
 
-def _chordless_cycles_bounded(graph, length_bound):
-    """Enumerate chordless cycles with length <= length_bound (undirected simple graph).
+# Dense C/N subgraphs (duplicate PBC sites) rarely host aromatic rings > 6 members.
+_DENSE_CN_EDGE_RATIO = 2.5
+_DENSE_CN_MAX_RING_SIZE = 6
+
+
+def _ring_sizes_for_component(n_nodes, n_edges, default_ring_sizes):
+    """Ring sizes to search in a biconnected component (skip hopeless sizes)."""
+    sizes = sorted({int(s) for s in default_ring_sizes if 3 <= int(s) <= n_nodes})
+    if not sizes:
+        return []
+    if n_nodes > 0 and (n_edges / float(n_nodes)) > _DENSE_CN_EDGE_RATIO:
+        sizes = [s for s in sizes if s <= _DENSE_CN_MAX_RING_SIZE]
+    return sizes
+
+
+def _chordless_cycles_bounded(graph, max_size, *, min_size=3):
+    """Enumerate chordless cycles with min_size <= length <= max_size.
 
     Uses biconnected-component decomposition so MOF linker subgraphs stay small.
     Compatible with NetworkX releases that lack ``chordless_cycles``.
     """
     import networkx as nx
 
-    if length_bound is None or length_bound < 3:
+    if max_size is None or max_size < 3 or min_size > max_size:
         return
+    min_size = max(3, int(min_size))
+    max_size = int(max_size)
     g = nx.Graph(graph)
     seen: set[tuple[int, ...]] = set()
     for nodes in nx.biconnected_components(g):
-        if len(nodes) < 3:
+        if len(nodes) < min_size:
             continue
         sub = g.subgraph(nodes)
-        for start in sub.nodes():
-            stack = [(int(start), [int(start)], {int(start)})]
+        for start in sorted(sub.nodes()):
+            start = int(start)
+            stack = [(start, [start], {start})]
             while stack:
                 node, path, visited = stack.pop()
                 plen = len(path)
-                if plen > length_bound:
+                if plen > max_size:
                     continue
                 for nbr in sub.neighbors(node):
                     nbr = int(nbr)
-                    if nbr == int(start) and plen >= 3:
-                        if plen <= length_bound and not _cycle_has_chord(sub, path):
+                    if nbr == start:
+                        if min_size <= plen <= max_size and not _cycle_has_chord(sub, path):
                             key = tuple(sorted(path))
                             if key not in seen:
                                 seen.add(key)
                                 yield list(path)
                         continue
-                    if nbr in visited or plen >= length_bound:
+                    if nbr in visited or nbr < start or plen >= max_size:
                         continue
                     stack.append((nbr, path + [nbr], visited | {nbr}))
+
+
+def _iter_chordless_cycles(graph, default_ring_sizes):
+    """Yield chordless cycles whose lengths are in ``default_ring_sizes``."""
+    import networkx as nx
+
+    allowed = set(int(s) for s in default_ring_sizes)
+    if not allowed:
+        return
+    g = nx.Graph(graph)
+    try:
+        from networkx.algorithms.cycles import chordless_cycles as nx_chordless
+    except ImportError:
+        nx_chordless = None
+
+    for nodes in nx.biconnected_components(g):
+        if len(nodes) < 3:
+            continue
+        sub = g.subgraph(nodes)
+        nn = len(nodes)
+        ne = sub.number_of_edges()
+        sizes = _ring_sizes_for_component(nn, ne, allowed)
+        if not sizes:
+            continue
+        if nx_chordless is not None:
+            max_s = max(sizes)
+            for cycle in nx_chordless(sub, length_bound=max_s):
+                n = len(cycle)
+                if n in allowed and n in sizes:
+                    yield cycle
+            continue
+        for size in sizes:
+            yield from _chordless_cycles_bounded(sub, max_size=size, min_size=size)
 
 
 def get_bond_types(bond_orders, *, bonds=None, ase_atoms=None):
@@ -1790,7 +1841,7 @@ def find_aromatic_cycles_in_unit_cell(
     try:
         from networkx.algorithms.cycles import chordless_cycles as _chordless_cycles
     except ImportError:
-        _chordless_cycles = None
+        _chordless_cycles = None  # noqa: F841 — fallback via _iter_chordless_cycles
 
     if default_ring_sizes is None:
         default_ring_sizes = [5, 6, 7, 8, 9]
@@ -1803,14 +1854,10 @@ def find_aromatic_cycles_in_unit_cell(
     )
 
     kept: set[tuple[int, ...]] = set()
-    max_size = max(default_ring_sizes)
-    if _chordless_cycles is not None:
-        cycle_iter = _chordless_cycles(graph, length_bound=max_size)
-    else:
-        cycle_iter = _chordless_cycles_bounded(graph, max_size)
-    for cycle in cycle_iter:
+    allowed_sizes = set(default_ring_sizes)
+    for cycle in _iter_chordless_cycles(graph, default_ring_sizes):
         n = len(cycle)
-        if n not in default_ring_sizes:
+        if n not in allowed_sizes:
             continue
         if not _is_valid_aromatic_cycle(
             cycle, graph, bond_types, aug_edges, pos, cell, sym,
@@ -1832,6 +1879,13 @@ def expand_aromatic_cycles_to_unit_cell(ase_atoms, canonical_cycles):
     return find_aromatic_cycles_in_unit_cell(ase_atoms)
 
 
+def cache_aromatic_cycles_if_needed(ase_atoms, *, show_rings: bool) -> None:
+    """Compute aromatic cycles once and cache on ``ase_atoms.info`` (Plotly + Three.js)."""
+    if not show_rings or ase_atoms is None:
+        return
+    compute_aromatic_cycles(ase_atoms)
+
+
 def compute_aromatic_cycles(
     ase_atoms,
     *,
@@ -1843,13 +1897,11 @@ def compute_aromatic_cycles(
 ):
     """Detect aromatic cycles and cache the result in ``ase_atoms.info``.
 
-    Mirrors ``mgr.analyze.compute_aromatic_cycles``:
-
     1. Ensures covalent bonds are present (calls
        :func:`update_with_covalent_bonds` if needed).
     2. Returns the cached ``ase_atoms.info["aromatic_cycles"]`` when
-       ``force_recompute=False`` and the info entry is already populated.
-    3. Otherwise calls :func:`find_aromatic_cycles_in_sgraph`, stores the
+       ``force_recompute=False`` and the cache key matches.
+    3. Otherwise detects rings (unit-cell chordless search by default), stores the
        result in ``ase_atoms.info["aromatic_cycles"]``, and returns it.
 
     When ``merge_duplicate_sites`` is True (default), atoms that share the
@@ -1862,8 +1914,9 @@ def compute_aromatic_cycles(
     is highlighted. When False, uses graph cycle detection on a merged or
     full structure (representative atoms only for merged sites).
 
-    Used internally by :func:`~mofography.movies.make_aromatic_rings_trace`
-    when a pre-computed cycle list is not supplied.
+    Used by :func:`~mgr.visualize.plot_aromatic_rings` (Plotly) and
+    :func:`~mgr.movies.make_aromatic_rings_trace` (Three.js) when a
+    pre-computed cycle list is not supplied.
     """
     if "covalent_bonds" not in ase_atoms.info:
         ase_atoms = update_with_covalent_bonds(ase_atoms)

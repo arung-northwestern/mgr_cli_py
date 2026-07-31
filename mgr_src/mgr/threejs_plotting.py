@@ -175,6 +175,12 @@ def show_mof_threejs(
 
     # Framework
     if defaults.get("plot_framework", True):
+        from mgr.analyze import cache_aromatic_cycles_if_needed
+
+        cache_aromatic_cycles_if_needed(
+            mat_atoms,
+            show_rings=bool(defaults.get("plot_framework_show_rings", True)),
+        )
         _emit(_step_labels[_step_idx])
         if framework_style == "scatter":
             # True scatter: points + line segments (fast, no mesh geometry)
