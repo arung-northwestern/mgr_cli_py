@@ -15,6 +15,8 @@ _NATIVE_THREEJS_TRACE_TYPES = frozenset(
         "unit_cell_lines",
         "instanced_spheres",
         "instanced_cylinders",
+        "instanced_ring_outlines",
+        "instanced_ring_fills",
     }
 )
 

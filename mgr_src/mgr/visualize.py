@@ -1854,8 +1854,8 @@ def batched_mesh_for_atoms(ase_atoms, bonds=None, colormap=None, bond_rgba_array
     sphere_colors = np.array([colormap[an] for an in atomic_numbers])
 
     if representation == "stick":
-        # Small sphere caps at atom positions, thinner bonds with two-tone CPK colors
-        radii = covalent_radii[atomic_numbers] * 0.15
+        from .movies import FRAMEWORK_STICK_RADIUS
+        radii = np.full(len(atomic_numbers), FRAMEWORK_STICK_RADIUS, dtype=float)
         sphere_mesh = _batched_spheres_mesh(positions, radii, sphere_colors,
                                             theta_resolution=sphere_sections * 4,
                                             phi_resolution=sphere_sections * 4)
@@ -1891,7 +1891,8 @@ def batched_mesh_for_atoms(ase_atoms, bonds=None, colormap=None, bond_rgba_array
         # Trim cylinders so bond caps start/end near sphere surfaces instead of
         # running full center-to-center (which causes bonds to stick out).
         if representation == "stick":
-            atom_radii = covalent_radii[atomic_numbers] * 0.15
+            from .movies import FRAMEWORK_STICK_RADIUS
+            atom_radii = np.full(len(atomic_numbers), FRAMEWORK_STICK_RADIUS, dtype=float)
         else:
             atom_radii = radii
         r_a = atom_radii[bond_idx[:, 0]]
@@ -1919,6 +1920,7 @@ def batched_mesh_for_atoms(ase_atoms, bonds=None, colormap=None, bond_rgba_array
             valid_bond_idx = bond_idx[valid]
 
         if representation == "stick":
+            from .movies import FRAMEWORK_STICK_RADIUS
             # Two-tone: bottom cap = atom A CPK color, top cap = atom B CPK color
             bond_colors = np.empty((len(valid_bond_idx), 2, 4), dtype=np.uint8)
             for i, (a, b) in enumerate(valid_bond_idx):
@@ -1930,7 +1932,7 @@ def batched_mesh_for_atoms(ase_atoms, bonds=None, colormap=None, bond_rgba_array
                     c_b = np.append(c_b, 255)
                 bond_colors[i, 0] = c_a
                 bond_colors[i, 1] = c_b
-            cyl_radius = radius * 0.5  # thinner bonds for stick
+            cyl_radius = FRAMEWORK_STICK_RADIUS
         else:
             bond_colors = np.tile(np.array(bond_rgba_array, dtype=np.uint8), (len(heights), 1))
             cyl_radius = radius

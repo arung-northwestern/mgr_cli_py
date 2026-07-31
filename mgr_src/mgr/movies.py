@@ -396,6 +396,10 @@ def _framework_vertex_hovertext(
     return hover_atoms + hover_bonds
 
 
+# Uniform rod radius (Å) for stick representation — atoms and bonds share this value.
+FRAMEWORK_STICK_RADIUS = 0.12
+
+
 def _serialize_framework_mesh(
     atoms: Atoms, bonds: list[list[int]] | None = None, representation: str = "ball_and_stick"
 ) -> dict[str, Any]:
@@ -1666,11 +1670,12 @@ def make_framework_instanced_trace(
     """Framework as InstancedMesh spheres + cylinder mesh bonds.
 
     Sends compact atom data for instanced spheres; browser builds sphere geometry.
-    representation: "ball_and_stick" (default) or "stick" (two-tone CPK bonds).
+    representation: "ball_and_stick" (default), "stick", or "space_filling".
     """
     from ase.data import covalent_radii as _cr
     from ase.data.colors import cpk_colors
     from ase.data import atomic_masses as atomic_masses_table
+    from ase.data import vdw_radii
     from ase.neighborlist import natural_cutoffs, neighbor_list
 
     if style is None:
@@ -1701,7 +1706,12 @@ def make_framework_instanced_trace(
     symbols = atoms.get_chemical_symbols()
     positions = atoms.get_positions()
     atom_colors = np.array([cpk_colors[an] for an in atomic_numbers], dtype=float)
-    radii = _cr[atomic_numbers] * atom_scale
+    if representation == "stick":
+        radii = np.full(n_atoms, FRAMEWORK_STICK_RADIUS, dtype=float)
+    elif representation == "space_filling":
+        radii = vdw_radii[atomic_numbers].astype(float)
+    else:
+        radii = _cr[atomic_numbers] * atom_scale
     masses = np.asarray([atomic_masses_table[an] for an in atomic_numbers])
 
     atom_hover = [
@@ -1724,8 +1734,10 @@ def make_framework_instanced_trace(
         visible=True,
     )
 
-    cyl_radius = 0.08 if representation == "stick" else 0.15
-    atom_radii_vals = _cr[atomic_numbers] * (0.15 if representation == "stick" else atom_scale)
+    cyl_radius = FRAMEWORK_STICK_RADIUS if representation == "stick" else 0.15
+    atom_radii_vals = _cr[atomic_numbers] * atom_scale
+    if representation == "space_filling":
+        bond_list = []
     if bond_list:
         bond_starts: list = []; bond_ends: list = []
         bond_colors_l: list = []; bond_hover: list = []
@@ -1737,10 +1749,10 @@ def make_framework_instanced_trace(
             if length < 1e-8:
                 continue
             unit_d = d / length
-            start = pa + unit_d * atom_radii_vals[a_idx] * 0.98
-            end = pb - unit_d * atom_radii_vals[b_idx] * 0.98
             ht = f"Bond: {symbols[a_idx]}({a_idx}) ↔ {symbols[b_idx]}({b_idx})\nLength: {length:.3f} Å"
             if representation == "stick":
+                start = pa
+                end = pb
                 mid = (start + end) / 2.0
                 bond_starts.extend(start.tolist()); bond_ends.extend(mid.tolist())
                 bond_colors_l.extend(atom_colors[a_idx].tolist())
@@ -1748,6 +1760,8 @@ def make_framework_instanced_trace(
                 bond_colors_l.extend(atom_colors[b_idx].tolist())
                 bond_hover.extend([ht, ht])
             else:
+                start = pa + unit_d * atom_radii_vals[a_idx] * 0.98
+                end = pb - unit_d * atom_radii_vals[b_idx] * 0.98
                 bond_starts.extend(start.tolist()); bond_ends.extend(end.tolist())
                 bond_colors_l.extend([0.5, 0.5, 0.5])
                 bond_hover.append(ht)
@@ -1770,6 +1784,8 @@ def make_framework_instanced_trace(
         hover=bond_hover if bond_hover else None,
         visible=True,
     )
+    if representation == "space_filling":
+        return {"atoms": atom_trace}
     return {"atoms": atom_trace, "bonds": bond_trace}
 
 
@@ -1777,6 +1793,15 @@ def make_framework_instanced_trace(
 def _aromatic_render_mode() -> str:
     import os
     return os.environ.get("MGR_AROMATIC_RENDER", "auto").lower()
+
+
+def _ring_positions_for_pose(ring, positions, cell=None):
+    """Cartesian ring vertices for pose fitting (unwrap PBC when needed)."""
+    if cell is None:
+        return positions[ring]
+    from .analyze import unwrap_aromatic_cycle_positions
+
+    return unwrap_aromatic_cycle_positions(ring, positions, cell)
 
 
 def _ring_pose_from_positions(ring_pos) -> tuple:
@@ -1809,12 +1834,12 @@ def _sorted_ring_vertices(ring_pos, center, normal):
     return centered[np.argsort(angles)]
 
 
-def _merged_aromatic_highlight_payload(cycles, positions):
+def _merged_aromatic_highlight_payload(cycles, positions, cell=None):
     """Single merged mesh for all ring fills."""
     all_verts = []
     all_faces = []
     for ring in cycles:
-        ring_pos = positions[ring]
+        ring_pos = _ring_positions_for_pose(ring, positions, cell)
         pose = _ring_pose_from_positions(ring_pos)
         if pose is None:
             continue
@@ -1844,13 +1869,14 @@ def _make_aromatic_rings_instanced_trace(
     *,
     style_circles,
     style_highlights,
-    n_template_segments: int = 16,
+    n_template_segments: int = 24,
+    cell=None,
 ):
     centers_l = []; normals_l = []; inner_l = []
     pent_centers = []; pent_normals = []; pent_scales = []
     hex_centers = []; hex_normals = []; hex_scales = []
     for ring in cycles:
-        ring_pos = positions[ring]
+        ring_pos = _ring_positions_for_pose(ring, positions, cell)
         pose = _ring_pose_from_positions(ring_pos)
         if pose is None:
             continue
@@ -1908,13 +1934,14 @@ def _make_aromatic_rings_legacy_trace(
     style_circles,
     style_highlights,
     n_circle_points: int,
+    cell=None,
 ):
     from scipy.spatial.transform import Rotation as _Rot
     theta = np.linspace(0, 2 * np.pi, n_circle_points, endpoint=False)
     unit_circle = np.column_stack([np.cos(theta), np.sin(theta), np.zeros_like(theta)])
     line_positions = []
     for ring in cycles:
-        ring_pos = positions[ring]
+        ring_pos = _ring_positions_for_pose(ring, positions, cell)
         pose = _ring_pose_from_positions(ring_pos)
         if pose is None:
             continue
@@ -1930,7 +1957,7 @@ def _make_aromatic_rings_legacy_trace(
         {"positions": line_positions, "n_segments": len(cycles) * n_circle_points},
         style=style_circles,
     )
-    payload = _merged_aromatic_highlight_payload(cycles, positions)
+    payload = _merged_aromatic_highlight_payload(cycles, positions, cell)
     highlights_trace = _make_trace(
         "aromatic_highlights", "mesh", "Aromatic highlights",
         payload, style=style_highlights,
@@ -1946,7 +1973,7 @@ def make_aromatic_rings_trace(
     n_circle_points: int = 72,
     *,
     use_instanced=None,
-    n_template_segments: int = 16,
+    n_template_segments: int = 24,
 ) -> dict:
     """Build aromatic ring traces (instanced torus/ngon when possible).
 
@@ -1976,6 +2003,7 @@ def make_aromatic_rings_trace(
         return {"circles": empty_circles, "highlights": empty_highlights}
 
     positions = atoms.get_positions()
+    cell = atoms.get_cell() if bool(np.any(atoms.get_pbc())) else None
     if use_instanced is None:
         mode = _aromatic_render_mode()
         if mode == "legacy":
@@ -1991,12 +2019,14 @@ def make_aromatic_rings_trace(
             style_circles=style_circles,
             style_highlights=style_highlights,
             n_template_segments=n_template_segments,
+            cell=cell,
         )
     return _make_aromatic_rings_legacy_trace(
         cycles, positions,
         style_circles=style_circles,
         style_highlights=style_highlights,
         n_circle_points=n_circle_points,
+        cell=cell,
     )
 
 
@@ -4192,8 +4222,9 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     function applyLineWidth(traceId, mult) {
       lineWidthMultByTrace[traceId] = mult;
       const obj0 = objectsById[traceId];
-      if (edgeFilterThreshold() !== null || (obj0 && obj0.userData && obj0.userData.filteredByThreshold)) {
+      if (traceId === "connections_internal" && (edgeFilterThreshold() !== null || (obj0 && obj0.userData && obj0.userData.filteredByThreshold))) {
         rebuildLineSegmentsForThreshold(traceId);
+        applyExplodeOffsets();
         return;
       }
       const trace = findTraceById(traceId);
@@ -4226,6 +4257,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         scene.add(group);
         objectsById[traceId] = group;
         group.visible = true;
+        applyExplodeOffsets();
         return;
       }
       if (!(obj instanceof THREE.LineSegments)) {
@@ -4246,6 +4278,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         obj.material.needsUpdate = true;
       }
       obj.visible = true;
+      applyExplodeOffsets();
     }
 
     function isSurfaceMeshId(traceId) {
@@ -4551,6 +4584,8 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       mesh.name = trace.id;
       mesh.userData.originalOpacity = mat.opacity;
+      mesh.userData.traceHover = trace.hover ? trace.hover.slice() : [];
+      mesh.userData.traceSymbols = trace.data.symbols || [];
       scene.add(mesh);
       objectsById[trace.id] = mesh;
       return mesh;
@@ -4605,6 +4640,147 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       mesh.name = trace.id;
       mesh.userData.originalOpacity = mat.opacity;
+      scene.add(mesh);
+      objectsById[trace.id] = mesh;
+      return mesh;
+    }
+
+    function quaternionFromPlaneNormal(nx, ny, nz) {
+      const zAxis = new THREE.Vector3(0, 0, 1);
+      const n = new THREE.Vector3(nx || 0, ny || 0, nz || 1);
+      if (n.lengthSq() < 1e-12) n.set(0, 0, 1);
+      else n.normalize();
+      const q = new THREE.Quaternion();
+      q.setFromUnitVectors(zAxis, n);
+      return q;
+    }
+
+    function ringOutlineTemplateGeometry(radialSegments, tubeRadius) {
+      if (!scene.userData.ringOutlineTemplates) scene.userData.ringOutlineTemplates = {};
+      const key = String(radialSegments) + ":" + String(tubeRadius);
+      if (!scene.userData.ringOutlineTemplates[key]) {
+        scene.userData.ringOutlineTemplates[key] = new THREE.TorusGeometry(
+          1.0, tubeRadius, 8, Math.max(16, radialSegments)
+        );
+      }
+      return scene.userData.ringOutlineTemplates[key];
+    }
+
+    function ringFillTemplateGeometry(sides) {
+      if (!scene.userData.ringFillTemplates) scene.userData.ringFillTemplates = {};
+      const nSides = Math.max(3, sides | 0);
+      if (!scene.userData.ringFillTemplates[nSides]) {
+        const shape = new THREE.Shape();
+        for (let i = 0; i < nSides; i++) {
+          const ang = (i / nSides) * Math.PI * 2.0 - Math.PI * 0.5;
+          const x = Math.cos(ang);
+          const y = Math.sin(ang);
+          if (i === 0) shape.moveTo(x, y);
+          else shape.lineTo(x, y);
+        }
+        shape.closePath();
+        scene.userData.ringFillTemplates[nSides] = new THREE.ShapeGeometry(shape);
+      }
+      return scene.userData.ringFillTemplates[nSides];
+    }
+
+    function addInstancedRingOutlines(trace) {
+      const n = trace.data.n_rings || 0;
+      if (!n) { console.warn("Skipping empty instanced ring outlines:", trace.id); return null; }
+      const centers = trace.data.centers || [];
+      const normals = trace.data.normals || [];
+      const innerRadii = trace.data.inner_radii || [];
+      const radialSegments = trace.data.radial_segments || 24;
+      const style = styleFor(trace);
+      const baseLw = Number(style.linewidth !== undefined ? style.linewidth : 4);
+      const tubeRadius = Math.max(0.012, 0.008 * baseLw);
+      const geo = ringOutlineTemplateGeometry(radialSegments, tubeRadius);
+      const col = threeColorFromStyle(style.color, 0xffffff);
+      const opacity = style.opacity !== undefined ? style.opacity : 1.0;
+      const isOpaque = opacity >= 0.999;
+      const mat = new THREE.MeshPhongMaterial({
+        color: col,
+        shininess: style.shininess !== undefined ? style.shininess : 20,
+        specular: style.specular !== undefined ? style.specular : 0x222222,
+        transparent: !isOpaque,
+        opacity: opacity,
+        depthWrite: isOpaque,
+      });
+      const mesh = new THREE.InstancedMesh(geo, mat, n);
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      const dummy = new THREE.Object3D();
+      const q = new THREE.Quaternion();
+      for (let i = 0; i < n; i++) {
+        const cx = centers[i * 3] || 0;
+        const cy = centers[i * 3 + 1] || 0;
+        const cz = centers[i * 3 + 2] || 0;
+        const nx = normals[i * 3] || 0;
+        const ny = normals[i * 3 + 1] || 0;
+        const nz = normals[i * 3 + 2] || 1;
+        const r = Math.max(innerRadii[i] || 0.2, 0.05);
+        q.copy(quaternionFromPlaneNormal(nx, ny, nz));
+        dummy.position.set(cx, cy, cz);
+        dummy.quaternion.copy(q);
+        dummy.scale.set(r, r, r);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.name = trace.id;
+      mesh.userData.originalOpacity = mat.opacity;
+      mesh.renderOrder = 1;
+      scene.add(mesh);
+      objectsById[trace.id] = mesh;
+      return mesh;
+    }
+
+    function addInstancedRingFills(trace) {
+      const n = trace.data.n_instances || 0;
+      if (!n) { console.warn("Skipping empty instanced ring fills:", trace.id); return null; }
+      const sides = trace.data.sides || 6;
+      const centers = trace.data.centers || [];
+      const normals = trace.data.normals || [];
+      const scales = trace.data.scales || [];
+      const style = styleFor(trace);
+      const geo = ringFillTemplateGeometry(sides);
+      const col = threeColorFromStyle(style.color, 0x3399f2);
+      const opacity = style.opacity !== undefined ? style.opacity : 0.3;
+      const isOpaque = opacity >= 0.999;
+      const sideName = style.side || "DoubleSide";
+      const side = sideName === "FrontSide" ? THREE.FrontSide
+        : (sideName === "BackSide" ? THREE.BackSide : THREE.DoubleSide);
+      const mat = new THREE.MeshPhongMaterial({
+        color: col,
+        shininess: style.shininess !== undefined ? style.shininess : 10,
+        specular: style.specular !== undefined ? style.specular : 0x151515,
+        transparent: !isOpaque,
+        opacity: opacity,
+        depthWrite: isOpaque,
+        side: side,
+      });
+      const mesh = new THREE.InstancedMesh(geo, mat, n);
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      const dummy = new THREE.Object3D();
+      const q = new THREE.Quaternion();
+      for (let i = 0; i < n; i++) {
+        const cx = centers[i * 3] || 0;
+        const cy = centers[i * 3 + 1] || 0;
+        const cz = centers[i * 3 + 2] || 0;
+        const nx = normals[i * 3] || 0;
+        const ny = normals[i * 3 + 1] || 0;
+        const nz = normals[i * 3 + 2] || 1;
+        const s = Math.max(scales[i] || 0.5, 0.05);
+        q.copy(quaternionFromPlaneNormal(nx, ny, nz));
+        dummy.position.set(cx, cy, cz);
+        dummy.quaternion.copy(q);
+        dummy.scale.set(s, s, s);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.name = trace.id;
+      mesh.userData.originalOpacity = mat.opacity;
+      mesh.renderOrder = 0;
       scene.add(mesh);
       objectsById[trace.id] = mesh;
       return mesh;
@@ -4717,6 +4893,12 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       else if (trace.type === "instanced_cylinders") {
         addInstancedCylinders(trace);
       }
+      else if (trace.type === "instanced_ring_outlines") {
+        addInstancedRingOutlines(trace);
+      }
+      else if (trace.type === "instanced_ring_fills") {
+        addInstancedRingFills(trace);
+      }
     });
 
     // Traces that exist only on animation frames (e.g. flexible framework) — create once from frame 0
@@ -4732,6 +4914,8 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         addInstancedSpheres(trace, 14, 14);
       }
       else if (trace.type === "instanced_cylinders") addInstancedCylinders(trace);
+      else if (trace.type === "instanced_ring_outlines") addInstancedRingOutlines(trace);
+      else if (trace.type === "instanced_ring_fills") addInstancedRingFills(trace);
     });
 
     // Guest instanced meshes for animation (supports multi-component ids like guests_CO2)
@@ -4778,6 +4962,8 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       if (trace.type === "points") return addPoints(trace);
       if (trace.type === "unit_cell_lines") return addUnitCellLines(trace);
       if (trace.type === "mesh") return addMesh(trace);
+      if (trace.type === "instanced_ring_outlines") return addInstancedRingOutlines(trace);
+      if (trace.type === "instanced_ring_fills") return addInstancedRingFills(trace);
       return null;
     }
 
@@ -4862,7 +5048,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         ],
       },
     ];
-    const FW_MERGE_IDS = ["framework", "framework_stick", "framework_spacefill", "framework_atoms", "framework_bonds", "framework_stick_atoms", "framework_stick_bonds", "aromatic_rings", "aromatic_highlights", "aromatic_highlights_hex", "aromatic_highlights_pent"];
+    const FW_MERGE_IDS = ["framework", "framework_stick", "framework_spacefill", "framework_atoms", "framework_bonds", "framework_stick_atoms", "framework_stick_bonds", "framework_spacefill_atoms", "aromatic_rings", "aromatic_highlights", "aromatic_highlights_hex", "aromatic_highlights_pent"];
     function resolveLegendTraceIds(entry) {
       if (entry.fwMerge) {
         return FW_MERGE_IDS.filter(function(tid) { return !!objectsById[tid]; });
@@ -4985,7 +5171,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           const mult = parseFloat(slider.value) || 1.0;
           traceIds.forEach(function(tid) {
             lineWidthMultByTrace[tid] = mult;
-            if (edgeFilterThreshold() !== null) {
+            if (tid === "connections_internal" && edgeFilterThreshold() !== null) {
               rebuildLineSegmentsForThreshold(tid);
             } else {
               applyLineWidth(tid, mult);
@@ -5039,7 +5225,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
               traceIds.forEach(function(tid) {
                 const mult = parseFloat(slider.value) || 1.0;
                 lineWidthMultByTrace[tid] = mult;
-                if (edgeFilterThreshold() !== null) {
+                if (tid === "connections_internal" && edgeFilterThreshold() !== null) {
                   rebuildLineSegmentsForThreshold(tid);
                 } else {
                   applyLineWidth(tid, mult);
@@ -5326,7 +5512,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     //   Keep local maxima in the central cell with raw surface (not in pore-graph copy).
     //   Original cell stays at center and is controlled independently by showCell.
     const _explodeGroups = [
-      { ids: ["framework", "framework_stick", "framework_spacefill", "framework_atoms", "framework_bonds", "framework_stick_atoms", "framework_stick_bonds", "aromatic_rings", "aromatic_highlights", "aromatic_highlights_hex", "aromatic_highlights_pent", "cell_framework"], x: -1, y: 0 },
+      { ids: ["framework", "framework_stick", "framework_spacefill", "framework_atoms", "framework_bonds", "framework_stick_atoms", "framework_stick_bonds", "framework_spacefill_atoms", "aromatic_rings", "aromatic_highlights", "aromatic_highlights_hex", "aromatic_highlights_pent", "cell_framework"], x: -1, y: 0 },
       { ids: ["windows_internal", "connections_internal", "connections_internal_nodes",
               "maxima_outside", "windows_periodic", "connections_periodic", "connections_periodic_nodes",
               "cell_copy"], x: 1, y: 0 },
@@ -5447,24 +5633,25 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     function updateFrameworkVisibility() {
       const val = reprSelect.value;
       const fwOn = scene.userData.fwLegendEnabled !== false;
-      const fw = objectsById["framework"];
-      const stick = objectsById["framework_stick"];
-      const sf = objectsById["framework_spacefill"];
+      const isBS = val === "ball_and_stick";
+      const isStick = val === "stick";
+      const isSF = val === "space_filling";
+      function setFwVisible(tid, on) {
+        const obj = objectsById[tid];
+        if (obj) obj.visible = fwOn && on;
+      }
+      // Baked mesh variants
+      setFwVisible("framework", isBS);
+      setFwVisible("framework_stick", isStick);
+      setFwVisible("framework_spacefill", isSF);
+      // Instanced / scatter variants
+      setFwVisible("framework_atoms", isBS);
+      setFwVisible("framework_bonds", isBS);
+      setFwVisible("framework_stick_atoms", isStick);
+      setFwVisible("framework_stick_bonds", isStick);
+      setFwVisible("framework_spacefill_atoms", isSF);
       const arRings = objectsById["aromatic_rings"];
       const arHigh = objectsById["aromatic_highlights"];
-      // Scatter / instanced traces (atoms + bonds split across two trace IDs)
-      const scatterAtoms = objectsById["framework_atoms"];
-      const scatterBonds = objectsById["framework_bonds"];
-      const stickAtoms = objectsById["framework_stick_atoms"];
-      const stickBonds = objectsById["framework_stick_bonds"];
-      if (fw) fw.visible = fwOn && val === "ball_and_stick";
-      if (stick) stick.visible = fwOn && val === "stick";
-      if (sf) sf.visible = fwOn && val === "space_filling";
-      if (stickAtoms) stickAtoms.visible = fwOn && val === "stick";
-      if (stickBonds) stickBonds.visible = fwOn && val === "stick";
-      // Instanced/scatter ball-and-stick: show atoms+bonds for ball_and_stick selection
-      if (scatterAtoms && !fw) scatterAtoms.visible = fwOn && val === "ball_and_stick";
-      if (scatterBonds && !fw) scatterBonds.visible = fwOn && val === "ball_and_stick";
       if (arRings) arRings.visible = fwOn;
       if (arHigh) arHigh.visible = fwOn;
       ["aromatic_highlights_hex", "aromatic_highlights_pent"].forEach(function(id) {
@@ -5472,13 +5659,12 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         if (o) o.visible = fwOn;
       });
       updateFrameworkCellVisibility();
-      // Re-apply exploded offsets so newly-active representations land in the right cell.
       applyExplodeOffsets();
     }
     reprSelect.addEventListener("change", updateFrameworkVisibility);
     // Hide representation selector when only scatter traces exist (no mesh variants)
     if (!objectsById["framework"] && !objectsById["framework_stick"] && !objectsById["framework_spacefill"]
-        && !objectsById["framework_stick_atoms"]) {
+        && !objectsById["framework_stick_atoms"] && !objectsById["framework_spacefill_atoms"]) {
       const reprLabel = reprSelect.parentNode;
       if (reprLabel) reprLabel.style.display = "none";
     }
@@ -5519,6 +5705,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         const ids = [
           "framework", "framework_stick", "framework_spacefill",
           "framework_atoms", "framework_bonds", "framework_stick_atoms", "framework_stick_bonds",
+          "framework_spacefill_atoms",
           "aromatic_rings", "aromatic_highlights", "aromatic_highlights_hex", "aromatic_highlights_pent",
         ];
         const fwOn = scene.userData.fwLegendEnabled !== false;
@@ -5565,6 +5752,7 @@ function readWindowMinThreshold() {
       return minR >= threshold;
     }
     function rebuildLineSegmentsForThreshold(traceId) {
+      if (traceId !== "connections_internal") return;
       const obj = objectsById[traceId];
       if (!obj) return;
       if (!obj.userData.originalPositions) {
@@ -5621,6 +5809,7 @@ function readWindowMinThreshold() {
         group.visible = legendOn;
         scene.add(group);
         objectsById[traceId] = group;
+        applyExplodeOffsets();
         return;
       }
       const geo = obj.geometry;
@@ -5629,8 +5818,10 @@ function readWindowMinThreshold() {
       obj.userData.filteredByThreshold = threshold !== null;
       obj.visible = legendOn;
       if (obj.material && obj.material.dashSize !== undefined) obj.computeLineDistances();
+      applyExplodeOffsets();
     }
     function rebuildPointsForThreshold(traceId) {
+      if (traceId !== "windows_internal") return;
       const obj = objectsById[traceId];
       if (!obj || !obj.userData.originalPositions) return;
       const threshold = readWindowMinThreshold();
@@ -5652,8 +5843,9 @@ function readWindowMinThreshold() {
       obj.userData.activeHover = filteredHover;
     }
     function applyWindowThresholdFilter() {
-      ["connections_internal", "connections_periodic"].forEach(rebuildLineSegmentsForThreshold);
-      ["windows_internal", "windows_periodic"].forEach(rebuildPointsForThreshold);
+      rebuildLineSegmentsForThreshold("connections_internal");
+      rebuildPointsForThreshold("windows_internal");
+      applyExplodeOffsets();
     }
 
     pivotSceneBtn.addEventListener("click", () => {
@@ -5902,17 +6094,42 @@ function readWindowMinThreshold() {
     raycaster.params.Points.threshold = 0.3;
 
     function hoverHitPriority(obj, hit) {
+      const name = (obj && obj.name) ? String(obj.name) : "";
+      if (name === "framework_atoms" || name === "framework_stick_atoms" || name === "framework_spacefill_atoms") return 8;
       if (obj instanceof THREE.Points) return 6;
       if (hit && hit.face && obj instanceof THREE.Mesh) return 5;
       if (obj instanceof THREE.LineSegments) return 4;
+      if (name.endsWith("_bonds") || name.endsWith("_bonds")) return 2;
       if (obj instanceof THREE.InstancedMesh) return 3;
       if (obj instanceof THREE.Mesh) return 2;
       return 1;
     }
 
+    function hoverHitKey(hit) {
+      if (!hit || !hit.object) return "";
+      const inst = (hit.instanceId != null && hit.instanceId >= 0) ? hit.instanceId : -1;
+      return `${hit.object.name || ""}#${inst}`;
+    }
+
+    function buildInstancedHoverText(hit, trace) {
+      const idx = hit.instanceId;
+      if (idx == null || idx < 0) return "";
+      const hoverArr = (hit.object.userData && hit.object.userData.traceHover) || (trace && trace.hover) || [];
+      if (hoverArr.length > idx && hoverArr[idx]) return String(hoverArr[idx]);
+      const symbols = (hit.object.userData && hit.object.userData.traceSymbols) || (trace && trace.data && trace.data.symbols) || [];
+      const positions = trace && trace.data && trace.data.positions ? trace.data.positions : [];
+      const sym = symbols[idx] || "?";
+      const px = positions[idx * 3] || 0;
+      const py = positions[idx * 3 + 1] || 0;
+      const pz = positions[idx * 3 + 2] || 0;
+      const traceName = trace ? (trace.name || hit.object.name) : hit.object.name;
+      return `Id: ${idx}\nElement: ${sym}\nPosition: ${px.toFixed(4)} ${py.toFixed(4)} ${pz.toFixed(4)}`;
+    }
+
     const mouse = new THREE.Vector2();
     let hoverRaf = null;
     let pendingHoverEv = null;
+    let stickyHoverKey = null;
     function runHoverRaycast(ev) {
       const rect = renderer.domElement.getBoundingClientRect();
       mouse.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
@@ -5921,18 +6138,29 @@ function readWindowMinThreshold() {
       const pickables = Object.values(objectsById).filter(o => o && o.visible);
       const hits = raycaster.intersectObjects(pickables, false);
       if (!hits.length) {
+        stickyHoverKey = null;
         tooltip.style.display = "none";
         return;
       }
-      // Pick the hit with the highest hover priority; tie-break by scene order (last rendered = on top)
-      const hit = hits.reduce((best, h) => {
-        const bestPri = hoverHitPriority(best.object, best);
-        const hPri = hoverHitPriority(h.object, h);
-        if (hPri !== bestPri) return hPri > bestPri ? h : best;
-        const bestIdx = scene.children.indexOf(best.object);
-        const hIdx = scene.children.indexOf(h.object);
-        return hIdx > bestIdx ? h : best;
-      });
+      // Prefer the previous hit when still under the cursor (reduces tooltip jumping).
+      let hit = null;
+      if (stickyHoverKey) {
+        hit = hits.find(h => hoverHitKey(h) === stickyHoverKey) || null;
+      }
+      if (!hit) {
+        hit = hits.reduce((best, h) => {
+          const bestPri = hoverHitPriority(best.object, best);
+          const hPri = hoverHitPriority(h.object, h);
+          if (hPri !== bestPri) return hPri > bestPri ? h : best;
+          const bestDist = best.distance != null ? best.distance : Infinity;
+          const hDist = h.distance != null ? h.distance : Infinity;
+          if (hDist !== bestDist) return hDist < bestDist ? h : best;
+          const bestIdx = scene.children.indexOf(best.object);
+          const hIdx = scene.children.indexOf(h.object);
+          return hIdx > bestIdx ? h : best;
+        });
+      }
+      stickyHoverKey = hoverHitKey(hit);
       let txt = "";
       if (hit.object && hit.object.name && (hit.object.name === "guests" || hit.object.name.startsWith("guests_"))) {
         const idx = hit.instanceId ?? -1;
@@ -5948,7 +6176,11 @@ function readWindowMinThreshold() {
         const frNow = getFrame(frame);
         const tracesNow = frNow && frNow.traces ? frNow.traces : [];
         const trace = tracesNow.find(t => t.id === hit.object.name) || staticTraces.find(t => t.id === hit.object.name);
-        if (trace && trace.hover && hit.face) {
+        if (hit.object instanceof THREE.InstancedMesh && hit.instanceId != null && hit.instanceId >= 0) {
+          const hoverTxt = buildInstancedHoverText(hit, trace);
+          const traceName = trace ? (trace.name || hit.object.name) : hit.object.name;
+          txt = hoverTxt ? `trace: ${traceName}\n${hoverTxt}` : `trace: ${traceName}\natom: ${hit.instanceId}`;
+        } else if (trace && trace.hover && hit.face) {
           const vi = hit.face.a;
           const hoverTxt = (vi >= 0 && vi < trace.hover.length) ? trace.hover[vi] : "";
           const traceName = trace.name || hit.object.name;
@@ -6004,7 +6236,7 @@ function readWindowMinThreshold() {
       });
     }
     renderer.domElement.addEventListener("pointermove", onPointerMove);
-    renderer.domElement.addEventListener("pointerleave", () => tooltip.style.display = "none");
+    renderer.domElement.addEventListener("pointerleave", () => { stickyHoverKey = null; tooltip.style.display = "none"; });
     renderer.domElement.addEventListener("pointerdown", function(ev) {
       if (!measuring) return;
       const rc = new THREE.Raycaster();

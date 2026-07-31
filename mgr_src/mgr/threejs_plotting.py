@@ -202,33 +202,23 @@ def show_mof_threejs(
             # Stick variant: smaller spheres, two-tone CPK bonds, hidden by default
             stick_traces = make_framework_instanced_trace(
                 mat_atoms, bonds="auto", trace_id="framework_stick",
-                name="Framework (stick)", atom_scale=float(defaults.get("plot_framework_mesh_scale", 0.65)) * 0.05,
+                name="Framework (stick)", atom_scale=float(defaults.get("plot_framework_mesh_scale", 0.65)),
                 representation="stick",
             )
+            stick_traces["atoms"]["visible"] = False
+            stick_traces["bonds"]["visible"] = False
             fig.add_trace(stick_traces["atoms"])
             fig.add_trace(stick_traces["bonds"])
-            fig.update_traces({"visible": False}, selector={"id": "framework_stick_atoms"})
-            fig.update_traces({"visible": False}, selector={"id": "framework_stick_bonds"})
-            # Spacefill variant: vdw radii, no bonds, hidden by default
-            from ase.data import vdw_radii, colors as ase_colors
-            sf_an = mat_atoms.get_atomic_numbers()
-            sf_radii = vdw_radii[sf_an]
-            sf_colors = np.array([ase_colors.cpk_colors[an] for an in sf_an], dtype=float)
-            sf_trace = _make_trace(
+            sf_traces = make_framework_instanced_trace(
+                mat_atoms,
+                bonds="auto",
                 trace_id="framework_spacefill",
-                trace_type="instanced_spheres",
                 name="Framework (spacefill)",
-                data={
-                    "positions": mat_atoms.get_positions().reshape(-1).tolist(),
-                    "colors": sf_colors.reshape(-1).tolist(),
-                    "radii": sf_radii.astype(float).tolist(),
-                    "n_atoms": int(len(mat_atoms)),
-                },
-                style={"visible": False},
-                hover=None,
-                visible=False,
+                atom_scale=float(defaults.get("plot_framework_mesh_scale", 0.65)),
+                representation="space_filling",
             )
-            fig.add_trace(sf_trace)
+            sf_traces["atoms"]["visible"] = False
+            fig.add_trace(sf_traces["atoms"])
         else:
             # Mesh path — apply quality preset for faster rendering
             from .visualize import MESH_QUALITY_PRESETS
