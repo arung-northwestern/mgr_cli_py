@@ -92,6 +92,24 @@ def test_plot_aromatic_rings_matches_compute_aromatic_cycles():
     assert len(expected) == 48
 
 
+def test_add_aromatic_rings_no_duplicate_fill_traces():
+    """Instanced fills must not be added twice (breaks explode offsets)."""
+    from ase.io import read
+    from mgr.analyze import compute_aromatic_cycles, update_with_covalent_bonds
+    from mgr.movies import MovieFigure
+
+    cif = FIXTURES / "ZIF-8-RASPA.cif"
+    if not cif.is_file():
+        pytest.skip("missing ZIF-8 fixture")
+    atoms = update_with_covalent_bonds(read(cif))
+    cycles = compute_aromatic_cycles(atoms)
+    fig = MovieFigure()
+    fig.add_aromatic_rings(atoms, cycles=cycles)
+    ids = [t["id"] for t in fig.data]
+    aromatic = [i for i in ids if "aromatic" in i]
+    assert len(aromatic) == len(set(aromatic))
+
+
 def test_strict_legacy_parity_when_no_extra_aromatic_types(monkeypatch):
     """With high order min, new basis should match legacy on NU-1000."""
     monkeypatch.setenv("MGR_AROMATIC_ORDER_MIN", "2.0")

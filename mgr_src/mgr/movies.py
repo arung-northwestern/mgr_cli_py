@@ -3222,11 +3222,12 @@ class MovieFigure:
     ) -> "MovieFigure":
         traces = make_aromatic_rings_trace(atoms, cycles=cycles)
         self.add_trace(traces["circles"])
-        self.add_trace(traces["highlights"])
-        # Instanced path emits separate hex/pent fill traces
-        if "fills_hex" in traces:
+        highlights = traces["highlights"]
+        self.add_trace(highlights)
+        # Instanced path: highlights may already be fills_hex or fills_pent — do not duplicate.
+        if "fills_hex" in traces and traces["fills_hex"] is not highlights:
             self.add_trace(traces["fills_hex"])
-        if "fills_pent" in traces:
+        if "fills_pent" in traces and traces["fills_pent"] is not highlights:
             self.add_trace(traces["fills_pent"])
         return self
 
