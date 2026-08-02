@@ -4235,7 +4235,8 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     }
     function disposeLineObject(obj) {
       if (!obj) return;
-      scene.remove(obj);
+      if (obj.parent) obj.parent.remove(obj);
+      else scene.remove(obj);
       if (obj instanceof THREE.Group) {
         obj.traverse(function(c) {
           if (c.geometry) c.geometry.dispose();
@@ -5862,7 +5863,8 @@ function readWindowMinThreshold() {
       const useThick = effectiveLw > 0.35;
       const pts = filtered.length ? filtered : [];
       if (!pts.length) {
-        obj.visible = false;
+        disposeLineObject(obj);
+        delete objectsById[traceId];
         return;
       }
       if (useThick || obj instanceof THREE.Group) {
