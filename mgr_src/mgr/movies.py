@@ -5348,7 +5348,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       thrInput.min = "0";
       thrInput.placeholder = "off";
       thrInput.style.cssText = "width:52px;vertical-align:middle;";
-      thrInput.title = "Hide windows below this size; optionally hide edges whose max window is below it";
+      thrInput.title = "Hide individual windows below this size; optionally hide edges only when every window on that connection is below it";
       thrLabel.appendChild(thrInput);
       const edgeLabel = document.createElement("label");
       edgeLabel.id = "labelHideEdgesBelowWindow";
@@ -5358,7 +5358,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       edgeCb.id = "hideEdgesBelowWindow";
       edgeCb.checked = true;
       edgeLabel.appendChild(edgeCb);
-      edgeLabel.appendChild(document.createTextNode(" Hide edges with bottleneck window below threshold"));
+      edgeLabel.appendChild(document.createTextNode(" Hide edges only when all windows between the two regions are below threshold"));
       wrap.appendChild(thrLabel);
       wrap.appendChild(edgeLabel);
       parent.appendChild(wrap);
@@ -5809,14 +5809,15 @@ function readWindowMinThreshold() {
     }
     function connectionPassesWindowThreshold(segmentRadii, threshold) {
       if (threshold === null) return true;
-      if (!segmentRadii || !segmentRadii.length) return false;
-      let minR = Infinity;
+      if (!segmentRadii || !segmentRadii.length) return true;
+      let anyFinite = false;
       for (let i = 0; i < segmentRadii.length; i++) {
         const r = Number(segmentRadii[i]);
-        if (Number.isFinite(r)) minR = Math.min(minR, r);
+        if (!Number.isFinite(r)) continue;
+        anyFinite = true;
+        if (r >= threshold) return true;
       }
-      if (!Number.isFinite(minR)) return false;
-      return minR >= threshold;
+      return !anyFinite;
     }
     function rebuildLineSegmentsForThreshold(traceId) {
       if (!isConnectionTraceId(traceId)) return;

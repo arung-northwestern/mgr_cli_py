@@ -17,11 +17,11 @@ def connection_passes_window_threshold(segment_radii, threshold):
     if threshold is None:
         return True
     if not segment_radii:
-        return False
+        return True
     vals = [float(x) for x in segment_radii if np.isfinite(x)]
     if not vals:
-        return False
-    return min(vals) >= threshold
+        return True
+    return any(v >= threshold for v in vals)
 
 
 def load_data(html_path: Path) -> dict:
@@ -69,7 +69,7 @@ def main() -> int:
     flat_max = [max(wr) for wr in radii if wr]
     print(f"OK: {n_seg} internal edges, segment_window_radii present")
     print(
-        f"    bottleneck window: min={min(flat_min):.3f} max={max(flat_max):.3f} Å"
+        f"    window radii along edges: min={min(flat_min):.3f} max={max(flat_max):.3f} Å"
     )
 
     for thr in (None, 0.6, 1.0, 2.0, 3.0, 4.0, 5.0):

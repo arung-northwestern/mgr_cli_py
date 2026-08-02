@@ -37,7 +37,9 @@ def _expected_edges(radii: list[list[float]], threshold: float | None) -> int:
     kept = 0
     for wr in radii:
         vals = [float(x) for x in wr if np.isfinite(x)]
-        if vals and min(vals) >= threshold:
+        if not vals:
+            kept += 1
+        elif any(v >= threshold for v in vals):
             kept += 1
     return kept
 
