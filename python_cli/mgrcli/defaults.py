@@ -73,7 +73,7 @@ PLOT_DEFAULTS: Dict[str, Any] = {
     "plot_cell": True,
     "plot_framework": True,
     "plot_framework_style": "mesh",
-    "plot_framework_show_rings": True,
+    "plot_framework_show_rings": False,
     "plot_framework_mesh_scale": 0.65,
     "plot_framework_bond_radius": 0.15,
     "plot_maxima": True,

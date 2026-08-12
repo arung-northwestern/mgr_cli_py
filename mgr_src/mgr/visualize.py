@@ -2505,6 +2505,150 @@ def plot_windows(connections, atoms=None, spacing=None, **kwargs):
     return go.Scatter3d(x=windows[:,0], y=windows[:,1], z=windows[:,2], mode='markers', marker=dict(size=marker_size, color=marker_color, opacity=opacity), hovertext=hovertext, name=name, **kwargs)
 
 
+def plot_windows_from_results(
+    connections,
+    dgrid=None,
+    atoms=None,
+    spacing=None,
+    outside_windows_to_periodic=True,
+    name="windows",
+    marker_color="yellow",
+    marker_size=10,
+    opacity=0.8,
+    periodic_marker_color="orange",
+    periodic_marker_size=8,
+    periodic_opacity=0.4,
+    show_periodic=False,
+    legendgroup="Windows",
+):
+    """Plot window positions with optional periodic reclassification (Plotly backend).
+
+    Returns a list of Scatter3d traces:
+    - Internal windows (after reclassification if enabled).
+    - Periodic windows (including reclassified far-outside ones), hidden by default.
+
+    Both traces are always emitted when any connection carries window coordinates,
+    grouped under *legendgroup* (default ``Windows``, separate from pore-graph connections).
+    """
+    import numpy as np
+    import plotly.graph_objects as go
+
+    window_conns = [
+        c for c in connections
+        if c[1] and len(c) > 3 and c[3] is not None and np.asarray(c[3]).size >= 3
+    ]
+    if not window_conns:
+        return []
+
+    def _window_scatter(
+        points: list,
+        hover: list,
+        trace_name: str,
+        marker: dict,
+        visible: bool,
+        *,
+        legend_title: bool = False,
+    ) -> go.Scatter3d:
+        if points:
+            arr = np.vstack(points)
+            x, y, z = arr[:, 0], arr[:, 1], arr[:, 2]
+            hovertext = hover
+        else:
+            x, y, z = [np.nan], [np.nan], [np.nan]
+            hovertext = [""]
+        trace = go.Scatter3d(
+            x=x,
+            y=y,
+            z=z,
+            mode="markers",
+            marker=marker,
+            hovertext=hovertext,
+            hoverinfo="text",
+            name=trace_name,
+            legendgroup=legendgroup,
+            visible=visible,
+            showlegend=True,
+        )
+        if legend_title:
+            trace.legendgrouptitle = dict(text=legendgroup)
+        return trace
+
+    internal_windows: list = []
+    internal_hover: list = []
+    periodic_windows: list = []
+    periodic_hover: list = []
+
+    if outside_windows_to_periodic and atoms is not None and spacing is not None and dgrid is not None:
+        from .helper import compute_wall_cells, is_inside_or_close_to_boundary
+        _cell = atoms.get_cell().array.T
+        _inv_cell = np.linalg.inv(_cell)
+        _shape = np.asarray(dgrid.shape, dtype=float)
+        _wall_tol = compute_wall_cells(atoms, spacing, wall_thickness=0.05)
+
+        for c in window_conns:
+            ctype = str(c[2])
+            pts = c[3] if c[3] is not None else []
+            wr = c[4] if c[4] is not None else []
+            n1, n2 = c[0]
+            for p, r in zip(pts, wr):
+                wp = np.asarray(p, dtype=float)
+                txt = f"{n1}-{n2}<br>{ctype}<br>{float(r):.3f} A"
+                if ctype == "internal":
+                    frac = _inv_cell @ wp
+                    grid_c = frac * _shape
+                    loc = is_inside_or_close_to_boundary(
+                        [tuple(grid_c)], tuple(_shape.astype(int)), _wall_tol,
+                    )[0]
+                    if loc == "far_outside":
+                        periodic_windows.append(wp)
+                        periodic_hover.append(txt.replace("internal", "periodic (wrapped)"))
+                        continue
+                    internal_windows.append(wp)
+                    internal_hover.append(txt)
+                elif ctype == "periodic":
+                    periodic_windows.append(wp)
+                    periodic_hover.append(txt)
+    else:
+        for c in window_conns:
+            ctype = str(c[2])
+            pts = c[3] if c[3] is not None else []
+            wr = c[4] if c[4] is not None else []
+            n1, n2 = c[0]
+            for p, r in zip(pts, wr):
+                wp = np.asarray(p, dtype=float)
+                txt = f"{n1}-{n2}<br>{ctype}<br>{float(r):.3f} A"
+                if ctype == "periodic":
+                    periodic_windows.append(wp)
+                    periodic_hover.append(txt)
+                else:
+                    internal_windows.append(wp)
+                    internal_hover.append(txt)
+
+    traces = [
+        _window_scatter(
+            internal_windows,
+            internal_hover,
+            f"{name} (internal)",
+            dict(size=marker_size, color=marker_color, opacity=opacity),
+            True,
+            legend_title=True,
+        ),
+        _window_scatter(
+            periodic_windows,
+            periodic_hover,
+            f"{name} (periodic)",
+            dict(
+                size=periodic_marker_size,
+                color=periodic_marker_color,
+                opacity=periodic_opacity,
+            ),
+            True if show_periodic else "legendonly",
+            legend_title=False,
+        ),
+    ]
+    return traces
+
+
 # def plot_maxima(dgrid, maxima, ase_atoms, **kwargs):
 #     """
 #     it takes in a 3d grid of data, a list of indices of local maxima, and an ase atoms object, and

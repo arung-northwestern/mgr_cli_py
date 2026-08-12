@@ -81,7 +81,7 @@ def show_mof_threejs(
         "plot_cell": True,
         "plot_framework": True,
         "plot_framework_style": "mesh",
-        "plot_framework_show_rings": True,
+        "plot_framework_show_rings": False,
         "plot_framework_mesh_scale": 0.65,
         "plot_framework_bond_radius": 0.15,
         "plot_framework_bond_linewidth": 8.0,
@@ -134,7 +134,7 @@ def show_mof_threejs(
     _step_labels = []
     if defaults.get("plot_framework", True):
         _step_labels.append(f"Framework ({framework_style})")
-    if defaults.get("plot_framework", True) and defaults.get("plot_framework_show_rings", True):
+    if defaults.get("plot_framework", True) and defaults.get("plot_framework_show_rings", False):
         _step_labels.append("Aromatic rings")
     if defaults.get("plot_cell", True):
         _step_labels.append("Unit cell")
@@ -179,7 +179,7 @@ def show_mof_threejs(
 
         cache_aromatic_cycles_if_needed(
             mat_atoms,
-            show_rings=bool(defaults.get("plot_framework_show_rings", True)),
+            show_rings=bool(defaults.get("plot_framework_show_rings", False)),
         )
         _emit(_step_labels[_step_idx])
         if framework_style == "scatter":
@@ -248,7 +248,7 @@ def show_mof_threejs(
                 representation="ball_and_stick" if framework_style == "mesh" else "stick",
                 **kwargs,
             )
-        if defaults.get("plot_framework_show_rings", True):
+        if defaults.get("plot_framework_show_rings", False):
             _emit(_step_labels[_step_idx])
             fig.add_aromatic_rings(
                 mat_atoms,

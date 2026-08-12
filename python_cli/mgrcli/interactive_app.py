@@ -1137,7 +1137,7 @@ dark_layout = None
 white_layout = None
 
 
-def _queue_mesh_prewarm(results_data: Optional[Dict[str, Any]], cache_identity: str, stylize: bool, show_rings: bool = True) -> None:
+def _queue_mesh_prewarm(results_data: Optional[Dict[str, Any]], cache_identity: str, stylize: bool, show_rings: bool = False) -> None:
     if not results_data or "ase_atoms" not in results_data:
         return
     jobs = st.session_state.setdefault("mesh_prewarm_jobs", {})
@@ -1208,6 +1208,7 @@ def _start_compute_thread(
     min_box_thickness_enabled: bool = False,
     min_box_thickness: float = 6.0,
     vdw_radii_set: str = "bondi",
+    compute_aromatic_rings: bool = False,
     progress: Optional[_StreamingProgress] = None,
 ) -> _StreamingProgress:
     if progress is None:
@@ -1251,13 +1252,14 @@ def _start_compute_thread(
                 _n_atoms_local = len(w_atoms)
                 progress.set_phase(f"Covalent bonds ({_n_atoms_local:,} atoms)")
                 w_atoms = update_with_covalent_bonds(w_atoms)
-                progress.set_phase("Aromatic rings")
-                try:
-                    compute_aromatic_cycles(w_atoms)
-                except Exception:
-                    # Aromatic cycle detection can be slow on very large graphs;
-                    # non-fatal - bonds are already computed.
-                    w_atoms.info.pop("aromatic_cycles", None)
+                if compute_aromatic_rings:
+                    progress.set_phase("Aromatic rings (experimental)")
+                    try:
+                        compute_aromatic_cycles(w_atoms)
+                    except Exception:
+                        # Aromatic cycle detection can be slow on very large graphs;
+                        # non-fatal - bonds are already computed.
+                        w_atoms.info.pop("aromatic_cycles", None)
 
                 if dgrid_method == "python_aabb":
                     from mgr.compute import dgrid_from_atoms
@@ -1650,7 +1652,8 @@ def _hts_one_material(
     try:
         from mgr.analyze import compute_aromatic_cycles, update_with_covalent_bonds
         atoms = update_with_covalent_bonds(atoms)
-        compute_aromatic_cycles(atoms)
+        if options.get("plot_framework_show_rings"):
+            compute_aromatic_cycles(atoms)
     except Exception:
         pass
 
@@ -2680,6 +2683,17 @@ def main() -> None:
                 atom_scale = 0.65
                 bond_radius = 0.15
             framework_bond_linewidth = 8.0
+        show_aromatic_rings = st.checkbox(
+            "Show aromatic rings (experimental)",
+            value=False,
+            key="viz_show_aromatic_rings",
+            help="Detect aromatic rings and highlight linkers on the framework. Off by default — can be very slow.",
+        )
+        if show_aromatic_rings:
+            st.warning(
+                "Experimental: aromatic ring detection can take minutes on large structures "
+                "and may freeze or crash the session. Enable only when you need linker highlights."
+            )
         projection_choice = st.selectbox(
             "Projection",
             ["perspective", "orthographic"],
@@ -2961,6 +2975,7 @@ def main() -> None:
                     min_box_thickness_enabled=min_box_thickness_enabled,
                     min_box_thickness=_min_box,
                     vdw_radii_set=vdw_radii_set,
+                    compute_aromatic_rings=show_aromatic_rings,
                     progress=queue_progress,
                 )
                 if queue_job_id is not None:
@@ -3025,6 +3040,7 @@ def main() -> None:
                 min_box_thickness_enabled=min_box_thickness_enabled,
                 min_box_thickness=_min_box,
                 vdw_radii_set=vdw_radii_set,
+                compute_aromatic_rings=show_aromatic_rings,
             )
             st.session_state["_compute_progress"] = progress
             st.rerun()
@@ -3414,7 +3430,7 @@ def main() -> None:
             results_data,
             framework_identity,
             stylize=bool(stylize),
-            show_rings=True,
+            show_rings=show_aromatic_rings,
         )
 
     if results_data is not None:
@@ -3478,7 +3494,7 @@ def main() -> None:
             viz_opts = dict(
                 plot_framework=(simple_framework or instanced_framework or mesh_framework),
                 plot_framework_style=framework_style,
-                plot_framework_show_rings=True,
+                plot_framework_show_rings=show_aromatic_rings,
                 plot_framework_mesh_scale=float(atom_scale),
                 plot_framework_bond_radius=float(bond_radius),
                 plot_framework_bond_linewidth=float(framework_bond_linewidth),
@@ -3503,6 +3519,7 @@ def main() -> None:
             )
 
             md_plot = metadata if isinstance(metadata, dict) else {}
+            viz_opts["plot_spacing"] = float(md_plot.get("spacing", spacing))
             _settings_slug = _viz_settings_title_suffix(
                 spacing=float(md_plot.get("spacing", spacing)),
                 h_value=float(md_plot.get("h_value", h_value)),
@@ -4937,7 +4954,16 @@ def _render_hts_mode() -> None:
             hts_plot_framework = st.checkbox("Show framework", value=True, key="hts_plot_fw")
             hts_framework_mesh = st.checkbox("Show framework as mesh", value=False, key="hts_fw_mesh")
             hts_framework_scatter = st.checkbox("Show simple framework scatter", value=True, key="hts_fw_scatter")
-            hts_show_rings = st.checkbox("Show rings in framework", value=True, key="hts_show_rings")
+            hts_show_rings = st.checkbox(
+                "Show aromatic rings (experimental)",
+                value=False,
+                key="hts_show_rings",
+                help="Off by default — aromatic detection can be very slow on large structures.",
+            )
+            if hts_show_rings:
+                st.warning(
+                    "Experimental: aromatic ring detection can take minutes and may freeze or crash the worker."
+                )
             hts_plot_cell = st.checkbox("Show cell", value=True, key="hts_plot_cell")
             hts_plot_maxima = st.checkbox("Show maxima", value=True, key="hts_plot_maxima")
             hts_projection = st.selectbox("Projection", ["perspective", "orthographic"], index=0, key="hts_proj")

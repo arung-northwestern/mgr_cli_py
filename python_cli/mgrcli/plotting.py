@@ -735,7 +735,7 @@ def plot_framework_as_mesh(
     ase_atoms,
     stylize: bool = True,
     style: str = "mesh",
-    show_rings: bool = True,
+    show_rings: bool = False,
     kwargs_mesh_for_atoms: Dict[str, Any] | None = None,
 ) -> Tuple[go.BaseTraceType, ...]:
     """Return framework traces, defaulting to mesh rendering with scatter fallback."""
@@ -865,7 +865,7 @@ def _safe_update_with_covalent_bonds(ase_atoms):
         print(f"Warning: Bond update failed with error: {e}")
         return ase_atoms
 
-def _draw_framework_fallback(ase_atoms, stylize: bool = True, show_rings: bool = True) -> Tuple[go.BaseTraceType, ...]:
+def _draw_framework_fallback(ase_atoms, stylize: bool = True, show_rings: bool = False) -> Tuple[go.BaseTraceType, ...]:
     mat_updated = _safe_update_with_covalent_bonds(ase_atoms)
 
     try:
@@ -979,7 +979,7 @@ def clear_framework_cache():
         _framework_cache.clear()
 
 
-def prewarm_framework_cache(mat_atoms, stylize: bool = True, show_rings: bool = True) -> None:
+def prewarm_framework_cache(mat_atoms, stylize: bool = True, show_rings: bool = False) -> None:
     """Compute and cache mesh framework traces ahead of user style switch."""
     cache_key = _get_framework_cache_key(mat_atoms, "mesh", show_rings, stylize)
     with _framework_cache_lock:
@@ -1015,13 +1015,15 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         "plot_cell": True,
         "plot_framework": True,
         "plot_framework_style": "mesh",
-        "plot_framework_show_rings": True,
+        "plot_framework_show_rings": False,
         "plot_framework_mesh_scale": 0.65,
         "plot_framework_bond_radius": 0.15,
         "plot_maxima": True,
         "plot_maxima_show_spheres": False,
         "plot_connections": True,
         "plot_windows": True,
+        "plot_windows_reclassify_far_outside": True,
+        "plot_windows_periodic": False,
         "plot_surface": True,
         "plot_surface_pbc": True,
         "plot_surface_isovalue": 1.0,
@@ -1089,7 +1091,7 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
 
         cache_aromatic_cycles_if_needed(
             mat_atoms,
-            show_rings=bool(defaults.get("plot_framework_show_rings", True)),
+            show_rings=bool(defaults.get("plot_framework_show_rings", False)),
         )
         _emit(_step_labels[_step_idx])
         import time as _time
@@ -1097,7 +1099,7 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         cache_key = _get_framework_cache_key(
             mat_atoms,
             framework_style,
-            defaults.get("plot_framework_show_rings", True),
+            defaults.get("plot_framework_show_rings", False),
             stylize,
             mesh_scale=float(defaults.get("plot_framework_mesh_scale", 0.65)),
             bond_radius=float(defaults.get("plot_framework_bond_radius", 0.15)),
@@ -1120,7 +1122,7 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
                 mat_atoms,
                 stylize=stylize,
                 style=framework_style,
-                show_rings=defaults.get("plot_framework_show_rings", True),
+                show_rings=defaults.get("plot_framework_show_rings", False),
                 **kwargs_mesh,
             )
             _t2 = _time.time()
@@ -1219,22 +1221,30 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         )
         traces.extend(connections_traces)
 
-    if defaults.get("plot_windows", True) and connections_trimmed:
+    if defaults.get("plot_windows", True) and connections:
         _emit(_step_labels[_step_idx])
-        window_conns = [
-            c for c in connections_trimmed
-            if c[1] and len(c) > 3 and c[3] is not None and np.asarray(c[3]).size >= 3
-        ]
-        if window_conns:
-            traces.append(
-                mgr_visualize.plot_windows(
-                    window_conns,
-                    name="windows",
-                    marker_color="yellow",
-                    marker_size=10,
-                    opacity=0.8,
-                )
-            )
+        _cell = mat_atoms.get_cell().array.T
+        _lengths = np.linalg.norm(_cell, axis=0)
+        _shape = np.asarray(dgrid.shape, dtype=float)
+        if defaults.get("plot_spacing") is not None:
+            _win_spacing = float(defaults["plot_spacing"])
+        else:
+            _win_spacing = float(np.mean(_lengths / np.maximum(_shape, 1.0)))
+        _do_reclassify = defaults.get("plot_windows_reclassify_far_outside", True)
+        win_traces = mgr_visualize.plot_windows_from_results(
+            connections,
+            dgrid=dgrid,
+            atoms=mat_atoms,
+            spacing=_win_spacing,
+            outside_windows_to_periodic=_do_reclassify,
+            name="windows",
+            marker_color="yellow",
+            marker_size=10,
+            opacity=0.8,
+            show_periodic=bool(defaults.get("plot_windows_periodic", False)),
+            legendgroup="Windows",
+        )
+        traces.extend(win_traces)
 
     if defaults.get("plot_maxima", True) and len(maxima):
         _emit(_step_labels[_step_idx])
