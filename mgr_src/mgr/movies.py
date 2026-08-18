@@ -3806,6 +3806,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       renderer.setSize(vp.w, vp.h);
     }
     renderer.outputEncoding = THREE.sRGBEncoding;
+    renderer.dithering = true;
     renderer.setClearColor(0x000000, 1.0);
     app.appendChild(renderer.domElement);
     function makeSprite(drawFn) {
@@ -3875,6 +3876,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     controls.target.set(centerArr[0], centerArr[1], centerArr[2]);
     controls.update();
     updateOrthoFrustum();  // set initial frustum from camera-to-target distance
+    controls.addEventListener("change", refreshAllBillboardPointMeshes);
 
     // Orthographic toggle
     const toggleOrthoBtn = document.getElementById("toggleOrtho");
@@ -3985,10 +3987,10 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       toggleOrthoBtn.textContent = isOrtho ? "Perspective" : "Ortho";
 
       Object.values(objectsById).forEach(function(obj) {
-        if (obj && obj.material && obj.material.isPointsMaterial) {
+        if (isScatterPointsObj(obj)) {
           obj.material.depthTest = true;
           obj.material.depthWrite = false;
-          var base = obj.material.userData && obj.material.userData.baseSize ? obj.material.userData.baseSize : obj.material.size;
+          var base = obj.userData.baseSize || (obj.material.userData && obj.material.userData.baseSize) || obj.material.size;
           applyPointSize(obj, base);
         }
       });
@@ -4071,6 +4073,47 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       if (traceId && pointSizeMultByTrace[traceId] !== undefined) return pointSizeMultByTrace[traceId];
       return 1.0;
     }
+    function isScatterPointsObj(obj) {
+      return !!(obj && (
+        (obj.material && obj.material.isPointsMaterial) ||
+        (obj.userData && obj.userData.isBillboardPoints)
+      ));
+    }
+    const _billboardDummy = new THREE.Object3D();
+    function pixelSizeToWorldScale(pixelSize, position, camera, renderer) {
+      const height = Math.max(renderer.domElement.clientHeight, 1);
+      if (camera.isOrthographicCamera) {
+        return pixelSize * (camera.top - camera.bottom) / height;
+      }
+      const dist = Math.max(camera.position.distanceTo(position), 1e-6);
+      const vFOV = THREE.MathUtils.degToRad(camera.fov);
+      return pixelSize * 2 * Math.tan(vFOV * 0.5) * dist / height;
+    }
+    function updateBillboardPointsMesh(mesh) {
+      if (!mesh || !mesh.userData || !mesh.userData.isBillboardPoints) return;
+      const positions = mesh.userData.pointPositions;
+      if (!positions || !positions.length) return;
+      const base = mesh.userData.baseSize || (mesh.material.userData && mesh.material.userData.baseSize) || 1;
+      const mult = pointSizeMultFor(mesh.name);
+      const pixelSize = Math.max(base * mult * (isOrtho ? 2.0 : 1.0), 0);
+      mesh.userData.targetPixelSize = pixelSize;
+      mesh.visible = pixelSize > 0.01 && legendEnabledByTrace[mesh.name] !== false;
+      const n = mesh.count;
+      for (let i = 0; i < n; i++) {
+        _billboardDummy.position.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+        _billboardDummy.quaternion.copy(camera.quaternion);
+        const ws = pixelSizeToWorldScale(pixelSize, _billboardDummy.position, camera, renderer);
+        _billboardDummy.scale.set(ws, ws, 1);
+        _billboardDummy.updateMatrix();
+        mesh.setMatrixAt(i, _billboardDummy.matrix);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+    }
+    function refreshAllBillboardPointMeshes() {
+      Object.values(objectsById).forEach(function(obj) {
+        if (obj && obj.userData && obj.userData.isBillboardPoints) updateBillboardPointsMesh(obj);
+      });
+    }
     function lineWidthMultFor(traceId) {
       if (traceId && lineWidthMultByTrace[traceId] !== undefined) return lineWidthMultByTrace[traceId];
       return 1.0;
@@ -4085,6 +4128,16 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       return 0.04 * Math.max(Number(effectiveLw) || 0, 0.01);
     }
     function applyPointSize(pointsObj, baseSize) {
+      if (pointsObj && pointsObj.userData && pointsObj.userData.isBillboardPoints) {
+        if (baseSize !== undefined) {
+          pointsObj.userData.baseSize = baseSize;
+          if (pointsObj.material && pointsObj.material.userData) {
+            pointsObj.material.userData.baseSize = baseSize;
+          }
+        }
+        updateBillboardPointsMesh(pointsObj);
+        return;
+      }
       if (!pointsObj || !pointsObj.material || !pointsObj.material.isPointsMaterial) return;
       const base = baseSize !== undefined ? baseSize : (
         pointsObj.material.userData && pointsObj.material.userData.baseSize
@@ -4323,6 +4376,47 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       );
     }
 
+    function screenDoorDiscardGlsl() {
+      return (
+        "float sdOpacity = clamp(uScreenDoorOpacity, 0.0, 1.0);\n" +
+        "if (sdOpacity < 1.0) {\n" +
+        "  vec2 p = mod(gl_FragCoord.xy, 4.0);\n" +
+        "  float x = p.x;\n" +
+        "  float y = p.y;\n" +
+        "  float threshold = 0.0;\n" +
+        "  if (y < 1.0) {\n" +
+        "    threshold = (x < 1.0) ? 0.0/16.0 : ((x < 2.0) ? 8.0/16.0 : ((x < 3.0) ? 2.0/16.0 : 10.0/16.0));\n" +
+        "  } else if (y < 2.0) {\n" +
+        "    threshold = (x < 1.0) ? 12.0/16.0 : ((x < 2.0) ? 4.0/16.0 : ((x < 3.0) ? 14.0/16.0 : 6.0/16.0));\n" +
+        "  } else if (y < 3.0) {\n" +
+        "    threshold = (x < 1.0) ? 3.0/16.0 : ((x < 2.0) ? 11.0/16.0 : ((x < 3.0) ? 1.0/16.0 : 9.0/16.0));\n" +
+        "  } else {\n" +
+        "    threshold = (x < 1.0) ? 15.0/16.0 : ((x < 2.0) ? 7.0/16.0 : ((x < 3.0) ? 13.0/16.0 : 5.0/16.0));\n" +
+        "  }\n" +
+        "  if (sdOpacity <= threshold) discard;\n" +
+        "}\n"
+      );
+    }
+    function injectScreenDoorFragmentShader(shader) {
+      if (shader.fragmentShader.indexOf("uScreenDoorOpacity") !== -1) return;
+      shader.fragmentShader = shader.fragmentShader.replace(
+        "void main() {",
+        "uniform float uScreenDoorOpacity;\nvoid main() {"
+      );
+      const snippet = screenDoorDiscardGlsl();
+      if (shader.fragmentShader.indexOf("#include <dithering_fragment>") !== -1) {
+        shader.fragmentShader = shader.fragmentShader.replace(
+          "#include <dithering_fragment>",
+          snippet + "#include <dithering_fragment>"
+        );
+      } else if (shader.fragmentShader.indexOf("#include <output_fragment>") !== -1) {
+        shader.fragmentShader = shader.fragmentShader.replace(
+          "#include <output_fragment>",
+          snippet + "#include <output_fragment>"
+        );
+      }
+    }
+
     function applySurfaceScreenDoorForObject(obj) {
       if (!obj || !obj.material) return;
       const mat = obj.material;
@@ -4347,40 +4441,14 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           const orig = mat.userData.screenDoorOriginalOnBeforeCompile;
           if (typeof orig === "function") orig(shader);
           shader.uniforms.uScreenDoorOpacity = { value: mat.userData.screenDoorOpacity !== undefined ? mat.userData.screenDoorOpacity : 1.0 };
-          if (shader.fragmentShader.indexOf("uScreenDoorOpacity") === -1) {
-            shader.fragmentShader = shader.fragmentShader.replace(
-              "void main() {",
-              "uniform float uScreenDoorOpacity;\nvoid main() {"
-            );
-            shader.fragmentShader = shader.fragmentShader.replace(
-              "#include <dithering_fragment>",
-              "float sdOpacity = clamp(uScreenDoorOpacity, 0.0, 1.0);\n" +
-              "if (sdOpacity < 1.0) {\n" +
-              "  vec2 p = mod(gl_FragCoord.xy, 4.0);\n" +
-              "  float x = p.x;\n" +
-              "  float y = p.y;\n" +
-              "  float threshold = 0.0;\n" +
-              "  if (y < 1.0) {\n" +
-              "    threshold = (x < 1.0) ? 0.0/16.0 : ((x < 2.0) ? 8.0/16.0 : ((x < 3.0) ? 2.0/16.0 : 10.0/16.0));\n" +
-              "  } else if (y < 2.0) {\n" +
-              "    threshold = (x < 1.0) ? 12.0/16.0 : ((x < 2.0) ? 4.0/16.0 : ((x < 3.0) ? 14.0/16.0 : 6.0/16.0));\n" +
-              "  } else if (y < 3.0) {\n" +
-              "    threshold = (x < 1.0) ? 3.0/16.0 : ((x < 2.0) ? 11.0/16.0 : ((x < 3.0) ? 1.0/16.0 : 9.0/16.0));\n" +
-              "  } else {\n" +
-              "    threshold = (x < 1.0) ? 15.0/16.0 : ((x < 2.0) ? 7.0/16.0 : ((x < 3.0) ? 13.0/16.0 : 5.0/16.0));\n" +
-              "  }\n" +
-              "  if (sdOpacity <= threshold) discard;\n" +
-              "}\n" +
-              "#include <dithering_fragment>"
-            );
-          }
+          injectScreenDoorFragmentShader(shader);
           mat.userData.screenDoorUniform = shader.uniforms.uScreenDoorOpacity;
         };
         mat.customProgramCacheKey = function() {
           const orig = mat.userData.screenDoorOriginalProgramKey;
           const base = (typeof orig === "function") ? orig.call(this) : "";
           const screenDoorMeshKey = (obj && obj.uuid) ? String(obj.uuid) : String(mat.uuid || "");
-          return base + "|screenDoorV3|" + screenDoorMeshKey;
+          return base + "|screenDoorV4|" + screenDoorMeshKey;
         };
         if (!mat.userData.screenDoorEnabled) mat.needsUpdate = true;
         mat.userData.screenDoorEnabled = true;
@@ -4531,39 +4599,55 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     function addPoints(trace, colorOverride, sizeOverride) {
       const pts = trace.data.positions || [];
       if (!pts.length) { console.warn("Skipping empty points trace:", trace.id); return null; }
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
-      if (trace.data.colors && trace.data.colors.length) {
-        geo.setAttribute("color", new THREE.Float32BufferAttribute(trace.data.colors, 3));
-      }
       const style = styleFor(trace);
       const baseSize = (sizeOverride !== undefined ? sizeOverride : pointsBaseSize(trace)) * 1.3;
-      const size = baseSize * pointSizeMultFor(trace.id) * (isOrtho ? 2.0 : 1.0);
       const sym = style.symbol || "circle";
       const tex = spriteTextures[sym] || spriteTextures["circle"];
-      const mat = new THREE.PointsMaterial({
-        size: size,
+      const n = pts.length / 3;
+      const hasColors = !!(trace.data.colors && trace.data.colors.length);
+      const geo = new THREE.PlaneBufferGeometry(1, 1);
+      const mat = new THREE.MeshBasicMaterial({
         map: tex,
-        vertexColors: !!(trace.data.colors && trace.data.colors.length),
-        sizeAttenuation: false,
         transparent: true,
         opacity: 0.95,
+        depthWrite: false,
+        depthTest: true,
+        side: THREE.DoubleSide,
       });
       mat.userData.baseSize = baseSize;
-      if (colorOverride !== undefined && (!trace.data.colors || !trace.data.colors.length)) {
-        mat.color.copy(threeColorFromStyle(colorOverride, 0xffffff));
-      } else if (!trace.data.colors || !trace.data.colors.length) {
-        mat.color.copy(threeColorFromStyle(style.color, 0xffffff));
+      if (!hasColors) {
+        mat.color.copy(threeColorFromStyle(
+          colorOverride !== undefined ? colorOverride : style.color,
+          0xffffff
+        ));
+      } else {
+        mat.vertexColors = true;
       }
-      const points = new THREE.Points(geo, mat);
+      const points = new THREE.InstancedMesh(geo, mat, n);
       points.name = trace.id;
+      points.userData.isBillboardPoints = true;
+      points.userData.baseSize = baseSize;
+      points.userData.pointPositions = pts.slice();
       points.userData.originalPositions = pts.slice();
+      if (trace.hover && trace.hover.length) {
+        points.userData.traceHover = trace.hover.slice();
+      }
+      if (hasColors) {
+        for (let i = 0; i < n; i++) {
+          points.setColorAt(
+            i,
+            new THREE.Color(trace.data.colors[i * 3], trace.data.colors[i * 3 + 1], trace.data.colors[i * 3 + 2])
+          );
+        }
+        if (points.instanceColor) points.instanceColor.needsUpdate = true;
+      }
       if (trace.data.window_radii && trace.data.window_radii.length) {
         points.userData.windowRadii = trace.data.window_radii.slice();
         points.userData.originalHover = trace.hover ? trace.hover.slice() : [];
         points.userData.activeHover = points.userData.originalHover.slice();
         points.userData.windowFilterKind = "windows";
       }
+      updateBillboardPointsMesh(points);
       scene.add(points);
       objectsById[trace.id] = points;
       return points;
@@ -4866,6 +4950,33 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     }
 
     function replacePointsGeometry(points, trace) {
+      if (points.userData && points.userData.isBillboardPoints) {
+        const pts = trace.data.positions || [];
+        const n = pts.length / 3;
+        points.userData.pointPositions = pts.slice();
+        points.userData.originalPositions = pts.slice();
+        if (trace.hover && trace.hover.length) {
+          points.userData.traceHover = trace.hover.slice();
+        }
+        if (trace.data.colors && trace.data.colors.length >= n * 3) {
+          for (let i = 0; i < n; i++) {
+            points.setColorAt(
+              i,
+              new THREE.Color(trace.data.colors[i * 3], trace.data.colors[i * 3 + 1], trace.data.colors[i * 3 + 2])
+            );
+          }
+          if (points.instanceColor) points.instanceColor.needsUpdate = true;
+        }
+        const style = styleFor(trace);
+        const baseSize = pointsBaseSize(trace) * 1.3;
+        points.userData.baseSize = baseSize;
+        points.material.userData.baseSize = baseSize;
+        if (!trace.data.colors || !trace.data.colors.length) {
+          points.material.color.copy(threeColorFromStyle(style.color, 0xffffff));
+        }
+        applyPointSize(points, baseSize);
+        return;
+      }
       const oldGeo = points.geometry;
       const geo = new THREE.BufferGeometry();
       const pts = trace.data.positions || [];
@@ -5137,6 +5248,9 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
             obj.material.side = obj.userData.originalSide;
           }
           applySurfaceScreenDoorForObject(obj);
+          if (!obj.material.userData.screenDoorUniform) {
+            obj.material.needsUpdate = true;
+          }
           return;
         }
         if (isSurface) {
@@ -5186,14 +5300,15 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           applyOpacityToTraceIds(traceIds, parseFloat(slider.value), !!entry.fwMerge);
         });
       } else if (entry.control === "pointSize") {
-        slider.min = "0.25"; slider.max = "4.5"; slider.step = "0.1"; slider.value = "1";
+        slider.min = "0.25"; slider.max = "10"; slider.step = "0.1"; slider.value = "1";
         slider.addEventListener("input", function() {
           traceIds.forEach(function(tid) {
             pointSizeMultByTrace[tid] = parseFloat(slider.value) || 1.0;
             const obj = objectsById[tid];
-            if (obj && obj.material && obj.material.isPointsMaterial) {
-              const base = obj.material.userData && obj.material.userData.baseSize
-                ? obj.material.userData.baseSize : obj.material.size;
+            if (isScatterPointsObj(obj)) {
+              const base = obj.userData.baseSize
+                || (obj.material.userData && obj.material.userData.baseSize)
+                || obj.material.size;
               applyPointSize(obj, base);
             }
           });
@@ -6177,6 +6292,7 @@ function readWindowMinThreshold() {
       const name = (obj && obj.name) ? String(obj.name) : "";
       if (name === "framework_atoms" || name === "framework_stick_atoms" || name === "framework_spacefill_atoms") return 8;
       if (obj instanceof THREE.Points) return 6;
+      if (obj.userData && obj.userData.isBillboardPoints) return 6;
       if (hit && hit.face && obj instanceof THREE.Mesh) return 5;
       if (obj instanceof THREE.LineSegments) return 4;
       if (name.endsWith("_bonds") || name.endsWith("_bonds")) return 2;
@@ -6391,6 +6507,7 @@ function readWindowMinThreshold() {
         camera.lookAt(target);
       }
       controls.update();
+      refreshAllBillboardPointMeshes();
       if (composer) {
         composer.render();
       } else {
@@ -6408,6 +6525,7 @@ function readWindowMinThreshold() {
       document.getElementById("app").style.right = vp.hudW + "px";
       updateOrthoFrustum();
       if (composer) composer.setSize(w, h);
+      refreshAllBillboardPointMeshes();
     });
     window.dispatchEvent(new Event("resize"));
 
