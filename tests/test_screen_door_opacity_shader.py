@@ -19,7 +19,7 @@ def test_screen_door_template_has_output_fragment_fallback():
     assert "function injectScreenDoorFragmentShader(shader)" in js
     assert "#include <output_fragment>" in js
     assert "renderer.dithering = true" in js
-    assert "screenDoorV4" in js
+    assert "screenDoorV5" in js
 
 
 def test_scatter_points_use_billboard_instancing():
@@ -42,11 +42,13 @@ def test_inject_screen_door_fragment_shader_logic():
       );
     }
     function injectScreenDoorFragmentShader(shader) {
-      if (shader.fragmentShader.indexOf("uScreenDoorOpacity") !== -1) return;
-      shader.fragmentShader = shader.fragmentShader.replace(
-        "void main() {",
-        "uniform float uScreenDoorOpacity;\nvoid main() {"
-      );
+      if (shader.fragmentShader.indexOf("sdOpacity <= threshold") !== -1) return;
+      if (shader.fragmentShader.indexOf("uScreenDoorOpacity") === -1) {
+        shader.fragmentShader = shader.fragmentShader.replace(
+          "void main() {",
+          "uniform float uScreenDoorOpacity;\nvoid main() {"
+        );
+      }
       const snippet = screenDoorDiscardGlsl();
       if (shader.fragmentShader.indexOf("#include <dithering_fragment>") !== -1) {
         shader.fragmentShader = shader.fragmentShader.replace(
@@ -74,6 +76,10 @@ def test_inject_screen_door_fragment_shader_logic():
       });
     }
     console.log(JSON.stringify(out));
+    // Regression: uniform declared without discard must still inject discard body.
+    const broken = { fragmentShader: "uniform float uScreenDoorOpacity;\nvoid main() {\n#include <output_fragment>\n}" };
+    injectScreenDoorFragmentShader(broken);
+    console.log(JSON.stringify({ brokenHasDiscard: broken.fragmentShader.includes("discard") }));
     """
     proc = subprocess.run(
         ["node", "-e", node_script],
@@ -81,7 +87,9 @@ def test_inject_screen_door_fragment_shader_logic():
         capture_output=True,
         text=True,
     )
-    results = json.loads(proc.stdout.strip())
+    results = json.loads(proc.stdout.strip().split("\n")[0])
+    broken = json.loads(proc.stdout.strip().split("\n")[1])
+    assert broken["brokenHasDiscard"]
     assert len(results) == 2
     for row in results:
         assert row["hasUniform"] and row["hasDiscard"]

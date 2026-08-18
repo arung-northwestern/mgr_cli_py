@@ -4398,11 +4398,13 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       );
     }
     function injectScreenDoorFragmentShader(shader) {
-      if (shader.fragmentShader.indexOf("uScreenDoorOpacity") !== -1) return;
-      shader.fragmentShader = shader.fragmentShader.replace(
-        "void main() {",
-        "uniform float uScreenDoorOpacity;\nvoid main() {"
-      );
+      if (shader.fragmentShader.indexOf("sdOpacity <= threshold") !== -1) return;
+      if (shader.fragmentShader.indexOf("uScreenDoorOpacity") === -1) {
+        shader.fragmentShader = shader.fragmentShader.replace(
+          "void main() {",
+          "uniform float uScreenDoorOpacity;\nvoid main() {"
+        );
+      }
       const snippet = screenDoorDiscardGlsl();
       if (shader.fragmentShader.indexOf("#include <dithering_fragment>") !== -1) {
         shader.fragmentShader = shader.fragmentShader.replace(
@@ -4413,6 +4415,11 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         shader.fragmentShader = shader.fragmentShader.replace(
           "#include <output_fragment>",
           snippet + "#include <output_fragment>"
+        );
+      } else if (shader.fragmentShader.indexOf("#include <fog_fragment>") !== -1) {
+        shader.fragmentShader = shader.fragmentShader.replace(
+          "#include <fog_fragment>",
+          snippet + "#include <fog_fragment>"
         );
       }
     }
@@ -4448,12 +4455,14 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           const orig = mat.userData.screenDoorOriginalProgramKey;
           const base = (typeof orig === "function") ? orig.call(this) : "";
           const screenDoorMeshKey = (obj && obj.uuid) ? String(obj.uuid) : String(mat.uuid || "");
-          return base + "|screenDoorV4|" + screenDoorMeshKey;
+          return base + "|screenDoorV5|" + screenDoorMeshKey;
         };
         if (!mat.userData.screenDoorEnabled) mat.needsUpdate = true;
         mat.userData.screenDoorEnabled = true;
         if (mat.userData.screenDoorUniform) {
           mat.userData.screenDoorUniform.value = clampedOpacity;
+        } else {
+          mat.needsUpdate = true;
         }
       } else {
         if (mat.userData.screenDoorEnabled) {
@@ -4604,10 +4613,13 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const sym = style.symbol || "circle";
       const tex = spriteTextures[sym] || spriteTextures["circle"];
       const n = pts.length / 3;
-      const hasColors = !!(trace.data.colors && trace.data.colors.length);
-      const geo = new THREE.PlaneBufferGeometry(1, 1);
+      const hasColors = !!(trace.data.colors && trace.data.colors.length >= n * 3);
+      const useRingTex = hasColors && sym === "ring";
+      const geo = hasColors && !useRingTex
+        ? new THREE.CircleBufferGeometry(0.5, 16)
+        : new THREE.PlaneBufferGeometry(1, 1);
       const mat = new THREE.MeshBasicMaterial({
-        map: tex,
+        map: hasColors ? (useRingTex ? tex : null) : tex,
         transparent: true,
         opacity: 0.95,
         depthWrite: false,
@@ -4615,13 +4627,14 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         side: THREE.DoubleSide,
       });
       mat.userData.baseSize = baseSize;
-      if (!hasColors) {
+      if (hasColors) {
+        mat.vertexColors = true;
+        mat.color.setRGB(1, 1, 1);
+      } else {
         mat.color.copy(threeColorFromStyle(
           colorOverride !== undefined ? colorOverride : style.color,
           0xffffff
         ));
-      } else {
-        mat.vertexColors = true;
       }
       const points = new THREE.InstancedMesh(geo, mat, n);
       points.name = trace.id;
@@ -4633,13 +4646,15 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         points.userData.traceHover = trace.hover.slice();
       }
       if (hasColors) {
+        points.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
         for (let i = 0; i < n; i++) {
           points.setColorAt(
             i,
             new THREE.Color(trace.data.colors[i * 3], trace.data.colors[i * 3 + 1], trace.data.colors[i * 3 + 2])
           );
         }
-        if (points.instanceColor) points.instanceColor.needsUpdate = true;
+        points.instanceColor.needsUpdate = true;
+        mat.needsUpdate = true;
       }
       if (trace.data.window_radii && trace.data.window_radii.length) {
         points.userData.windowRadii = trace.data.window_radii.slice();
@@ -4959,13 +4974,19 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           points.userData.traceHover = trace.hover.slice();
         }
         if (trace.data.colors && trace.data.colors.length >= n * 3) {
+          if (!points.instanceColor) {
+            points.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
+          }
           for (let i = 0; i < n; i++) {
             points.setColorAt(
               i,
               new THREE.Color(trace.data.colors[i * 3], trace.data.colors[i * 3 + 1], trace.data.colors[i * 3 + 2])
             );
           }
-          if (points.instanceColor) points.instanceColor.needsUpdate = true;
+          points.instanceColor.needsUpdate = true;
+          points.material.vertexColors = true;
+          points.material.color.setRGB(1, 1, 1);
+          points.material.needsUpdate = true;
         }
         const style = styleFor(trace);
         const baseSize = pointsBaseSize(trace) * 1.3;
