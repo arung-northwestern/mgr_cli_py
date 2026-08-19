@@ -19,7 +19,7 @@ def test_screen_door_template_has_output_fragment_fallback():
     assert "function injectScreenDoorFragmentShader(shader)" in js
     assert "#include <output_fragment>" in js
     assert "renderer.dithering = true" in js
-    assert "screenDoorV5" in js
+    assert "screenDoorV6" in js
 
 
 def test_scatter_points_use_billboard_instancing():
@@ -27,6 +27,15 @@ def test_scatter_points_use_billboard_instancing():
     assert "isBillboardPoints" in js
     assert "updateBillboardPointsMesh" in js
     assert 'slider.max = "10"' in js
+
+
+def test_colored_scatter_points_use_phong_instancing():
+    js = _movies_template_js()
+    assert "MeshPhongMaterial" in js
+    assert "setColorAt" in js
+    assert "screenDoorProgramGeneration" in js
+    assert "map: tex" in js
+    assert "syncSurfaceLegendVisibility" in js
 
 
 def test_inject_screen_door_fragment_shader_logic():

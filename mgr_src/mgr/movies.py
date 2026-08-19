@@ -4303,6 +4303,24 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     function connectionLegendEnabled(traceId) {
       return legendEnabledByTrace[traceId] !== false;
     }
+    function traceLegendVisible(traceId) {
+      return legendEnabledByTrace[traceId] !== false;
+    }
+    function surfaceOpacityVisible(tid, opacityVal) {
+      return traceLegendVisible(tid) && opacityVal > 0.001;
+    }
+    function syncSurfaceLegendVisibility() {
+      Object.keys(objectsById).forEach(function(tid) {
+        if (!isSurfaceMeshId(tid)) return;
+        const obj = objectsById[tid];
+        if (!obj) return;
+        const op = obj.userData && obj.userData.screenDoorOpacity !== undefined
+          ? obj.userData.screenDoorOpacity
+          : (obj.material && obj.material.opacity !== undefined ? obj.material.opacity : 1.0);
+        obj.visible = surfaceOpacityVisible(tid, op);
+      });
+      updateSurfaceCellVisibility();
+    }
     function applyLineWidth(traceId, mult) {
       lineWidthMultByTrace[traceId] = mult;
       const obj0 = objectsById[traceId];
@@ -4397,6 +4415,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         "}\n"
       );
     }
+    let screenDoorProgramGeneration = 0;
     function injectScreenDoorFragmentShader(shader) {
       if (shader.fragmentShader.indexOf("sdOpacity <= threshold") !== -1) return;
       if (shader.fragmentShader.indexOf("uScreenDoorOpacity") === -1) {
@@ -4421,6 +4440,8 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           "#include <fog_fragment>",
           snippet + "#include <fog_fragment>"
         );
+      } else {
+        shader.fragmentShader = shader.fragmentShader.replace(/\}\s*$/, snippet + "\n}");
       }
     }
 
@@ -4455,13 +4476,14 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           const orig = mat.userData.screenDoorOriginalProgramKey;
           const base = (typeof orig === "function") ? orig.call(this) : "";
           const screenDoorMeshKey = (obj && obj.uuid) ? String(obj.uuid) : String(mat.uuid || "");
-          return base + "|screenDoorV5|" + screenDoorMeshKey;
+          const cacheBust = mat.userData.screenDoorCacheBust || 0;
+          return base + "|screenDoorV6|" + screenDoorProgramGeneration + "|" + cacheBust + "|" + screenDoorMeshKey;
         };
-        if (!mat.userData.screenDoorEnabled) mat.needsUpdate = true;
         mat.userData.screenDoorEnabled = true;
         if (mat.userData.screenDoorUniform) {
           mat.userData.screenDoorUniform.value = clampedOpacity;
         } else {
+          mat.userData.screenDoorCacheBust = (mat.userData.screenDoorCacheBust || 0) + 1;
           mat.needsUpdate = true;
         }
       } else {
@@ -4614,29 +4636,39 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const tex = spriteTextures[sym] || spriteTextures["circle"];
       const n = pts.length / 3;
       const hasColors = !!(trace.data.colors && trace.data.colors.length >= n * 3);
-      const useRingTex = hasColors && sym === "ring";
-      const geo = hasColors && !useRingTex
-        ? new THREE.CircleBufferGeometry(0.5, 16)
-        : new THREE.PlaneBufferGeometry(1, 1);
-      const mat = new THREE.MeshBasicMaterial({
-        map: hasColors ? (useRingTex ? tex : null) : tex,
-        transparent: true,
-        opacity: 0.95,
-        depthWrite: false,
-        depthTest: true,
-        side: THREE.DoubleSide,
-      });
-      mat.userData.baseSize = baseSize;
+      const geo = new THREE.PlaneBufferGeometry(1, 1);
+      let mat;
       if (hasColors) {
-        mat.vertexColors = true;
-        mat.color.setRGB(1, 1, 1);
+        mat = new THREE.MeshPhongMaterial({
+          color: 0xffffff,
+          map: tex,
+          shininess: style.shininess !== undefined ? style.shininess : 20,
+          specular: style.specular !== undefined ? style.specular : 0x222222,
+          transparent: true,
+          opacity: 0.95,
+          alphaTest: 0.05,
+          depthWrite: false,
+          depthTest: true,
+          side: THREE.DoubleSide,
+        });
       } else {
+        mat = new THREE.MeshBasicMaterial({
+          map: tex,
+          transparent: true,
+          opacity: 0.95,
+          depthWrite: false,
+          depthTest: true,
+          side: THREE.DoubleSide,
+        });
         mat.color.copy(threeColorFromStyle(
           colorOverride !== undefined ? colorOverride : style.color,
           0xffffff
         ));
       }
+      mat.userData.baseSize = baseSize;
       const points = new THREE.InstancedMesh(geo, mat, n);
+      points.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      if (points.instanceColor) points.instanceColor.setUsage(THREE.DynamicDrawUsage);
       points.name = trace.id;
       points.userData.isBillboardPoints = true;
       points.userData.baseSize = baseSize;
@@ -4646,15 +4678,13 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         points.userData.traceHover = trace.hover.slice();
       }
       if (hasColors) {
-        points.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
         for (let i = 0; i < n; i++) {
           points.setColorAt(
             i,
             new THREE.Color(trace.data.colors[i * 3], trace.data.colors[i * 3 + 1], trace.data.colors[i * 3 + 2])
           );
         }
-        points.instanceColor.needsUpdate = true;
-        mat.needsUpdate = true;
+        if (points.instanceColor) points.instanceColor.needsUpdate = true;
       }
       if (trace.data.window_radii && trace.data.window_radii.length) {
         points.userData.windowRadii = trace.data.window_radii.slice();
@@ -4974,19 +5004,13 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           points.userData.traceHover = trace.hover.slice();
         }
         if (trace.data.colors && trace.data.colors.length >= n * 3) {
-          if (!points.instanceColor) {
-            points.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
-          }
           for (let i = 0; i < n; i++) {
             points.setColorAt(
               i,
               new THREE.Color(trace.data.colors[i * 3], trace.data.colors[i * 3 + 1], trace.data.colors[i * 3 + 2])
             );
           }
-          points.instanceColor.needsUpdate = true;
-          points.material.vertexColors = true;
-          points.material.color.setRGB(1, 1, 1);
-          points.material.needsUpdate = true;
+          if (points.instanceColor) points.instanceColor.needsUpdate = true;
         }
         const style = styleFor(trace);
         const baseSize = pointsBaseSize(trace) * 1.3;
@@ -4995,6 +5019,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         if (!trace.data.colors || !trace.data.colors.length) {
           points.material.color.copy(threeColorFromStyle(style.color, 0xffffff));
         }
+        points.count = n;
         applyPointSize(points, baseSize);
         return;
       }
@@ -5259,7 +5284,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         const screenDoorOn = !!(screenDoorToggle && screenDoorToggle.checked && isSurface);
         if (screenDoorOn) {
           obj.userData.screenDoorOpacity = val;
-          obj.visible = !hiddenByOpacity;
+          obj.visible = isSurface ? surfaceOpacityVisible(tid, val) : (traceLegendVisible(tid) && !hiddenByOpacity);
           obj.castShadow = hiddenByOpacity ? false : !!(obj.userData && obj.userData.originalCastShadow);
           obj.receiveShadow = hiddenByOpacity ? false : !!(obj.userData && obj.userData.originalReceiveShadow);
           obj.material.opacity = 1.0;
@@ -5270,6 +5295,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           }
           applySurfaceScreenDoorForObject(obj);
           if (!obj.material.userData.screenDoorUniform) {
+            obj.material.userData.screenDoorCacheBust = (obj.material.userData.screenDoorCacheBust || 0) + 1;
             obj.material.needsUpdate = true;
           }
           return;
@@ -5288,7 +5314,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
           obj.castShadow = val > 0.999;
           obj.receiveShadow = val > 0.999;
         } else {
-          obj.visible = !hiddenByOpacity;
+          obj.visible = traceLegendVisible(tid) && !hiddenByOpacity;
           obj.castShadow = hiddenByOpacity ? false : !!(obj.userData && obj.userData.originalCastShadow);
           obj.receiveShadow = hiddenByOpacity ? false : !!(obj.userData && obj.userData.originalReceiveShadow);
           obj.material.opacity = val;
@@ -5300,6 +5326,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         }
         if (isSurface) {
           applySurfaceScreenDoorForObject(obj);
+          updateSurfaceCellVisibility();
         }
         obj.material.needsUpdate = true;
       });
@@ -5531,7 +5558,9 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         sdCb.id = "screenDoorToggle";
         sdCb.checked = screenDoorDefault;
         sdCb.addEventListener("change", function() {
+          if (sdCb.checked) screenDoorProgramGeneration += 1;
           applySurfaceScreenDoorAll();
+          syncSurfaceLegendVisibility();
         });
         screenDoorToggle = sdCb;
         sdLabel.appendChild(sdCb);
@@ -6029,6 +6058,49 @@ function readWindowMinThreshold() {
       if (!isWindowTraceId(traceId)) return;
       const obj = objectsById[traceId];
       if (!obj || !obj.userData.originalPositions) return;
+      if (obj.userData && obj.userData.isBillboardPoints) {
+        const threshold = readWindowMinThreshold();
+        const legendOn = legendEnabledByTrace[traceId] !== false;
+        const orig = obj.userData.originalPositions;
+        const radii = obj.userData.windowRadii || [];
+        const origHover = obj.userData.originalHover || [];
+        const nPts = radii.length || Math.floor(orig.length / 3);
+        const filtered = [];
+        const filteredHover = [];
+        if (threshold === null) {
+          if (!obj.userData.filteredByThreshold) {
+            obj.visible = legendOn && nPts > 0;
+            updateBillboardPointsMesh(obj);
+            return;
+          }
+          for (let i = 0; i < nPts; i++) {
+            const base = i * 3;
+            filtered.push(orig[base], orig[base + 1], orig[base + 2]);
+            if (origHover[i] !== undefined) filteredHover.push(origHover[i]);
+          }
+        } else {
+          for (let i = 0; i < nPts; i++) {
+            const r = radii[i];
+            if (Number.isFinite(r) && r < threshold) continue;
+            const base = i * 3;
+            filtered.push(orig[base], orig[base + 1], orig[base + 2]);
+            if (origHover[i] !== undefined) filteredHover.push(origHover[i]);
+          }
+        }
+        const trace0 = findTraceById(traceId);
+        if (!trace0) return;
+        const filteredTrace = Object.assign({}, trace0, {
+          data: Object.assign({}, trace0.data, { positions: filtered }),
+          hover: threshold === null ? origHover.slice() : filteredHover,
+        });
+        replacePointsGeometry(obj, filteredTrace);
+        obj.count = Math.floor(filtered.length / 3);
+        obj.userData.filteredByThreshold = threshold !== null;
+        obj.userData.activeHover = threshold === null ? origHover.slice() : filteredHover;
+        obj.visible = legendOn && filtered.length > 0;
+        updateBillboardPointsMesh(obj);
+        return;
+      }
       const threshold = readWindowMinThreshold();
       const legendOn = legendEnabledByTrace[traceId] !== false;
       const orig = obj.userData.originalPositions;
