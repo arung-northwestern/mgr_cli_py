@@ -3573,24 +3573,16 @@ def plot_percolated_cluster_meshes(percolation_history, distance_grid, regions, 
         A list of plotly.graph_objects.Mesh3d and Scatter3d objects representing the percolated clusters
         and their boundaries.
     """
-    if probe_radius is None:
-        entry = percolation_history[-1]
-    else:
-        entry = next((e for e in percolation_history if e[0] >= probe_radius), None)
-        if entry is None:
-            raise ValueError(f"No percolation data found for probe radius {probe_radius}")
+    from .helper import (
+        percolation_axis_dir_str,
+        select_percolation_history_entry,
+        sorted_percolation_component_items,
+    )
 
-    threshold, components = entry
-
-    # Collect unique percolating components and their directions
-    unique_components = {}
-    for axis, comp_list in components.items():
-        for comp in comp_list:
-            comp_key = tuple(sorted(comp))
-            if comp_key in unique_components:
-                unique_components[comp_key].append(axis)
-            else:
-                unique_components[comp_key] = [axis]
+    _threshold, components = select_percolation_history_entry(
+        percolation_history, probe_radius
+    )
+    component_items = sorted_percolation_component_items(components)
 
     mesh_traces = []
     opacity = kwargs.get("opacity", 1.0)
@@ -3605,11 +3597,9 @@ def plot_percolated_cluster_meshes(percolation_history, distance_grid, regions, 
     boundary_line_width = kwargs.pop("boundary_line_width", 1)
     boundary_line_color = kwargs.pop("boundary_line_color", "black")
 
-    # Generate mesh for each unique component
-    for i, (comp, axes) in enumerate(unique_components.items(), 1):
-        # Get direction labels
-        dir_labels = ['x' if 0 in axes else '', 'y' if 1 in axes else '', 'z' if 2 in axes else '']
-        dir_str = ''.join(dir_labels)
+    # Generate mesh for each unique component (stable palette index by sorted region set)
+    for i, (comp, axes) in enumerate(component_items, 1):
+        dir_str = percolation_axis_dir_str(axes)
 
         # Build a per-cluster colorscale: same base color, distinct shades per region
         max_region = int(regions.max()) if hasattr(regions, "max") else 0
@@ -3814,29 +3804,22 @@ def plot_percolation_windows(
     pld = float(analysis.get("pld", 0.0))
     pld_probe_radius = pld / 2.0  # PLD is a diameter; compare against radius
     probe_radius = kwargs.pop("probe_radius", None)
+    window_marker_color = kwargs.pop("window_marker_color", "yellow")
+    window_marker_size = float(kwargs.pop("window_marker_size", 10))
+
+    from .helper import collect_unique_percolation_components, select_percolation_history_entry
 
     if not percolation_history or not len(connections):
         return [], []
 
-    # Find the entry for the selected probe radius
-    if probe_radius is None:
-        entry = percolation_history[-1]
-    else:
-        entry = next((e for e in percolation_history if e[0] >= probe_radius), None)
-        if entry is None:
-            return [], []
+    try:
+        _threshold, components = select_percolation_history_entry(
+            percolation_history, probe_radius
+        )
+    except ValueError:
+        return [], []
 
-    _threshold, components = entry
-
-    # Collect all unique percolating region sets
-    unique_components: dict[tuple, list] = {}
-    for axis, comp_list in components.items():
-        for comp in comp_list:
-            key = tuple(sorted(comp))
-            if key not in unique_components:
-                unique_components[key] = []
-            unique_components[key].append(axis)
-
+    unique_components = collect_unique_percolation_components(components)
     all_comp_regions: set[int] = set()
     for comp in unique_components:
         all_comp_regions.update(comp)
@@ -3897,7 +3880,7 @@ def plot_percolation_windows(
         traces.append(go.Scatter3d(
             x=all_wx, y=all_wy, z=all_wz,
             mode="markers",
-            marker=dict(size=6, color="yellow", symbol="circle", opacity=0.8),
+            marker=dict(size=window_marker_size, color=window_marker_color, symbol="circle", opacity=0.8),
             hovertext=all_hover,
             hoverinfo="text",
             name="Percolation windows",

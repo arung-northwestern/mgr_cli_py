@@ -7530,23 +7530,16 @@ def make_percolation_clusters_trace(
     taubin_nu: float = -0.53,
 ):
     """Build Three.js mesh traces for percolated clusters at a given probe radius."""
-    if probe_radius is None:
-        entry = percolation_history[-1]
-    else:
-        entry = next((e for e in percolation_history if e[0] >= probe_radius), None)
-        if entry is None:
-            raise ValueError(f"No percolation data found for probe radius {probe_radius}")
+    from .helper import (
+        percolation_axis_dir_str,
+        select_percolation_history_entry,
+        sorted_percolation_component_items,
+    )
 
-    _threshold, components = entry
-
-    unique_components = {}
-    for axis, comp_list in components.items():
-        for comp in comp_list:
-            comp_key = tuple(sorted(comp))
-            if comp_key in unique_components:
-                unique_components[comp_key].append(axis)
-            else:
-                unique_components[comp_key] = [axis]
+    _threshold, components = select_percolation_history_entry(
+        percolation_history, probe_radius
+    )
+    component_items = sorted_percolation_component_items(components)
 
     try:
         import plotly.express as px
@@ -7569,13 +7562,8 @@ def make_percolation_clusters_trace(
     user_cscale = cscale
     traces = []
 
-    for i, (comp, axes) in enumerate(unique_components.items(), 1):
-        dir_labels = [
-            "x" if 0 in axes else "",
-            "y" if 1 in axes else "",
-            "z" if 2 in axes else "",
-        ]
-        dir_str = "".join(dir_labels)
+    for i, (comp, axes) in enumerate(component_items, 1):
+        dir_str = percolation_axis_dir_str(axes)
 
         palette = None
         if user_cscale is not None:
@@ -7637,34 +7625,32 @@ def make_percolation_windows_trace(
     atoms,
     probe_radius: float | None = None,
     pld_tolerance: float = 0.25,
+    window_marker_color: str = "#FFFF00",
+    window_marker_size: float = 10.0,
 ) -> dict[str, dict[str, Any]]:
     """Build Three.js traces for windows along percolating clusters."""
+    from .helper import marker_color_to_rgb01
+
+    win_rgb = marker_color_to_rgb01(window_marker_color)
     percolation_history = analysis.get("percolation_history", [])
     connections = analysis.get("connections", [])
     regions = np.asarray(analysis.get("regions", []))
     pld = float(analysis.get("pld", 0.0))
     pld_probe_radius = pld / 2.0
 
+    from .helper import collect_unique_percolation_components, select_percolation_history_entry
+
     if not percolation_history:
         return {"windows": {}, "pld_critical": {}}
 
-    if probe_radius is None:
-        entry = percolation_history[-1]
-    else:
-        entry = next((e for e in percolation_history if e[0] >= probe_radius), None)
-        if entry is None:
-            return {"windows": {}, "pld_critical": {}}
+    try:
+        _threshold, components = select_percolation_history_entry(
+            percolation_history, probe_radius
+        )
+    except ValueError:
+        return {"windows": {}, "pld_critical": {}}
 
-    _threshold, components = entry
-
-    unique_components: dict[tuple, list] = {}
-    for axis, comp_list in components.items():
-        for comp in comp_list:
-            key = tuple(sorted(comp))
-            if key not in unique_components:
-                unique_components[key] = []
-            unique_components[key].append(axis)
-
+    unique_components = collect_unique_percolation_components(components)
     all_comp_regions: set[int] = set()
     for comp in unique_components:
         all_comp_regions.update(comp)
@@ -7735,13 +7721,13 @@ def make_percolation_windows_trace(
             "positions": np.array(all_window_positions).reshape(-1).tolist()
             if all_window_positions
             else [],
-            "colors": ([1.0, 1.0, 0.0] * len(all_window_positions))
+            "colors": (list(win_rgb) * len(all_window_positions))
             if all_window_positions
             else [],
-            "sizes": [12.0] * len(all_window_positions),
+            "sizes": [float(window_marker_size)] * len(all_window_positions),
             "n_points": len(all_window_positions),
         },
-        style={"color": [1.0, 1.0, 0.0], "size": 12.0, "symbol": "circle"},
+        style={"color": list(win_rgb), "size": float(window_marker_size), "symbol": "circle"},
         hover=all_window_hover,
         visible=True,
     )

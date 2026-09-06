@@ -358,7 +358,14 @@ def show_mof_threejs(
 
     if defaults.get("plot_windows", True) and connections:
         _emit(_step_labels[_step_idx])
-        _win_style = defaults.get("plot_windows_style") or {}
+        from mgr.helper import marker_color_to_rgb01
+
+        _win_style = dict(defaults.get("plot_windows_style") or {})
+        _win_rgb = marker_color_to_rgb01(
+            defaults.get("plot_windows_marker_color", "#FFFF00")
+        )
+        _win_style.setdefault("color", list(_win_rgb))
+        _win_style.setdefault("size", float(defaults.get("plot_windows_marker_size", 10)))
         fig.add_windows(
             seg_dict,
             hide_periodic=not show_periodic,
@@ -427,7 +434,8 @@ def show_percolation_threejs(
     probe_radius : float
         Selected probe radius for cluster visualization.
     options : dict, optional
-        Currently supports ``layout`` ("dark" or "white").
+        Supports ``layout`` ("dark" or "white"), ``filter_connections_at_probe`` (bool),
+        and other plot surface options.
 
     Returns
     -------
@@ -442,7 +450,15 @@ def show_percolation_threejs(
 
     # Minimal seg dict for connections + maxima
     maxima = analysis.get("maxima")
-    connections = analysis.get("connections", [])
+    connections = list(analysis.get("connections", []))
+    if opts.get("filter_connections_at_probe"):
+        from mgr.helper import filter_connections_at_probe_radius
+
+        connections = filter_connections_at_probe_radius(
+            connections,
+            probe_radius,
+            analysis.get("maxima_radii"),
+        )
     seg = {
         "dgrid": analysis["dgrid"],
         "regions": analysis["regions"],
@@ -517,6 +533,10 @@ def show_percolation_threejs(
             atoms,
             probe_radius=probe_radius,
             pld_tolerance=0.25,
+            window_marker_color=str(
+                opts.get("plot_windows_marker_color", "#FFFF00")
+            ),
+            window_marker_size=float(opts.get("plot_windows_marker_size", 10)),
         )
         if window_traces.get("windows", {}).get("data", {}).get("n_points", 0):
             fig.add_trace(window_traces["windows"])

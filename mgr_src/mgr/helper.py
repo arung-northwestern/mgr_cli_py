@@ -340,6 +340,146 @@ def trim_connections_to_unique_regions(connections, unique_regions):
     return [c for c in connections if np.any(np.isin(c[0], unique))]
 
 
+def connection_passes_window_threshold(segment_radii, threshold):
+    """Keep edge unless every window on that pair is below *threshold*."""
+    if threshold is None:
+        return True
+    if segment_radii is None:
+        return True
+    arr = np.asarray(segment_radii, dtype=float).reshape(-1)
+    if arr.size == 0:
+        return True
+    vals = arr[np.isfinite(arr)]
+    if vals.size == 0:
+        return True
+    return bool(np.any(vals >= float(threshold)))
+
+
+def marker_color_to_rgb01(color, default=(1.0, 1.0, 0.0)):
+    """Parse #RRGGBB or rgb(...) to unit RGB floats for Three.js window styles."""
+    if isinstance(color, str):
+        s = color.strip()
+        if s.startswith("#") and len(s) >= 7:
+            try:
+                return (
+                    int(s[1:3], 16) / 255.0,
+                    int(s[3:5], 16) / 255.0,
+                    int(s[5:7], 16) / 255.0,
+                )
+            except ValueError:
+                pass
+        if s.lower().startswith("rgb"):
+            import re
+
+            nums = re.findall(r"\d+", s)
+            if len(nums) >= 3:
+                return tuple(min(1.0, max(0.0, int(x) / 255.0)) for x in nums[:3])
+    if isinstance(color, (list, tuple)) and len(color) >= 3:
+        vals = [float(color[0]), float(color[1]), float(color[2])]
+        if max(vals) > 1.0:
+            vals = [v / 255.0 for v in vals]
+        return tuple(vals)
+    return default
+
+
+def _maxima_radius_for_label(label, maxima_radii):
+    radii = np.asarray(maxima_radii, dtype=float).reshape(-1)
+    idx = int(label) - 1
+    if idx < 0 or idx >= radii.size:
+        return 0.0
+    return float(radii[idx])
+
+
+def filter_connections_at_probe_radius(connections, probe_radius, maxima_radii=None):
+    """Drop connections below *probe_radius* (matches winding percolation graph filter)."""
+    threshold = float(probe_radius)
+    filtered = []
+    for c in connections:
+        if len(c) < 2 or not c[1]:
+            continue
+        n1, n2 = int(c[0][0]), int(c[0][1])
+        if maxima_radii is not None:
+            if _maxima_radius_for_label(n1, maxima_radii) < threshold:
+                continue
+            if _maxima_radius_for_label(n2, maxima_radii) < threshold:
+                continue
+        wr = c[4] if len(c) > 4 and c[4] is not None else []
+        if not connection_passes_window_threshold(wr, threshold):
+            continue
+        filtered.append(c)
+    return filtered
+
+
+def collect_unique_percolation_components(components):
+    """Merge axis-local percolation components into unique region sets."""
+    unique_components = {}
+    if not isinstance(components, dict):
+        return unique_components
+    for axis, comp_list in components.items():
+        for comp in comp_list or []:
+            if not comp:
+                continue
+            comp_key = tuple(sorted(int(x) for x in comp))
+            if comp_key in unique_components:
+                unique_components[comp_key].append(axis)
+            else:
+                unique_components[comp_key] = [axis]
+    return unique_components
+
+
+def sorted_percolation_component_items(components):
+    """Return ``[(comp_key, axes), ...]`` with stable ordering for color assignment."""
+    unique_components = collect_unique_percolation_components(components)
+    return sorted(unique_components.items(), key=lambda item: item[0])
+
+
+def _normalize_percolation_axis_index(axis_key):
+    if isinstance(axis_key, int) and axis_key in (0, 1, 2):
+        return axis_key
+    if isinstance(axis_key, str):
+        lk = axis_key.lower()
+        if lk in ("x", "a", "0"):
+            return 0
+        if lk in ("y", "b", "1"):
+            return 1
+        if lk in ("z", "c", "2"):
+            return 2
+    return None
+
+
+def percolation_axis_dir_str(axes):
+    """Return direction suffix like ``xyz`` from winding/lattice axis keys."""
+    axis_set = set()
+    for axis_key in axes or []:
+        idx = _normalize_percolation_axis_index(axis_key)
+        if idx is not None:
+            axis_set.add(idx)
+    return "".join(letter for idx, letter in enumerate("xyz") if idx in axis_set)
+
+
+def select_percolation_history_entry(percolation_history, probe_radius=None):
+    """Pick history entry: exact match when possible, else smallest T >= probe_radius."""
+    if not percolation_history:
+        raise ValueError("percolation_history is empty")
+    if probe_radius is None:
+        return percolation_history[-1]
+    pr = float(probe_radius)
+    exact = next(
+        (
+            entry
+            for entry in percolation_history
+            if np.isclose(float(entry[0]), pr, rtol=0.0, atol=1e-5)
+        ),
+        None,
+    )
+    if exact is not None:
+        return exact
+    entry = next((e for e in percolation_history if float(e[0]) >= pr), None)
+    if entry is None:
+        raise ValueError(f"No percolation data found for probe radius {probe_radius}")
+    return entry
+
+
 def classify_connections_by_close_or_inside(
     connections,
     close_or_inside_region_ids,

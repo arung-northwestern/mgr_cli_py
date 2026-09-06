@@ -2813,6 +2813,20 @@ def main() -> None:
             value=True,
             help="Show internal window points from graph connectivity.",
         )
+        window_marker_color = st.color_picker(
+            "Window marker color",
+            value=st.session_state.get("mgr_window_marker_color", "#FFFF00"),
+            key="mgr_window_marker_color",
+            help="Scatter color for window markers only (not maxima, graph nodes, or PLD-critical diamonds).",
+        )
+        window_marker_size = st.slider(
+            "Window marker size",
+            min_value=2,
+            max_value=30,
+            value=int(st.session_state.get("mgr_window_marker_size", 10)),
+            key="mgr_window_marker_size",
+            help="Scatter marker size for window points only.",
+        )
         if viz_backend == "Three.js":
             show_maxima_spheres = False
         else:
@@ -3513,6 +3527,8 @@ def main() -> None:
                 plot_surface_taubin_nu=taubin_nu,
                 plot_connections=show_connections,
                 plot_windows=show_windows,
+                plot_windows_marker_color=window_marker_color,
+                plot_windows_marker_size=float(window_marker_size),
                 plot_maxima_show_spheres=show_maxima_spheres,
                 plot_projection=projection_choice,
                 plot_layout=viz_plot_layout,
@@ -3959,6 +3975,37 @@ def main() -> None:
                     )
                     st.dataframe(history_rows, use_container_width=True)
 
+                    filter_graph_at_probe = st.checkbox(
+                        "Hide pore-graph connections below probe radius",
+                        value=st.session_state.get("percolation_filter_graph_at_probe", False),
+                        key="percolation_filter_graph_at_probe",
+                        help="When enabled, pore-graph edges and nodes that cannot admit the "
+                        "selected probe are omitted from the plot (matches percolation graph filter).",
+                    )
+                    percolation_window_marker_color = st.color_picker(
+                        "Window marker color",
+                        value=st.session_state.get(
+                            "percolation_window_marker_color",
+                            st.session_state.get("mgr_window_marker_color", "#FFFF00"),
+                        ),
+                        key="percolation_window_marker_color",
+                        help="Scatter color for percolation window markers only "
+                        "(not PLD-critical red diamonds).",
+                    )
+                    percolation_window_marker_size = st.slider(
+                        "Window marker size",
+                        min_value=2,
+                        max_value=30,
+                        value=int(
+                            st.session_state.get(
+                                "percolation_window_marker_size",
+                                st.session_state.get("mgr_window_marker_size", 10),
+                            )
+                        ),
+                        key="percolation_window_marker_size",
+                        help="Scatter marker size for percolation window points only.",
+                    )
+
                     radius_options = sorted({float(entry[0]) for entry in history})
                     min_radius = min(radius_options)
                     max_radius = max(radius_options)
@@ -4071,6 +4118,9 @@ def main() -> None:
                             options=dict(
                                 layout=percolation_layout_choice,
                                 plot_surface_opacity=1.0,
+                                filter_connections_at_probe=filter_graph_at_probe,
+                                plot_windows_marker_color=percolation_window_marker_color,
+                                plot_windows_marker_size=float(percolation_window_marker_size),
                                 # Keep percolation cluster meshes unsmoothed:
                                 # smoothing can create patchy/miscolored domains.
                                 plot_surface_taubin_smooth=False,
@@ -4090,8 +4140,6 @@ def main() -> None:
                         try:
                             # Ensure plotly express is accessible for color scale
                             import plotly.express as px
-                            # Match main visualization isosurface (same physical meaning as pore surface in first tab).
-                            mesh_isovalue = max(float(surface_value), 0.05)
                             plot_cache = st.session_state.setdefault("percolation_plot_cache", {})
                             plot_key = (
                                 analysis_key,
@@ -4099,6 +4147,7 @@ def main() -> None:
                                 float(mesh_isovalue),
                                 boundary_line_color,
                                 int(boundary_line_width),
+                                bool(filter_graph_at_probe),
                             )
                             if plot_key in plot_cache:
                                 cluster_traces = plot_cache[plot_key]
@@ -4129,7 +4178,26 @@ def main() -> None:
                         )
                         plot_traces = []
                         plot_traces.append(mgr.plot_cell(atoms))
-                        rag_trace = mgr.plot_rag(analysis["rag"], name="Pore Graph")
+                        connections_for_graph = analysis["connections"]
+                        if filter_graph_at_probe:
+                            from mgr.helper import filter_connections_at_probe_radius
+
+                            connections_for_graph = filter_connections_at_probe_radius(
+                                connections_for_graph,
+                                selected_radius,
+                                analysis.get("maxima_radii"),
+                            )
+                        rag_for_plot = mgr.rag_from_connections(
+                            connections_for_graph, analysis["maxima"]
+                        )
+                        rag_for_plot = mgr.add_maxima_to_rag(
+                            rag_for_plot,
+                            analysis["maxima"],
+                            analysis["maxima_radii"],
+                            analysis["regions"].shape,
+                            atoms,
+                        )
+                        rag_trace = mgr.plot_rag(rag_for_plot, name="Pore Graph")
                         if isinstance(rag_trace, (list, tuple)):
                             plot_traces.extend(rag_trace)
                         else:
@@ -4160,6 +4228,8 @@ def main() -> None:
                                 analysis,
                                 probe_radius=selected_radius,
                                 pld_tolerance=0.25,
+                                window_marker_color=percolation_window_marker_color,
+                                window_marker_size=float(percolation_window_marker_size),
                             )
                             if isinstance(window_traces, (list, tuple)):
                                 plot_traces.extend(window_traces)

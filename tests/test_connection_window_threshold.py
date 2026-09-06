@@ -3,16 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 
-
-def connection_passes_window_threshold(segment_radii, threshold):
-    if threshold is None:
-        return True
-    if not segment_radii:
-        return True
-    vals = [float(x) for x in segment_radii if np.isfinite(x)]
-    if not vals:
-        return True
-    return any(v >= threshold for v in vals)
+from mgr.helper import connection_passes_window_threshold
 
 
 def test_keep_edge_when_any_window_above_threshold():
@@ -25,3 +16,8 @@ def test_keep_edge_when_any_window_above_threshold():
 def test_keep_edge_when_no_window_radii():
     assert connection_passes_window_threshold([], 0.6)
     assert connection_passes_window_threshold([np.nan], 0.6)
+
+
+def test_numpy_window_radii_array():
+    assert connection_passes_window_threshold(np.array([0.2, 1.5]), 0.6)
+    assert not connection_passes_window_threshold(np.array([0.2, 0.5]), 0.6)
