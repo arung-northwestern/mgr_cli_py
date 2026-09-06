@@ -340,6 +340,16 @@ def trim_connections_to_unique_regions(connections, unique_regions):
     return [c for c in connections if np.any(np.isin(c[0], unique))]
 
 
+def apply_crystallographic_supercell(atoms, nx: int = 1, ny: int = 1, nz: int = 1):
+    """Build an ``nx×ny×nz`` supercell along crystallographic axes."""
+    nx = max(1, int(nx))
+    ny = max(1, int(ny))
+    nz = max(1, int(nz))
+    if nx == 1 and ny == 1 and nz == 1:
+        return atoms
+    return atoms * (nx, ny, nz)
+
+
 def connection_passes_window_threshold(segment_radii, threshold):
     """Keep edge unless every window on that pair is below *threshold*."""
     if threshold is None:

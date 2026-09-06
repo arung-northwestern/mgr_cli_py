@@ -1092,6 +1092,9 @@ def _build_compute_results_key(
     watershed_backend: str,
     min_box_thickness_enabled: bool,
     min_box_thickness: float,
+    nx_cells: int = 1,
+    ny_cells: int = 1,
+    nz_cells: int = 1,
 ) -> str:
     """Stable cache key for segmentation — must include every input that changes dgrid/segments."""
     return (
@@ -1102,6 +1105,7 @@ def _build_compute_results_key(
         f"::md={float(min_distance):.4f}::ta={float(threshold_abs):.4f}"
         f"::ep={float(extra_padding):.4f}::ws={watershed_backend}"
         f"::mbt={int(bool(min_box_thickness_enabled))}::{float(min_box_thickness):.2f}"
+        f"::sc={int(nx_cells)}x{int(ny_cells)}x{int(nz_cells)}"
     )
 
 
@@ -2329,16 +2333,72 @@ def main() -> None:
     if atoms is None:
         st.info("Upload a CIF file or pick a sample to begin.")
         return
-    if _is_spaces_deployment() and len(atoms) > SPACES_MAX_ATOMS:
+    primitive_atoms = atoms
+    n_primitive = len(primitive_atoms)
+    if _is_spaces_deployment() and n_primitive > SPACES_MAX_ATOMS:
         st.error(
-            f"This structure has {len(atoms)} atoms, which is above the public-demo limit "
-            f"of {SPACES_MAX_ATOMS} atoms. Please run larger systems locally."
+            f"This structure has {n_primitive} atoms in the primitive cell, which is above the "
+            f"public-demo limit of {SPACES_MAX_ATOMS} atoms. Please run larger systems locally."
         )
         return
 
     st.markdown("### 🔧 Workflow Parameters")
     st.info("After changing any parameter or material, please click 'Compute and Visualize' to update the results.")
 
+    _sc_max_axis = 20
+    if _is_spaces_deployment():
+        _sc_max_axis = max(
+            1,
+            min(10, int((SPACES_MAX_ATOMS / max(n_primitive, 1)) ** (1.0 / 3.0))),
+        )
+    sc_col1, sc_col2, sc_col3 = st.columns(3)
+    with sc_col1:
+        nx_cells = st.number_input(
+            "Supercell repeats along a",
+            min_value=1,
+            max_value=_sc_max_axis,
+            value=int(st.session_state.get("supercell_nx", 1)),
+            step=1,
+            key="supercell_nx",
+            help="Repeat the unit cell along the a crystallographic axis before analysis.",
+        )
+    with sc_col2:
+        ny_cells = st.number_input(
+            "Supercell repeats along b",
+            min_value=1,
+            max_value=_sc_max_axis,
+            value=int(st.session_state.get("supercell_ny", 1)),
+            step=1,
+            key="supercell_ny",
+        )
+    with sc_col3:
+        nz_cells = st.number_input(
+            "Supercell repeats along c",
+            min_value=1,
+            max_value=_sc_max_axis,
+            value=int(st.session_state.get("supercell_nz", 1)),
+            step=1,
+            key="supercell_nz",
+        )
+    from mgr.helper import apply_crystallographic_supercell
+
+    atoms = apply_crystallographic_supercell(
+        primitive_atoms, int(nx_cells), int(ny_cells), int(nz_cells)
+    )
+    n_supercell = len(atoms)
+    if int(nx_cells) * int(ny_cells) * int(nz_cells) > 1:
+        st.caption(
+            f"Supercell **{int(nx_cells)}×{int(ny_cells)}×{int(nz_cells)}** → "
+            f"**{n_supercell:,}** atoms (primitive cell: {n_primitive:,})."
+        )
+    if _is_spaces_deployment() and n_supercell > SPACES_MAX_ATOMS:
+        st.error(
+            f"Supercell has {n_supercell:,} atoms, above the hosted-demo limit of "
+            f"{SPACES_MAX_ATOMS:,}. Lower the repeat counts."
+        )
+        return
+
+    st.markdown("### Grid & segmentation")
     _spacing_min = SPACES_MIN_SPACING if _is_spaces_deployment() else 0.1
     spacing = st.number_input(
         "Grid Spacing (Å)",
@@ -2364,6 +2424,7 @@ def main() -> None:
     # Distance grid: auto-enable Rust AABB when Rust exact dgrid estimate exceeds RAM/work budget.
     _aabb_policy_key = (
         f"{st.session_state.get(atoms_source_key_state)}::{float(spacing):.4f}"
+        f"::sc={int(nx_cells)}x{int(ny_cells)}x{int(nz_cells)}"
     )
     _auto_aabb = False
     _aabb_meta: Dict[str, Any] = {}
@@ -2897,6 +2958,9 @@ def main() -> None:
         watershed_backend=str(watershed_backend),
         min_box_thickness_enabled=bool(min_box_thickness_enabled),
         min_box_thickness=float(min_box_thickness),
+        nx_cells=int(nx_cells),
+        ny_cells=int(ny_cells),
+        nz_cells=int(nz_cells),
     )
     col_btn1, col_btn2, col_btn3 = st.columns([3, 1, 1])
     with col_btn1:
@@ -3374,6 +3438,8 @@ def main() -> None:
                 "threshold_abs": float(threshold_abs),
                 "watershed_backend": str(watershed_backend),
                 "vdw_radii_set": str(vdw_radii_set),
+                "supercell": (int(nx_cells), int(ny_cells), int(nz_cells)),
+                "n_primitive_atoms": int(n_primitive),
             }
             st.session_state["analysis_key"] = results_key
             if not st.session_state.get("_counter_incremented"):
