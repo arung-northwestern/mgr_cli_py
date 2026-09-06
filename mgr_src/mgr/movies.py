@@ -3876,7 +3876,30 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     controls.target.set(centerArr[0], centerArr[1], centerArr[2]);
     controls.update();
     updateOrthoFrustum();  // set initial frustum from camera-to-target distance
-    controls.addEventListener("change", refreshAllBillboardPointMeshes);
+    function syncViewDirInputsFromCamera() {
+      if (!viewDirXInput || !viewDirYInput || !viewDirZInput) return;
+      const dir = camera.position.clone().sub(controls.target);
+      if (dir.lengthSq() < 1e-12) return;
+      dir.normalize();
+      viewDirXInput.value = dir.x.toFixed(3);
+      viewDirYInput.value = dir.y.toFixed(3);
+      viewDirZInput.value = dir.z.toFixed(3);
+    }
+    function bindEnterKeyToApply(inputs, applyFn) {
+      (inputs || []).forEach(function(inp) {
+        if (!inp) return;
+        inp.addEventListener("keydown", function(ev) {
+          if (ev.key === "Enter") {
+            ev.preventDefault();
+            applyFn();
+          }
+        });
+      });
+    }
+    controls.addEventListener("change", function() {
+      refreshAllBillboardPointMeshes();
+      syncViewDirInputsFromCamera();
+    });
 
     // Orthographic toggle
     const toggleOrthoBtn = document.getElementById("toggleOrtho");
@@ -6161,6 +6184,7 @@ function readWindowMinThreshold() {
       camera.lookAt(_camOrig.target);
       controls.update();
       updateOrthoFrustum();
+      syncViewDirInputsFromCamera();
     });
 
     // Quick view along principal axes — preserves current zoom distance
@@ -6172,6 +6196,7 @@ function readWindowMinThreshold() {
       camera.lookAt(target);
       controls.update();
       updateOrthoFrustum();
+      syncViewDirInputsFromCamera();
     }
     function setViewDirectionFromInputs() {
       const dirNorm = parseNormalizedVector(viewDirXInput, viewDirYInput, viewDirZInput, new THREE.Vector3(1, 1, 1));
@@ -6184,7 +6209,10 @@ function readWindowMinThreshold() {
     document.getElementById("viewZ").addEventListener("click", () => setViewAxis(new THREE.Vector3(0, 0, 1)));
     document.getElementById("viewNegZ").addEventListener("click", () => setViewAxis(new THREE.Vector3(0, 0, -1)));
     applyLightDirBtn.addEventListener("click", applyDirectionalLightVector);
-    applyViewDirBtn.addEventListener("click", setViewDirectionFromInputs);
+    bindEnterKeyToApply([lightDirXInput, lightDirYInput, lightDirZInput], applyDirectionalLightVector);
+    if (applyViewDirBtn) applyViewDirBtn.addEventListener("click", setViewDirectionFromInputs);
+    bindEnterKeyToApply([viewDirXInput, viewDirYInput, viewDirZInput], setViewDirectionFromInputs);
+    syncViewDirInputsFromCamera();
 
     // HUD toggle — hide/show the legend sidebar
     var _hudVisible = true;
@@ -6598,6 +6626,7 @@ function readWindowMinThreshold() {
         rel.applyAxisAngle(axis, omega * dt);
         camera.position.copy(target.clone().add(rel));
         camera.lookAt(target);
+        syncViewDirInputsFromCamera();
       }
       controls.update();
       refreshAllBillboardPointMeshes();
@@ -6623,6 +6652,12 @@ function readWindowMinThreshold() {
     window.dispatchEvent(new Event("resize"));
 
     // Export PNG (programmatic API: window.__mofFigureExportPng(mult))
+    window.__mofFigureGetViewDir = function() {
+      const dir = camera.position.clone().sub(controls.target);
+      if (dir.lengthSq() < 1e-12) return null;
+      dir.normalize();
+      return { x: dir.x, y: dir.y, z: dir.z };
+    };
     window.__mofFigureExportPng = function(resMult) {
       resMult = parseInt(resMult, 10) || 1;
       const restoreScreenDoor = !!(screenDoorToggle && screenDoorToggle.checked);
