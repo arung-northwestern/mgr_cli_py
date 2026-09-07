@@ -4013,7 +4013,10 @@ def main() -> None:
                 if not history:
                     st.warning("No percolating clusters detected for the computed grid.")
                 else:
-                    from mgrcli.textural_analysis import count_unique_percolated_clusters
+                    from mgrcli.textural_analysis import (
+                        count_unique_percolated_clusters,
+                        percolation_history_to_json,
+                    )
 
                     history_rows = []
                     for radius, percolation_components in history:
@@ -4040,6 +4043,13 @@ def main() -> None:
                         "exceed the unique count when the same pocket percolates along multiple directions."
                     )
                     st.dataframe(history_rows, use_container_width=True)
+                    st.download_button(
+                        label="Download percolation history (JSON)",
+                        data=percolation_history_to_json(analysis),
+                        file_name=f"{material_name}_percolation_history.json",
+                        mime="application/json",
+                        key="percolation_history_json_dl",
+                    )
 
                     filter_graph_at_probe = st.checkbox(
                         "Hide pore-graph connections below probe radius",
@@ -4168,6 +4178,7 @@ def main() -> None:
                     mesh_isovalue = max(float(cluster_isovalue), 0.05)
 
                     plot_status = st.empty()
+                    perc_html_download: str | None = None
 
                     if percolation_backend == "Three.js":
                         plot_status.markdown(
@@ -4196,6 +4207,7 @@ def main() -> None:
                             html_str,
                             height=1000,
                         )
+                        perc_html_download = html_str
                         plot_status.markdown("<div style='padding:6px;background:#06310c;color:#6FE37F;text-align:center;font-family:monospace;'>✅ Percolation plot complete (Three.js)</div>", unsafe_allow_html=True)
                     else:
                         plot_status.markdown(
@@ -4361,8 +4373,26 @@ def main() -> None:
                             },
                         }
                         st.plotly_chart(percolation_fig, use_container_width=True, config=_percol_cfg)
+                        perc_html_download = percolation_fig.to_html(
+                            include_plotlyjs="cdn",
+                            full_html=True,
+                        )
 
                         plot_status.markdown("<div style='padding:6px;background:#06310c;color:#6FE37F;text-align:center;font-family:monospace;'>✅ Percolation plot complete</div>", unsafe_allow_html=True)
+
+                    if perc_html_download:
+                        _perc_html_stem = (
+                            f"{material_name}_percolation_r{selected_radius:.2f}"
+                            .replace(" ", "_")
+                            .replace("/", "_")
+                        )
+                        st.download_button(
+                            label="Download percolation HTML (current settings)",
+                            data=perc_html_download,
+                            file_name=f"{_perc_html_stem}.html",
+                            mime="text/html",
+                            key="percolation_plot_html_dl",
+                        )
 
                     with st.expander("Percolation components at selected radius", expanded=False):
                         st.json(_percolation_axes_for_display(selected_components))

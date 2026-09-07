@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
@@ -231,37 +232,99 @@ def compute_void_volume(
         return None
 
 
-def save_percolation_plot_html(
+def _percolation_axis_label(axis_key: Any) -> Optional[str]:
+    if isinstance(axis_key, int) and axis_key in (0, 1, 2):
+        return ("a", "b", "c")[axis_key]
+    if isinstance(axis_key, str):
+        lk = axis_key.lower()
+        if lk in ("x", "a", "0"):
+            return "a"
+        if lk in ("y", "b", "1"):
+            return "b"
+        if lk in ("z", "c", "2"):
+            return "c"
+    return None
+
+
+def percolation_history_document(analysis: Mapping[str, Any]) -> Dict[str, Any]:
+    """JSON-serializable percolation history + LCD/PLD/DFSD summary."""
+    history = analysis.get("percolation_history") or []
+    rows = []
+    for threshold, components in history:
+        axis_counts = {"a": 0, "b": 0, "c": 0}
+        axis_components: Dict[str, list] = {"a": [], "b": [], "c": []}
+        if isinstance(components, dict):
+            for axis_key, comp_list in components.items():
+                label = _percolation_axis_label(axis_key)
+                if label is None:
+                    continue
+                comps = comp_list or []
+                axis_counts[label] = len(comps)
+                axis_components[label] = [
+                    [int(x) for x in comp] for comp in comps if comp
+                ]
+        rows.append(
+            {
+                "probe_radius_A": round(float(threshold), 5),
+                "unique_clusters": count_unique_percolated_clusters(components),
+                "axis_component_counts": axis_counts,
+                "axis_components": axis_components,
+            }
+        )
+    return {
+        "lcd_A": float(analysis.get("lcd", 0.0)),
+        "pld_A": float(analysis.get("pld", 0.0)),
+        "dfsd_A": float(analysis.get("dfsd", 0.0)),
+        "history": rows,
+    }
+
+
+def percolation_history_to_json(analysis: Mapping[str, Any], *, indent: int = 2) -> str:
+    return json.dumps(percolation_history_document(analysis), indent=indent)
+
+
+def build_percolation_plot_html(
     analysis: Dict[str, Any],
     atoms,
-    path: Path | str,
     *,
     probe_radius: float,
     backend: str = "threejs",
     theme: str = "dark",
     cluster_isovalue: Optional[float] = None,
-) -> None:
-    out = Path(path)
+    filter_connections_at_probe: bool = False,
+    window_marker_color: str = "#FFFF00",
+    window_marker_size: float = 10.0,
+    boundary_line_color: str = "#000000",
+    boundary_line_width: int = 6,
+) -> str:
+    """Return standalone percolation HTML for the current UI settings."""
     isovalue = float(cluster_isovalue if cluster_isovalue is not None else analysis.get("isovalue", 1.6))
     analysis_copy = dict(analysis)
     analysis_copy["isovalue"] = max(isovalue, 0.05)
-    backend_norm = (backend or "threejs").lower()
+    backend_norm = (backend or "threejs").lower().replace("three.js", "threejs")
 
     if backend_norm == "threejs":
         from mgr.threejs_plotting import show_percolation_threejs
 
-        html_str = show_percolation_threejs(
+        return show_percolation_threejs(
             analysis_copy,
             atoms,
             probe_radius=probe_radius,
-            options=dict(layout=theme, plot_surface_opacity=1.0, plot_surface_taubin_smooth=False),
+            options=dict(
+                layout=theme,
+                plot_surface_opacity=1.0,
+                plot_surface_taubin_smooth=False,
+                filter_connections_at_probe=bool(filter_connections_at_probe),
+                plot_windows_marker_color=window_marker_color,
+                plot_windows_marker_size=float(window_marker_size),
+            ),
         )
-        out.write_text(html_str, encoding="utf-8")
-        return
 
     import plotly.graph_objects as go
     import plotly.express as px
 
+    from mgr.helper import filter_connections_at_probe_radius
+    from mgr.visualize import plot_percolation_windows
     from mgrcli.plotting import dark_layout, white_layout
 
     cluster_traces = mgr.plot_percolated_cluster_meshes(
@@ -276,9 +339,26 @@ def save_percolation_plot_html(
         opacity=1.0,
         taubin_smooth=False,
         cscale=px.colors.qualitative.Pastel,
+        boundary_line_width=int(boundary_line_width),
+        boundary_line_color=boundary_line_color,
     )
     plot_traces = [mgr.plot_cell(atoms)]
-    rag_trace = mgr.plot_rag(analysis_copy["rag"], name="Pore Graph")
+    connections_for_graph = list(analysis_copy.get("connections") or [])
+    if filter_connections_at_probe:
+        connections_for_graph = filter_connections_at_probe_radius(
+            connections_for_graph,
+            probe_radius,
+            analysis_copy.get("maxima_radii"),
+        )
+    rag_for_plot = mgr.rag_from_connections(connections_for_graph, analysis_copy["maxima"])
+    rag_for_plot = mgr.add_maxima_to_rag(
+        rag_for_plot,
+        analysis_copy["maxima"],
+        analysis_copy["maxima_radii"],
+        analysis_copy["regions"].shape,
+        atoms,
+    )
+    rag_trace = mgr.plot_rag(rag_for_plot, name="Pore Graph")
     if isinstance(rag_trace, (list, tuple)):
         plot_traces.extend(rag_trace)
     else:
@@ -298,12 +378,11 @@ def save_percolation_plot_html(
             plot_traces.append(maxima_trace)
     plot_traces.extend(cluster_traces)
     if analysis_copy.get("percolation_history") and analysis_copy.get("connections"):
-        from mgr.visualize import plot_percolation_windows
-
         window_traces = plot_percolation_windows(
             analysis_copy,
-            atoms,
             probe_radius=probe_radius,
+            window_marker_color=window_marker_color,
+            window_marker_size=float(window_marker_size),
         )
         if isinstance(window_traces, (list, tuple)):
             plot_traces.extend(window_traces)
@@ -311,9 +390,41 @@ def save_percolation_plot_html(
             plot_traces.append(window_traces)
 
     fig = go.Figure(data=plot_traces)
-    layout = white_layout if theme == "white" else dark_layout
+    layout = white_layout if str(theme).lower() == "white" else dark_layout
     fig.update_layout(**layout)
-    fig.write_html(str(out))
+    return fig.to_html(include_plotlyjs="cdn", full_html=True)
+
+
+def save_percolation_plot_html(
+    analysis: Dict[str, Any],
+    atoms,
+    path: Path | str,
+    *,
+    probe_radius: float,
+    backend: str = "threejs",
+    theme: str = "dark",
+    cluster_isovalue: Optional[float] = None,
+    filter_connections_at_probe: bool = False,
+    window_marker_color: str = "#FFFF00",
+    window_marker_size: float = 10.0,
+    boundary_line_color: str = "#000000",
+    boundary_line_width: int = 6,
+) -> None:
+    out = Path(path)
+    html_str = build_percolation_plot_html(
+        analysis,
+        atoms,
+        probe_radius=probe_radius,
+        backend=backend,
+        theme=theme,
+        cluster_isovalue=cluster_isovalue,
+        filter_connections_at_probe=filter_connections_at_probe,
+        window_marker_color=window_marker_color,
+        window_marker_size=window_marker_size,
+        boundary_line_color=boundary_line_color,
+        boundary_line_width=boundary_line_width,
+    )
+    out.write_text(html_str, encoding="utf-8")
 
 
 def save_textural_breakdown_html(

@@ -55,3 +55,27 @@ def test_filter_connections_at_probe_radius_nodes_and_windows():
     kept = filter_connections_at_probe_radius(connections, 0.9, maxima_radii)
     assert len(kept) == 1
     assert kept[0][0] == (1, 2)
+
+
+def test_percolation_history_to_json_roundtrip():
+    import json
+
+    from mgrcli.textural_analysis import percolation_history_to_json
+
+    analysis = {
+        "lcd": 12.5,
+        "pld": 8.0,
+        "dfsd": 6.25,
+        "percolation_history": [
+            (1.0, {"x": [[1, 2]], "y": [[3]], "z": []}),
+            (1.5, {0: [[4]], 1: [], 2: [[5, 6]]}),
+        ],
+    }
+    doc = json.loads(percolation_history_to_json(analysis))
+    assert doc["lcd_A"] == 12.5
+    assert doc["pld_A"] == 8.0
+    assert len(doc["history"]) == 2
+    assert doc["history"][0]["probe_radius_A"] == 1.0
+    assert doc["history"][0]["unique_clusters"] == 2
+    assert doc["history"][0]["axis_components"]["a"] == [[1, 2]]
+    assert doc["history"][1]["axis_component_counts"]["c"] == 1
