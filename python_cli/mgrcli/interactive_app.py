@@ -2191,9 +2191,10 @@ def main() -> None:
         "<div style='font-size:0.84rem;opacity:0.84;margin-top:4px;'>"
         "📝 <em>Advanced, high-throughput characterization of nanoporous materials using pore graphs</em>"
         " — research article coming very soon! 🚀<br>"
-        "📄 <a href='https://chemrxiv.org/doi/full/10.26434/chemrxiv-2025-gc17t-v2' "
+        "📄 <a href='https://pubs.acs.org/jctcce/article/22/11/5716/5185417/PoroNet-An-Intrinsically-Interpretable-Pore-Graph' "
         "style='color:inherit;' target='_blank'>"
-        "PoroNet: pore-graph neural network for adsorption in MOFs (Zheng et al., <em>ChemRxiv</em>)</a><br>"
+        "PoroNet: intrinsically interpretable pore-graph NN for pore-level adsorption in MOFs "
+        "(Zheng et al., <em>J. Chem. Theory Comput.</em> 2026, <em>22</em>, 5716)</a><br>"
         f"🐛 Pre-release demo · <a href='{FEEDBACK_FORM_URL}' style='color:inherit;' target='_blank'>Share your thoughts and suggestions with us!</a>"
         "</div>"
         "</div>",

@@ -159,7 +159,8 @@ fi
 # Never ship local HTS artifacts, test junk, or binary logos (Hub rejects binaries without Xet)
 rm -f "${BUNDLE}/ZIF-8-RASPA.cif" "${BUNDLE}"/streamlit_*.png "${BUNDLE}/test_streamlit_app.py" 2>/dev/null || true
 rm -f "${BUNDLE}"/queue_*.png "${BUNDLE}"/docs/*.png 2>/dev/null || true
-rm -rf "${BUNDLE}/hts_output" "${BUNDLE}/.todos" "${BUNDLE}/.pytest_cache" "${BUNDLE}/.cursor" 2>/dev/null || true
+rm -rf "${BUNDLE}/hts_output" "${BUNDLE}/.todos" "${BUNDLE}/.pytest_cache" "${BUNDLE}/.cursor" \
+  "${BUNDLE}/tmp" "${BUNDLE}/.doom-cockpit" 2>/dev/null || true
 
 if [[ ! -d "${HF_CLONE_DIR}/.git" ]]; then
   rm -rf "${HF_CLONE_DIR}"

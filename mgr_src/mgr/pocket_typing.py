@@ -314,6 +314,23 @@ def resolve_typing_vdw_radii(
     )
 
 
+def infer_segmentation_spacing(
+    segmentation: Mapping[str, Any],
+    atoms,
+) -> float:
+    """Spacing (Å) for segmentation ``dgrid``; infer from cell if not stored."""
+    if segmentation.get("spacing") is not None:
+        return float(segmentation["spacing"])
+    input_params = segmentation.get("input_params")
+    if isinstance(input_params, Mapping) and input_params.get("spacing") is not None:
+        return float(input_params["spacing"])
+    dgrid = np.asarray(segmentation["dgrid"], dtype=float)
+    cell = np.asarray(atoms.get_cell().array.T, dtype=float)
+    lengths = np.linalg.norm(cell, axis=0)
+    shape_den = np.maximum(np.asarray(dgrid.shape, dtype=float) - 1.0, 1.0)
+    return float(np.mean(lengths / shape_den))
+
+
 def compute_typing_dgrid(
     atoms,
     segmentation: Mapping[str, Any],
@@ -325,10 +342,18 @@ def compute_typing_dgrid(
         return None
     from mgr.rust_fun import dgrid_from_atoms_rust
 
-    spacing = float(segmentation.get("spacing", DEFAULT_SPACING_A))
-    return dgrid_from_atoms_rust(
+    spacing = infer_segmentation_spacing(segmentation, atoms)
+    typing_dgrid = dgrid_from_atoms_rust(
         atoms, spacing=spacing, radii=radii,
     ).astype(np.float32)
+    seg_dgrid = np.asarray(segmentation["dgrid"])
+    if typing_dgrid.shape != seg_dgrid.shape:
+        raise ValueError(
+            "typing dgrid shape "
+            f"{typing_dgrid.shape} != segmentation dgrid {seg_dgrid.shape} "
+            f"(spacing={spacing:.4f} Å); ensure segmentation includes correct spacing"
+        )
+    return typing_dgrid
 
 
 def build_pockets_from_segmentation(
@@ -1334,7 +1359,7 @@ def assign_pocket_types_from_segmentation(
             "band_gap_a": band_gap_a,
             "singleton_band_gap_a": singleton_band_gap_a,
             "probe_radius_psd_a": probe_radius_psd,
-            "spacing_a": segmentation.get("spacing", DEFAULT_SPACING_A),
+            "spacing_a": infer_segmentation_spacing(segmentation, atoms),
             "mask_thickness_a": segmentation.get("mask_thickness", DEFAULT_MASK_THICKNESS_A),
             "typing_radii": (
                 "segmentation"

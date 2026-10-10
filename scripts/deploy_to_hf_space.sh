@@ -37,6 +37,8 @@ rsync -a \
   --exclude='.todos' \
   --exclude='.pytest_cache' \
   --exclude='.cursor' \
+  --exclude='tmp' \
+  --exclude='.doom-cockpit' \
   --exclude='docs/theme_detection_issue.md' \
   --exclude='docs/*.png' \
   --exclude='docs/*.pdf' \
