@@ -163,9 +163,17 @@ def show_mof_threejs(
                 pass
 
     fig = MovieFigure()
+    viewer = {
+        "explode": float(defaults.get("plot_explode") or 0.0),
+        "explode_plane": str(defaults.get("plot_explode_plane") or "ab"),
+        "hide_edges_below_window": bool(defaults.get("plot_hide_edges_below_window", True)),
+    }
+    if defaults.get("plot_window_min_radius") is not None:
+        viewer["window_min_radius"] = float(defaults["plot_window_min_radius"])
     fig.update_layout(
         {
             "surface_screen_door": bool(defaults.get("plot_surface_screen_door", False)),
+            "viewer": viewer,
         }
     )
 

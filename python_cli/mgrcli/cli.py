@@ -20,22 +20,21 @@ import zipfile
 import signal
 from pathlib import Path
 import subprocess
-CURRENT_FILE = Path(__file__).resolve()
-REPO_ROOT = CURRENT_FILE.parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 from typing import List, Dict, Any, Optional
 
-# Import functions needed for pore diameter and percolation analysis
-import sys
-from pathlib import Path
-# Add mgr_src to path to use reference functions directly
-REPO_ROOT = Path(__file__).resolve().parents[2]
-MGR_SRC_PATH = REPO_ROOT / "mgr_src"
-if str(MGR_SRC_PATH) not in sys.path:
-    sys.path.insert(0, str(MGR_SRC_PATH))
+_PKG_PARENT = Path(__file__).resolve().parents[1]
+if str(_PKG_PARENT) not in sys.path:
+    sys.path.insert(0, str(_PKG_PARENT))
+from mgrcli.layout import ensure_import_paths, source_checkout_root
 
-from mgrcli.defaults import analysis_defaults, apply_config_overrides, build_segmentation_kwargs
+ensure_import_paths()
+
+from mgrcli.defaults import (
+    analysis_defaults,
+    apply_config_overrides,
+    build_segmentation_kwargs,
+    segmentation_cache_token,
+)
 from mgrcli.dgrid_policy import resolve_dgrid_method
 
 def _import_mgr_module():
@@ -1130,6 +1129,179 @@ Notes:
             help='Probe radius Å for --percolation-plot (default: --probe-radius or 1.2)',
         )
 
+        viz_group = process_parser.add_argument_group(
+            'visualization and structure (web app parity)'
+        )
+        viz_group.add_argument(
+            '--supercell',
+            nargs=3,
+            type=int,
+            metavar=('NX', 'NY', 'NZ'),
+            default=None,
+            help='Crystallographic repeats along a, b, c before analysis (default: 1 1 1)',
+        )
+        viz_group.add_argument(
+            '--aromatic-rings',
+            action='store_true',
+            help='Experimental: detect aromatic rings and highlight them in HTML plots (off by default)',
+        )
+        viz_group.add_argument(
+            '--framework-style',
+            choices=['scatter', 'mesh', 'instanced'],
+            default=None,
+            help=(
+                'Framework drawing style. Default is scatter for Plotly and instanced '
+                'for --plot-backend threejs unless this flag or plot_framework_style is set'
+            ),
+        )
+        viz_group.add_argument(
+            '--framework-quality',
+            choices=['ultra-low', 'low', 'medium', 'high'],
+            default=None,
+            help='Three.js framework preset (web default: low). Also sets Plotly surface step via plot_quality',
+        )
+        viz_group.add_argument(
+            '--atom-scale', type=float, default=None,
+            help='Atom sphere scale for mesh/instanced framework (default: 0.65)',
+        )
+        viz_group.add_argument(
+            '--bond-radius', type=float, default=None,
+            help='Bond cylinder radius in Å (default: 0.15)',
+        )
+        viz_group.add_argument(
+            '--projection',
+            choices=['perspective', 'orthographic'],
+            default=None,
+            help='Camera projection (default: perspective)',
+        )
+        viz_group.add_argument(
+            '--surface-opacity', type=float, default=None,
+            help='Pore surface opacity 0–1 (default: 1)',
+        )
+        viz_group.add_argument(
+            '--surface-pbc-opacity', type=float, default=None,
+            help='Periodic pore surface opacity 0–1 (default: 1)',
+        )
+        viz_group.add_argument(
+            '--surface-types-opacity', type=float, default=None,
+            help='Pocket-type surface opacity 0–1 (default: 1)',
+        )
+        viz_group.add_argument(
+            '--surface-isovalue', type=float, default=None,
+            help='Surface isovalue in Å (default: 1.0)',
+        )
+        viz_group.add_argument(
+            '--no-screen-door',
+            action='store_true',
+            help='Disable screen-door transparency (on by default, matching the web app)',
+        )
+        viz_group.add_argument(
+            '--no-pore-graph',
+            action='store_true',
+            help='Omit the pore-graph (connection) traces from HTML plots',
+        )
+        viz_group.add_argument(
+            '--no-windows',
+            action='store_true',
+            help='Omit window markers from HTML plots',
+        )
+        viz_group.add_argument(
+            '--window-marker-color',
+            default=None,
+            help='Window marker color, #RRGGBB (default: #FFFF00)',
+        )
+        viz_group.add_argument(
+            '--window-marker-size', type=float, default=None,
+            help='Window marker size (default: 10)',
+        )
+        viz_group.add_argument(
+            '--window-min-radius', type=float, default=None,
+            help='Hide windows smaller than this radius (Å). With the default edge filter, also drop pore-graph edges whose windows are all below it',
+        )
+        viz_group.add_argument(
+            '--no-hide-edges-below-window',
+            action='store_true',
+            help='Keep pore-graph edges even when every window on the edge is below --window-min-radius',
+        )
+        viz_group.add_argument(
+            '--explode', type=float, default=None,
+            help='Initial exploded-view offset in Å for Three.js HTML (default: 0)',
+        )
+        viz_group.add_argument(
+            '--explode-plane',
+            choices=['ab', 'bc', 'ca'],
+            default=None,
+            help='Crystallographic plane for --explode (default: ab)',
+        )
+        viz_group.add_argument(
+            '--no-surface', action='store_true',
+            help='Omit the pore surface mesh',
+        )
+        viz_group.add_argument(
+            '--no-surface-pbc', action='store_true',
+            help='Omit the periodic pore surface mesh',
+        )
+        viz_group.add_argument(
+            '--no-cell', action='store_true',
+            help='Omit the unit-cell trace',
+        )
+        viz_group.add_argument(
+            '--no-framework', action='store_true',
+            help='Omit the framework',
+        )
+        viz_group.add_argument(
+            '--no-maxima', action='store_true',
+            help='Omit local-maxima markers',
+        )
+        viz_group.add_argument(
+            '--maxima-spheres', action='store_true',
+            help='Draw maxima as spheres (Plotly)',
+        )
+        viz_group.add_argument(
+            '--show-periodic', action='store_true',
+            help='Include periodic images in the plot',
+        )
+        viz_group.add_argument(
+            '--filter-graph-at-probe',
+            action='store_true',
+            help='Percolation plot: hide pore-graph connections below the probe radius',
+        )
+        viz_group.add_argument(
+            '--percolation-isovalue', type=float, default=None,
+            help='Cluster surface isovalue (Å) for --percolation-plot (default: surface isovalue)',
+        )
+        viz_group.add_argument(
+            '--percolation-boundary-color', default=None,
+            help='Percolation boundary line color (default: #000000)',
+        )
+        viz_group.add_argument(
+            '--percolation-boundary-width', type=int, default=None,
+            help='Percolation boundary line width (default: 6)',
+        )
+        viz_group.add_argument(
+            '--percolation-window-marker-color', default=None,
+            help='Percolation window marker color (default: window marker color)',
+        )
+        viz_group.add_argument(
+            '--percolation-window-marker-size', type=float, default=None,
+            help='Percolation window marker size (default: window marker size)',
+        )
+        viz_group.add_argument(
+            '--percolation-history',
+            action='store_true',
+            help='Write {stem}_percolation_history.json (also written with --pore-dia or --percolation-plot)',
+        )
+        viz_group.add_argument(
+            '--cache-dir',
+            default=None,
+            help='Reuse segmentation results from this directory when inputs match (web result cache)',
+        )
+        viz_group.add_argument(
+            '--no-cache',
+            action='store_true',
+            help='Ignore --cache-dir / cache_dir and recompute segmentation (web Force recompute)',
+        )
+
         # Batch command — parallel process (Dask), same flags as process
         batch_parser = subparsers.add_parser(
             'batch',
@@ -1161,6 +1333,8 @@ Notes:
             batch_parser._add_action(action)
         for action in analysis_group._group_actions:
             batch_parser._add_action(action)
+        for action in viz_group._group_actions:
+            batch_parser._add_action(action)
 
         # Generate-config command
         config_parser = subparsers.add_parser(
@@ -1179,6 +1353,8 @@ Notes:
         )
         # Add the same parameter options for generate-config
         for action in param_group._group_actions:
+            config_parser._add_action(action)
+        for action in viz_group._group_actions:
             config_parser._add_action(action)
 
         # Config-building command (interactive)
@@ -1234,6 +1410,8 @@ Notes:
             '--cif',
             help='Optional CIF file to use when metadata is missing (only for single input)'
         )
+        for action in viz_group._group_actions:
+            plot_parser._add_action(action)
 
         # Interactive command
         interactive_parser = subparsers.add_parser(
@@ -1324,7 +1502,7 @@ Notes:
         # Apply auto-parameters if requested
         if getattr(args, 'auto_params', False):
             print("Estimating optimal parameters...")
-            atoms = self._read_atoms(cif_files[0])  # Use first file for parameter estimation
+            atoms = self._prepared_atoms(cif_files[0], config, announce=False)
             auto_params = compute_auto_parameters(atoms, config['spacing'])
             if auto_params:
                 config.update(auto_params)
@@ -1390,7 +1568,7 @@ Notes:
         """Run full process pipeline for a single CIF (used by process and batch)."""
         print(f"\nProcessing: {cif_file}")
         result = self.process_single_cif(cif_file, config)
-        atoms = self._read_atoms(cif_file)
+        atoms = self._atoms_matching_results(cif_file, result, config, announce=False)
         from ase.io import read
         original_atoms = read(str(cif_file))
 
@@ -1401,6 +1579,7 @@ Notes:
             or getattr(args, 'sa', False)
             or getattr(args, 'vol', False)
             or getattr(args, 'percolation_plot', False)
+            or getattr(args, 'percolation_history', False)
             or getattr(args, 'psd_accessible', False)
         )
         if needs_pld:
@@ -1412,6 +1591,13 @@ Notes:
         if getattr(args, 'pore_dia', False) and result.get('lcd') is not None:
             pore_dia_csv_file = output_dir / f"{cif_file.stem}_pore_dia.csv"
             save_pore_diameter_csv(result, pore_dia_csv_file)
+
+        if (
+            getattr(args, 'pore_dia', False)
+            or getattr(args, 'percolation_plot', False)
+            or getattr(args, 'percolation_history', False)
+        ) and result.get('percolation_history'):
+            self._save_percolation_history_json(result, output_dir, cif_file.stem)
 
         if getattr(args, 'percolation_plot', False):
             self._save_percolation_plot(
@@ -1610,6 +1796,10 @@ Notes:
             )
             plot_backend = str(plot_backend).lower().strip()
             theme = getattr(args, 'theme', 'dark')
+            plot_options = dict(plot_options)
+            plot_options['plot_framework_style'] = self._resolve_framework_style(
+                config, plot_backend
+            )
             save_mof_html(
                 html_path,
                 plot_ready,
@@ -1667,7 +1857,9 @@ Notes:
                     print("  Error: CIF path metadata missing. Re-run process command or supply --cif for single file.")
                     continue
 
-            atoms = self._read_atoms(Path(cif_path_str))
+            atoms = self._atoms_matching_results(
+                Path(cif_path_str), result_dict, config_data, announce=False
+            )
             plot_ready = prepare_results_for_plot(result_dict, atoms)
 
             html_path = output_dir / f"{result_path.stem}.html"
@@ -1676,12 +1868,16 @@ Notes:
             )
             plot_backend = str(plot_backend).lower().strip()
             theme = getattr(args, 'theme', 'dark')
+            file_plot_options = dict(plot_options)
+            file_plot_options['plot_framework_style'] = self._resolve_framework_style(
+                config_data, plot_backend
+            )
             save_mof_html(
                 html_path,
                 plot_ready,
                 backend=plot_backend,
                 stylize=not args.no_stylize,
-                options=plot_options,
+                options=file_plot_options,
                 theme=theme,
             )
             print(f"  Plot saved to: {html_path} (backend: {plot_backend}, theme: {theme})")
@@ -1742,17 +1938,22 @@ Notes:
             cmd.extend(["--server.port", str(args.port)])
 
         env = os.environ.copy()
-        repo_path = str(REPO_ROOT)
-        existing_pythonpath = env.get("PYTHONPATH")
-        if existing_pythonpath:
-            env["PYTHONPATH"] = f"{repo_path}{os.pathsep}{existing_pythonpath}"
-        else:
-            env["PYTHONPATH"] = repo_path
+        # Installed copies find mgrcli/interactive_app.py beside this file and
+        # import mgr from site-packages. Only a source checkout needs extra
+        # path entries, and those are the package directories — not the repo root.
+        checkout = source_checkout_root()
+        if checkout is not None:
+            entries = [str(checkout / "python_cli"), str(checkout / "mgr_src")]
+            existing_pythonpath = env.get("PYTHONPATH")
+            if existing_pythonpath:
+                entries.append(existing_pythonpath)
+            env["PYTHONPATH"] = os.pathsep.join(entries)
+            sample_cifs = checkout / "cifs"
+            if sample_cifs.is_dir():
+                env.setdefault("MCLI_SAMPLE_CIF_DIR", str(sample_cifs))
 
         if getattr(args, 'no_browser', False):
             env["STREAMLIT_SERVER_HEADLESS"] = "true"
-
-        env.setdefault("MCLI_SAMPLE_CIF_DIR", str(REPO_ROOT / "cifs"))
         # Force local behavior for CLI-launched interactive sessions so hosted-demo
         # constraints are never applied by accident due to inherited shell env vars.
         env.setdefault("MGR_FORCE_LOCAL", "1")
@@ -1781,6 +1982,10 @@ Notes:
 
         # Override with command line arguments
         config = self.update_config_from_args(config, args)
+        config.pop('plot_framework_style_from_user', None)
+        if not getattr(args, 'framework_style', None):
+            # Leave style unset so --plot-backend threejs still selects instanced spheres.
+            config.pop('plot_framework_style', None)
 
         # Save to file or stdout
         if args.output == '-':
@@ -1849,14 +2054,16 @@ Notes:
 
         style_default = self.DEFAULTS['plot_framework_style']
         while True:
-            style_input = input(f"Framework plotting style (mesh/scatter) (default: {style_default}): ").strip().lower()
+            style_input = input(
+                f"Framework plotting style (scatter/mesh/instanced) (default: {style_default}): "
+            ).strip().lower()
             if not style_input:
                 config['plot_framework_style'] = style_default
                 break
-            if style_input in ('mesh', 'scatter'):
+            if style_input in ('mesh', 'scatter', 'instanced'):
                 config['plot_framework_style'] = style_input
                 break
-            print("Please enter 'mesh' or 'scatter'.")
+            print("Please enter 'mesh', 'scatter', or 'instanced'.")
 
         # Save configuration
         output_file = input("Save configuration to file (default: config.json): ").strip()
@@ -1875,6 +2082,7 @@ Notes:
 
     def update_config_from_args(self, config: Dict[str, Any], args) -> Dict[str, Any]:
         """Update configuration with command line arguments."""
+        style_from_file = isinstance(config, dict) and "plot_framework_style" in config
         result = self.DEFAULTS.copy()
         result.update(config)
         result = apply_config_overrides(result, args)
@@ -1960,6 +2168,85 @@ Notes:
 
         if getattr(args, 'plot_backend', None) is not None:
             result['plot_backend'] = args.plot_backend
+
+        supercell = getattr(args, 'supercell', None)
+        if supercell is not None:
+            result['supercell_nx'] = int(supercell[0])
+            result['supercell_ny'] = int(supercell[1])
+            result['supercell_nz'] = int(supercell[2])
+        if getattr(args, 'aromatic_rings', False):
+            result['compute_aromatic_rings'] = True
+            result['plot_framework_show_rings'] = True
+        if getattr(args, 'framework_style', None) is not None:
+            result['plot_framework_style'] = args.framework_style
+            result['plot_framework_style_from_user'] = True
+        elif style_from_file:
+            result['plot_framework_style_from_user'] = True
+        if getattr(args, 'framework_quality', None) is not None:
+            result['plot_framework_mesh_quality'] = args.framework_quality
+            result['plot_quality'] = args.framework_quality
+        if getattr(args, 'atom_scale', None) is not None:
+            result['plot_framework_mesh_scale'] = float(args.atom_scale)
+        if getattr(args, 'bond_radius', None) is not None:
+            result['plot_framework_bond_radius'] = float(args.bond_radius)
+        if getattr(args, 'projection', None) is not None:
+            result['plot_projection'] = args.projection
+        if getattr(args, 'surface_opacity', None) is not None:
+            result['plot_surface_opacity'] = float(args.surface_opacity)
+        if getattr(args, 'surface_pbc_opacity', None) is not None:
+            result['plot_surface_pbc_opacity'] = float(args.surface_pbc_opacity)
+        if getattr(args, 'surface_types_opacity', None) is not None:
+            result['plot_surface_types_opacity'] = float(args.surface_types_opacity)
+        if getattr(args, 'surface_isovalue', None) is not None:
+            result['plot_surface_isovalue'] = float(args.surface_isovalue)
+        if getattr(args, 'no_screen_door', False):
+            result['plot_surface_screen_door'] = False
+        if getattr(args, 'no_pore_graph', False):
+            result['plot_connections'] = False
+        if getattr(args, 'no_windows', False):
+            result['plot_windows'] = False
+        if getattr(args, 'window_marker_color', None) is not None:
+            result['plot_windows_marker_color'] = args.window_marker_color
+        if getattr(args, 'window_marker_size', None) is not None:
+            result['plot_windows_marker_size'] = float(args.window_marker_size)
+        if getattr(args, 'window_min_radius', None) is not None:
+            result['plot_window_min_radius'] = float(args.window_min_radius)
+        if getattr(args, 'no_hide_edges_below_window', False):
+            result['plot_hide_edges_below_window'] = False
+        if getattr(args, 'explode', None) is not None:
+            result['plot_explode'] = float(args.explode)
+        if getattr(args, 'explode_plane', None) is not None:
+            result['plot_explode_plane'] = args.explode_plane
+        if getattr(args, 'no_surface', False):
+            result['plot_surface'] = False
+        if getattr(args, 'no_surface_pbc', False):
+            result['plot_surface_pbc'] = False
+        if getattr(args, 'no_cell', False):
+            result['plot_cell'] = False
+        if getattr(args, 'no_framework', False):
+            result['plot_framework'] = False
+        if getattr(args, 'no_maxima', False):
+            result['plot_maxima'] = False
+        if getattr(args, 'maxima_spheres', False):
+            result['plot_maxima_show_spheres'] = True
+        if getattr(args, 'show_periodic', False):
+            result['plot_show_periodic'] = True
+        if getattr(args, 'filter_graph_at_probe', False):
+            result['percolation_filter_graph_at_probe'] = True
+        if getattr(args, 'percolation_isovalue', None) is not None:
+            result['percolation_cluster_isovalue'] = float(args.percolation_isovalue)
+        if getattr(args, 'percolation_boundary_color', None) is not None:
+            result['percolation_boundary_color'] = args.percolation_boundary_color
+        if getattr(args, 'percolation_boundary_width', None) is not None:
+            result['percolation_boundary_width'] = int(args.percolation_boundary_width)
+        if getattr(args, 'percolation_window_marker_color', None) is not None:
+            result['percolation_window_marker_color'] = args.percolation_window_marker_color
+        if getattr(args, 'percolation_window_marker_size', None) is not None:
+            result['percolation_window_marker_size'] = float(args.percolation_window_marker_size)
+        if getattr(args, 'cache_dir', None):
+            result['cache_dir'] = args.cache_dir
+        if getattr(args, 'no_cache', False):
+            result['use_result_cache'] = False
 
         return result
 
@@ -2087,6 +2374,16 @@ Notes:
             )
             if k in result
         }
+        win_color = (
+            config.get('percolation_window_marker_color')
+            or config.get('plot_windows_marker_color', '#FFFF00')
+        )
+        win_size = config.get('percolation_window_marker_size')
+        if win_size is None:
+            win_size = config.get('plot_windows_marker_size', 10)
+        iso = config.get('percolation_cluster_isovalue')
+        if iso is None:
+            iso = config.get('plot_surface_isovalue')
         save_percolation_plot_html(
             plot_analysis,
             atoms,
@@ -2094,8 +2391,23 @@ Notes:
             probe_radius=probe_radius,
             backend=str(perc_backend),
             theme=getattr(args, 'theme', 'dark'),
+            cluster_isovalue=iso,
+            filter_connections_at_probe=bool(
+                config.get('percolation_filter_graph_at_probe', False)
+            ),
+            window_marker_color=str(win_color),
+            window_marker_size=float(win_size),
+            boundary_line_color=str(config.get('percolation_boundary_color', '#000000')),
+            boundary_line_width=int(config.get('percolation_boundary_width', 6)),
         )
         print(f"  Percolation plot saved to: {perc_path}")
+
+    def _save_percolation_history_json(self, result, output_dir: Path, stem: str) -> None:
+        from mgrcli.textural_analysis import percolation_history_to_json
+
+        path = output_dir / f"{stem}_percolation_history.json"
+        path.write_text(percolation_history_to_json(result), encoding='utf-8')
+        print(f"  Percolation history saved to: {path}")
 
     def _resolve_pocket_typing_method(self, config: Dict[str, Any], args) -> Optional[str]:
         explicit = getattr(args, 'pocket_typing', None) or config.get('pocket_typing')
@@ -2312,20 +2624,76 @@ Notes:
         num_clusters = len(np.unique(regions_cluster)) - 1
         print(f"Found {num_clusters} different pocket types")
 
-    def process_single_cif(self, cif_file: Path, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Process a single CIF file using the Python workflow built on the Rust backend."""
+    def _prepared_atoms(self, cif_file: Path, config: Dict[str, Any], announce: bool = True):
+        """CIF atoms after crystallographic repeats and optional min-box supercell."""
+        from mgr.helper import apply_crystallographic_supercell
 
         atoms = self._read_atoms(cif_file)
+        nx = int(config.get('supercell_nx') or 1)
+        ny = int(config.get('supercell_ny') or 1)
+        nz = int(config.get('supercell_nz') or 1)
+        if (nx, ny, nz) != (1, 1, 1):
+            n_before = len(atoms)
+            atoms = apply_crystallographic_supercell(atoms, nx, ny, nz)
+            if announce:
+                print(
+                    f"  Crystallographic supercell {nx}x{ny}x{nz}: "
+                    f"{n_before} -> {len(atoms)} atoms"
+                )
         min_box = config.get('min_box_thickness')
         if min_box is not None and float(min_box) > 0:
             cell_lengths = atoms.get_cell_lengths_and_angles()[:3]
             if min(cell_lengths) < float(min_box):
                 repetitions = mgr.get_repetitions_to_meet_cutoff(atoms, float(min_box))
                 atoms = atoms * repetitions
-                print(
-                    f"  Supercell {repetitions} for min box thickness "
-                    f"{float(min_box):.1f} Å (short axis was {min(cell_lengths):.2f} Å)"
+                if announce:
+                    print(
+                        f"  Supercell {repetitions} for min box thickness "
+                        f"{float(min_box):.1f} Å (short axis was {min(cell_lengths):.2f} Å)"
+                    )
+        return atoms
+
+    def _stamp_structure(self, result: Dict[str, Any], config: Dict[str, Any]) -> None:
+        """Record the cell repeats that the segmentation grid was built on."""
+        result['supercell_nx'] = int(config.get('supercell_nx') or 1)
+        result['supercell_ny'] = int(config.get('supercell_ny') or 1)
+        result['supercell_nz'] = int(config.get('supercell_nz') or 1)
+        min_box = config.get('min_box_thickness')
+        if min_box is not None and float(min_box) > 0:
+            result['min_box_thickness'] = float(min_box)
+
+    def _atoms_matching_results(self, cif_file: Path, result: Dict[str, Any], config: Dict[str, Any], announce: bool = False):
+        """Rebuild the structure that matches a saved grid (repeats stored on the result)."""
+        cfg = dict(config)
+        for key in ('supercell_nx', 'supercell_ny', 'supercell_nz', 'min_box_thickness'):
+            if key not in result or result[key] is None:
+                continue
+            val = result[key]
+            if hasattr(val, 'item') and not isinstance(val, (str, bytes, list, tuple, dict)):
+                try:
+                    val = val.item()
+                except Exception:
+                    pass
+            cfg[key] = val
+        return self._prepared_atoms(cif_file, cfg, announce=announce)
+
+    def process_single_cif(self, cif_file: Path, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Process a single CIF file using the Python workflow built on the Rust backend."""
+
+        cache_path = None
+        use_cache = bool(config.get('use_result_cache', True)) and config.get('cache_dir')
+        if use_cache:
+            token = segmentation_cache_token(cif_file, config)
+            cache_path = Path(config['cache_dir']) / f"{cif_file.stem}_{token}.npz"
+            if cache_path.is_file():
+                print(f"  Loaded cached segmentation: {cache_path}")
+                cached = self.load_results_file(cache_path)
+                self._stamp_structure(cached, config)
+                return self._maybe_aromatic_rings(
+                    cached, self._prepared_atoms(cif_file, config), config
                 )
+
+        atoms = self._prepared_atoms(cif_file, config)
 
         spacing = config['spacing']
         radii_set = str(config.get('vdw_radii_set', 'bondi'))
@@ -2375,7 +2743,35 @@ Notes:
         timing = result.get('timing_results', {}) or {}
         timing.setdefault('total_time', total_end - total_start)
         result['timing_results'] = timing
+        self._stamp_structure(result, config)
 
+        if cache_path is not None:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            self.save_results(dict(result), cache_path)
+            print(f"  Cached segmentation: {cache_path}")
+
+        return self._maybe_aromatic_rings(result, atoms, config)
+
+    def _maybe_aromatic_rings(self, result, atoms, config: Dict[str, Any]):
+        """Opt-in aromatic ring count. Plotting recomputes cycles when the flag is on."""
+        if not (
+            config.get('compute_aromatic_rings')
+            or config.get('plot_framework_show_rings')
+        ):
+            return result
+        from mgr.analyze import compute_aromatic_cycles
+
+        print("Detecting aromatic rings (experimental)...")
+        try:
+            cycles = compute_aromatic_cycles(atoms) or []
+        except Exception as exc:
+            print(f"Warning: aromatic ring detection failed: {exc}")
+            result['aromatic_ring_count'] = 0
+            result['compute_aromatic_rings'] = True
+            return result
+        result['aromatic_ring_count'] = int(len(cycles))
+        result['compute_aromatic_rings'] = True
+        print(f"  Aromatic rings: {result['aromatic_ring_count']}")
         return result
 
     def save_results_numpy(self, result: Dict[str, Any], output_file: Path):
@@ -2583,15 +2979,33 @@ Notes:
             'plot_enable': config.get('plot_enable', True),
             'plot_cell': config.get('plot_cell', True),
             'plot_framework': config.get('plot_framework', True),
-            'plot_framework_style': config.get('plot_framework_style', 'mesh'),
-            'plot_framework_show_rings': config.get('plot_framework_show_rings', pd['plot_framework_show_rings']),
+            'plot_framework_style': config.get('plot_framework_style', pd.get('plot_framework_style', 'scatter')),
+            'plot_framework_show_rings': config.get(
+                'plot_framework_show_rings', pd['plot_framework_show_rings']
+            ) or bool(config.get('compute_aromatic_rings', False)),
             'plot_framework_mesh_scale': config.get('plot_framework_mesh_scale', pd['plot_framework_mesh_scale']),
             'plot_framework_bond_radius': config.get('plot_framework_bond_radius', pd['plot_framework_bond_radius']),
+            'plot_framework_mesh_quality': config.get(
+                'plot_framework_mesh_quality', pd.get('plot_framework_mesh_quality', 'low')
+            ),
+            'plot_quality': config.get('plot_quality', pd.get('plot_quality', 'medium')),
             'plot_maxima': config.get('plot_maxima', True),
             'plot_maxima_show_spheres': config.get('plot_maxima_show_spheres', False),
             'plot_show_periodic': config.get('plot_show_periodic', False),
             'plot_connections': config.get('plot_connections', True),
             'plot_windows': config.get('plot_windows', True),
+            'plot_windows_marker_color': config.get(
+                'plot_windows_marker_color', pd.get('plot_windows_marker_color', '#FFFF00')
+            ),
+            'plot_windows_marker_size': config.get(
+                'plot_windows_marker_size', pd.get('plot_windows_marker_size', 10)
+            ),
+            'plot_window_min_radius': config.get('plot_window_min_radius', pd.get('plot_window_min_radius')),
+            'plot_hide_edges_below_window': config.get(
+                'plot_hide_edges_below_window', pd.get('plot_hide_edges_below_window', True)
+            ),
+            'plot_explode': config.get('plot_explode', pd.get('plot_explode', 0.0)),
+            'plot_explode_plane': config.get('plot_explode_plane', pd.get('plot_explode_plane', 'ab')),
             'plot_surface': config.get('plot_surface', True),
             'plot_surface_pbc': config.get('plot_surface_pbc', True),
             'plot_surface_isovalue': config.get('plot_surface_isovalue', pd['plot_surface_isovalue']),
@@ -2615,6 +3029,16 @@ Notes:
                 opts[k] = config[k]
         return opts
 
+    def _resolve_framework_style(self, config: Dict[str, Any], backend: str) -> str:
+        """Plotly web default is scatter; Three.js web default is instanced spheres."""
+        style = str(config.get('plot_framework_style') or 'scatter')
+        if config.get('plot_framework_style_from_user'):
+            return style
+        normalized = str(backend or '').lower().replace('.', '').replace('-', '')
+        if normalized in ('threejs', 'three'):
+            return 'instanced'
+        return style
+
     def _read_atoms(self, cif_path: Path):
         """Read an ASE Atoms object from CIF file."""
         try:
@@ -2626,12 +3050,6 @@ Notes:
 
         try:
             atoms = read(str(cif_path))
-            # Compute bonds immediately after loading CIF only if not already done
-            REPO_ROOT = Path(__file__).resolve().parents[2]
-            MGR_SRC_PATH = REPO_ROOT / "mgr_src"
-            if str(MGR_SRC_PATH) not in sys.path:
-                sys.path.insert(0, str(MGR_SRC_PATH))
-
             bonds_existing = atoms.info.get("covalent_bonds")
             orders_existing = atoms.info.get("covalent_bond_orders")
             nb = len(bonds_existing) if bonds_existing is not None else 0

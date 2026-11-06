@@ -33,11 +33,13 @@ import pandas as pd
 
 import sys
 from pathlib import Path
-# Add mgr_src to path to use reference functions directly
-REPO_ROOT = Path(__file__).resolve().parents[2]
-MGR_SRC_PATH = REPO_ROOT / "mgr_src"
-if str(MGR_SRC_PATH) not in sys.path:
-    sys.path.insert(0, str(MGR_SRC_PATH))
+
+_PKG_PARENT = Path(__file__).resolve().parents[1]
+if str(_PKG_PARENT) not in sys.path:
+    sys.path.insert(0, str(_PKG_PARENT))
+from mgrcli.layout import ensure_import_paths, source_checkout_root
+
+ensure_import_paths()
 
 def _import_mgr_module():
     import mgr as _mgr
@@ -152,9 +154,12 @@ SPACES_MAX_ATOMS = 5000
 SPACES_RAYON_THREADS = 8
 SPACES_DGRID_FLOAT_BYTES = 4
 SPACES_DGRID_RAM_BUDGET_BYTES = int(512 * 1024**2)  # auto-AABB if output grid alone is huge
-# Auto-AABB when n_grid × n_atoms exceeds this (runtime); ZIF-20 @0.4 Å ≈ 7e9 stays on Rust.
+# Hosted demo only: auto-AABB when n_grid × n_atoms exceeds this (ZIF-20 @0.5 Å ≈ 3.6e9,
+# @0.4 Å ≈ 7.1e9, so the demo uses Rust AABB for speed).
 SPACES_DGRID_OPS_AUTO_AABB = 1_000_000_000
-# Local installs: larger RAM budget; same ops threshold unless MGR_DGRID_OPS_AUTO_AABB is set.
+# Local installs: no work-based switch (exact dgrid by default); only the RAM budget below
+# applies. Set MGR_DGRID_OPS_AUTO_AABB to opt in to a work threshold locally.
+LOCAL_DGRID_OPS_AUTO_AABB = sys.maxsize
 LOCAL_DGRID_RAM_BUDGET_BYTES = int(16 * 1024**3)
 LOCAL_RAYON_THREADS_DEFAULT = 8
 LOCAL_RAYON_GIB_PER_THREAD = 2
@@ -201,6 +206,17 @@ def _dgrid_ops_auto_aabb_threshold() -> int:
         except ValueError:
             pass
     return SPACES_DGRID_OPS_AUTO_AABB
+
+
+def _local_dgrid_ops_auto_aabb_threshold() -> int:
+    """Local installs: env override only; otherwise never switch on work alone."""
+    raw = os.environ.get("MGR_DGRID_OPS_AUTO_AABB", "").strip()
+    if raw:
+        try:
+            return int(float(raw))
+        except ValueError:
+            pass
+    return LOCAL_DGRID_OPS_AUTO_AABB
 
 
 def spaces_should_auto_aabb_dgrid(
@@ -979,10 +995,7 @@ def _load_cli_funcs():
         return _CLI_FUNCS
 
     if __package__ is None or __package__ == "":  # pragma: no cover - streamlit entry
-        import sys
-
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-        from python_cli.mgrcli.cli import (
+        from mgrcli.cli import (
             compute_dgrid_rust as _compute_dgrid_rust,
             python_do_periodic_segmentation_rust as _python_do_periodic_segmentation_rust,
             get_pbc_groups as _get_pbc_groups,
@@ -1003,10 +1016,7 @@ def _load_plotting_symbols():
         return _PLOTTING_SYMBOLS
 
     if __package__ is None or __package__ == "":  # pragma: no cover - streamlit entry
-        import sys
-
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-        from python_cli.mgrcli.plotting import (
+        from mgrcli.plotting import (
             show_mof as _show_mof,
             STYLIZE_LIGHTING as _STYLIZE_LIGHTING,
             STYLIZE_LIGHTPOSITION as _STYLIZE_LIGHTPOSITION,
@@ -1395,16 +1405,19 @@ def _mofography_logo_paths() -> tuple[Optional[Path], Optional[Path]]:
     light_name = "mofography_logo_white_background.png"
     dark_name = "mofography_logo_dark_background.png"
     bases: list[Path] = []
-    # 1. In-repo docs/ (works in Docker / HF Spaces)
-    cli_root = Path(__file__).resolve().parents[2]
-    bases.append(cli_root / "docs")
+    # Checkout docs/ (Docker image and a local clone). Installed copies do not
+    # ship the logo next to site-packages; later fallbacks cover that case.
+    checkout = source_checkout_root()
+    if checkout is not None:
+        bases.append(checkout / "docs")
     # 2. External MOFOGRAPHY_REPO env override
     env = (os.environ.get("MOFOGRAPHY_REPO") or "").strip()
     if env:
         bases.append(Path(env).expanduser())
     # 3. Local dev fallback
     bases.append(Path.home() / "repos" / "mofography")
-    bases.append(cli_root.parent / "mofography")
+    if checkout is not None:
+        bases.append(checkout.parent / "mofography")
 
     light_p: Optional[Path] = None
     dark_p: Optional[Path] = None
@@ -1430,7 +1443,8 @@ def _encode_image(image_path: Path) -> str:
 
 
 def _get_sample_cifs() -> Dict[str, Path]:
-    sample_dir = Path(os.environ.get("MCLI_SAMPLE_CIF_DIR", Path(__file__).resolve().parents[2] / "cifs"))
+    default_samples = (source_checkout_root() or Path(__file__).resolve().parent) / "cifs"
+    sample_dir = Path(os.environ.get("MCLI_SAMPLE_CIF_DIR", default_samples))
     samples: Dict[str, Path] = {}
     if sample_dir.exists():
         for cif_path in sorted(sample_dir.glob("*.cif")):
@@ -1684,14 +1698,7 @@ def _hts_one_material(
             from mgr.compute import dgrid_from_atoms_cpu
             dgrid = dgrid_from_atoms_cpu(atoms, spacing=spacing, block_size=block_size).astype(np.float32)
         else:
-            if __package__ and "mgrcli" in __package__:
-                from mgrcli.cli import compute_dgrid_rust
-            else:
-                import sys
-                _root = P(__file__).resolve().parents[2]
-                if str(_root) not in sys.path:
-                    sys.path.insert(0, str(_root))
-                from python_cli.mgrcli.cli import compute_dgrid_rust
+            from mgrcli.cli import compute_dgrid_rust
             _method = (
                 "rust_aabb"
                 if dgrid_method == "rust_aabb"
@@ -1715,14 +1722,7 @@ def _hts_one_material(
         extra_padding = float(params.get("extra_padding", 5.0))
         watershed_backend_w = str(params.get("watershed_backend", "rust_det"))
 
-        if __package__ and "mgrcli" in __package__:
-            from mgrcli.cli import python_do_periodic_segmentation_rust
-        else:
-            import sys
-            _root = P(__file__).resolve().parents[2]
-            if str(_root) not in sys.path:
-                sys.path.insert(0, str(_root))
-            from python_cli.mgrcli.cli import python_do_periodic_segmentation_rust
+        from mgrcli.cli import python_do_periodic_segmentation_rust
 
         results = python_do_periodic_segmentation_rust(
             dgrid=dgrid,
@@ -1771,14 +1771,7 @@ def _hts_one_material(
                 (material_folder / "results.npz").write_bytes(npz_bytes)
 
         if options.get("save_rag"):
-            if __package__ and "mgrcli" in __package__:
-                from mgrcli.cli import get_pbc_groups
-            else:
-                import sys
-                _root = P(__file__).resolve().parents[2]
-                if str(_root) not in sys.path:
-                    sys.path.insert(0, str(_root))
-                from python_cli.mgrcli.cli import get_pbc_groups
+            from mgrcli.cli import get_pbc_groups
             connections = results.get("connections")
             maxima = results.get("maxima")
             maxima_radii = results.get("maxima_radii")
@@ -1822,28 +1815,14 @@ def _hts_one_material(
                 pass
 
         if options.get("save_html"):
-            if __package__ and "mgrcli" in __package__:
-                from mgrcli.plotting import show_mof
-            else:
-                import sys
-                _root = P(__file__).resolve().parents[2]
-                if str(_root) not in sys.path:
-                    sys.path.insert(0, str(_root))
-                from python_cli.mgrcli.plotting import show_mof
+            from mgrcli.plotting import show_mof
             viz_opts = options.get("viz_options") or {}
             stylize = options.get("stylize", False)
             fig = show_mof(results, stylize=stylize, options=viz_opts)
             fig.write_html(str(material_folder / "plot.html"))
 
         if options.get("do_pore_dia"):
-            if __package__ and "mgrcli" in __package__:
-                from mgrcli.cli import compute_pore_diameter_analysis, save_pore_diameter_csv
-            else:
-                import sys
-                _root = P(__file__).resolve().parents[2]
-                if str(_root) not in sys.path:
-                    sys.path.insert(0, str(_root))
-                from python_cli.mgrcli.cli import compute_pore_diameter_analysis, save_pore_diameter_csv
+            from mgrcli.cli import compute_pore_diameter_analysis, save_pore_diameter_csv
             try:
                 pore_dia_results = compute_pore_diameter_analysis(
                     results["dgrid"], atoms, spacing=spacing, segmentation_results=results
@@ -1854,14 +1833,7 @@ def _hts_one_material(
                 pass
 
         if options.get("do_psd"):
-            if __package__ and "mgrcli" in __package__:
-                from mgrcli.cli import compute_psd_analysis, save_psd_csv
-            else:
-                import sys
-                _root = P(__file__).resolve().parents[2]
-                if str(_root) not in sys.path:
-                    sys.path.insert(0, str(_root))
-                from python_cli.mgrcli.cli import compute_psd_analysis, save_psd_csv
+            from mgrcli.cli import compute_psd_analysis, save_psd_csv
             try:
                 regions_pbc = results.get("regions_pbc")
                 domain = str(options.get("psd_domain", "Occupiable only"))
@@ -1951,14 +1923,7 @@ def _hts_one_material(
                 pass
 
         if options.get("do_sa_vol"):
-            if __package__ and "mgrcli" in __package__:
-                from mgrcli.cli import save_surface_area_csv, save_void_volume_csv
-            else:
-                import sys
-                _root = P(__file__).resolve().parents[2]
-                if str(_root) not in sys.path:
-                    sys.path.insert(0, str(_root))
-                from python_cli.mgrcli.cli import save_surface_area_csv, save_void_volume_csv
+            from mgrcli.cli import save_surface_area_csv, save_void_volume_csv
             try:
                 percolation_analysis = _compute_pld_analysis(
                     results,
@@ -2436,6 +2401,7 @@ def main() -> None:
             atoms,
             spacing,
             ram_budget_bytes=LOCAL_DGRID_RAM_BUDGET_BYTES,
+            ops_threshold=_local_dgrid_ops_auto_aabb_threshold(),
         )
 
     # Derive default method from auto-switch policy.
@@ -2490,8 +2456,12 @@ def main() -> None:
         help=(
             "Method for computing the distance grid. "
             "Auto-switched to Rust AABB (R*-tree) when the Rust exact grid alone would exceed "
-            f"~{_aabb_help_budget_mib} MiB, or when grid points × atoms exceeds "
-            f"{_dgrid_ops_auto_aabb_threshold() / 1e9:.0f}×10⁹."
+            f"~{_aabb_help_budget_mib} MiB"
+            + (
+                f", or when grid points × atoms exceeds {_dgrid_ops_auto_aabb_threshold() / 1e9:.0f}×10⁹."
+                if _is_spaces_deployment()
+                else ". Local installs have no work-based limit; pick any method freely."
+            )
         ),
     )
     # Derive the legacy bool from the method selector.

@@ -120,6 +120,12 @@ class TestCLIConfigIntegration(unittest.TestCase):
       self.assertEqual(config["vdw_radii_set"], DGRID_DEFAULTS["vdw_radii_set"])
       self.assertTrue(config["skip_endchannel_pairs"])
       self.assertTrue(config["window_fp"])
+      self.assertTrue(config["plot_surface_screen_door"])
+      self.assertEqual(config["supercell_nx"], 1)
+      self.assertFalse(config["compute_aromatic_rings"])
+      self.assertEqual(config["plot_explode"], 0.0)
+      self.assertEqual(config["plot_windows_marker_size"], 10)
+      self.assertNotIn("plot_framework_style", config)
     finally:
       os.unlink(config_file)
 
@@ -141,6 +147,94 @@ class TestCLIConfigIntegration(unittest.TestCase):
     self.assertIn("--percolation-plot", result.stdout)
     self.assertIn("--accessibility-method", result.stdout)
     self.assertIn("--no-window-fp", result.stdout)
+    self.assertIn("--aromatic-rings", result.stdout)
+    self.assertIn("--supercell", result.stdout)
+    self.assertIn("--surface-opacity", result.stdout)
+    self.assertIn("--surface-pbc-opacity", result.stdout)
+    self.assertIn("--surface-types-opacity", result.stdout)
+    self.assertIn("--window-min-radius", result.stdout)
+    self.assertIn("--explode", result.stdout)
+    self.assertIn("--percolation-history", result.stdout)
+    self.assertIn("--cache-dir", result.stdout)
+    self.assertIn("--no-cache", result.stdout)
+    self.assertIn("--no-screen-door", result.stdout)
+    self.assertIn("--filter-graph-at-probe", result.stdout)
+
+  def test_viz_flags_update_config(self):
+    from mgrcli.cli import MCLI
+
+    cli = MCLI()
+    ns = type(
+      "NS",
+      (),
+      {
+        "supercell": [2, 1, 3],
+        "aromatic_rings": True,
+        "framework_style": "instanced",
+        "surface_opacity": 0.4,
+        "surface_pbc_opacity": 0.2,
+        "surface_types_opacity": 0.5,
+        "window_min_radius": 1.25,
+        "explode": 1.5,
+        "explode_plane": "bc",
+        "no_screen_door": True,
+        "no_pore_graph": True,
+        "filter_graph_at_probe": True,
+        "percolation_boundary_width": 3,
+        "cache_dir": "cache_out",
+        "no_cache": True,
+      },
+    )()
+    merged = cli.update_config_from_args({}, ns)
+    self.assertEqual(merged["supercell_nx"], 2)
+    self.assertEqual(merged["supercell_ny"], 1)
+    self.assertEqual(merged["supercell_nz"], 3)
+    self.assertTrue(merged["compute_aromatic_rings"])
+    self.assertTrue(merged["plot_framework_show_rings"])
+    self.assertEqual(merged["plot_framework_style"], "instanced")
+    self.assertTrue(merged["plot_framework_style_from_user"])
+    self.assertEqual(merged["plot_surface_opacity"], 0.4)
+    self.assertEqual(merged["plot_surface_pbc_opacity"], 0.2)
+    self.assertEqual(merged["plot_surface_types_opacity"], 0.5)
+    self.assertEqual(merged["plot_window_min_radius"], 1.25)
+    self.assertEqual(merged["plot_explode"], 1.5)
+    self.assertEqual(merged["plot_explode_plane"], "bc")
+    self.assertFalse(merged["plot_surface_screen_door"])
+    self.assertFalse(merged["plot_connections"])
+    self.assertTrue(merged["percolation_filter_graph_at_probe"])
+    self.assertEqual(merged["percolation_boundary_width"], 3)
+    self.assertEqual(merged["cache_dir"], "cache_out")
+    self.assertFalse(merged["use_result_cache"])
+    self.assertEqual(cli._resolve_framework_style(merged, "threejs"), "instanced")
+    bare = cli.update_config_from_args({}, type("NS", (), {})())
+    self.assertEqual(cli._resolve_framework_style(bare, "threejs"), "instanced")
+    self.assertEqual(cli._resolve_framework_style(bare, "plotly"), "scatter")
+    self.assertTrue(bare["plot_surface_screen_door"])
+    self.assertEqual(bare["plot_windows_marker_color"], "#FFFF00")
+
+  def test_saved_supercell_drives_later_plots(self):
+    from mgrcli.cli import MCLI
+
+    cli = MCLI()
+    seen = {}
+
+    def fake_prepared(cif, config, announce=True):
+      seen["cif"] = cif
+      seen["config"] = dict(config)
+      seen["announce"] = announce
+      return "prepared"
+
+    cli._prepared_atoms = fake_prepared
+    atoms = cli._atoms_matching_results(
+      Path("structure.cif"),
+      {"supercell_nx": 2, "supercell_ny": 2, "supercell_nz": 1, "min_box_thickness": 12.0},
+      {"supercell_nx": 1, "supercell_ny": 1, "supercell_nz": 1},
+    )
+    self.assertEqual(atoms, "prepared")
+    self.assertEqual(seen["config"]["supercell_nx"], 2)
+    self.assertEqual(seen["config"]["supercell_ny"], 2)
+    self.assertEqual(seen["config"]["min_box_thickness"], 12.0)
+    self.assertFalse(seen["announce"])
 
   def test_interactive_help_lists_clean(self):
     cmd = [sys.executable, "-m", "mgrcli.cli", "interactive", "--help"]

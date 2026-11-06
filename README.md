@@ -1,16 +1,17 @@
 # Mofography CLI Tool
 
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org/)
-[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![Python](https://img.shields.io/badge/Python-3.10%E2%80%933.13-blue.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-BSD--3--Clause-green.svg)](LICENSE)
 
 A high-performance command-line interface for analyzing Metal-Organic Frameworks (MOFs) using advanced segmentation algorithms. This repository ships a **terminal CLI** (`mgrcli`) and an **interactive Streamlit web app** (`mgrcli interactive`), powered by a **Rust extension** (`mgrcli_rust`, PyO3) compiled from the workspace root and Python packages under `python_cli/`.
 
 ## Table of Contents
-- [Installation Guide](#-installation-guide)
-  - [Prerequisites and install](#prerequisites-and-install)
+- [Installation](#installation)
+  - [Prerequisites](#prerequisites)
+  - [Verify](#verify)
   - [How the Rust backend is built](#how-the-rust-backend-is-built)
-  - [Troubleshooting](#-troubleshooting)
+  - [Troubleshooting](#troubleshooting)
 - [Quick Start](#quick-start)
 - [Features](#features)
 - [Architecture](#architecture)
@@ -57,12 +58,12 @@ This CLI tool is **separate** from the main Mofography Python package but mainta
 ## Architecture
 
 ### Backend technologies
-* **`mgrcli_rust` (Rust)**: Native extension module (PyO3) with the heavy numerical work: distance grids, watershed, maxima detection, window connections, and related kernels. The **CLI and Streamlit app import this module**; they do not call a separate “mgrui” or second Rust product.
+* **`mgrcli_rust` (Rust)**: Native extension module (PyO3) with the heavy numerical work: distance grids, watershed, maxima detection, window connections, and related kernels. The CLI and the Streamlit app both import this module.
 * **Python (`python_cli/mgrcli/`)**: `argparse` CLI, Streamlit UI (`interactive_app.py`), plotting glue, orchestration, and saving results (for example `.npz`).
 * **PyO3 + NumPy**: Rust functions receive and return NumPy arrays where appropriate.
 
 ### Which `Cargo.toml` is used
-**The repository root** `Cargo.toml` (next to `pyproject.toml`), with Rust sources in **`src/`**, is what **maturin** / `pip install` compile into `mgrcli_rust`. A duplicate crate under `mgr_src/mgrcli_rust/` is not used for that install path; ignore it unless you are working on that subtree explicitly.
+The Rust crate lives in **`mgr_src/mgrcli_rust/`** (`Cargo.toml` + `src/`). `pyproject.toml` points maturin at it, and `pip install` compiles it into `mgrcli_rust`.
 
 ### Where Python vs Rust is used
 * **Python**: CLI, Streamlit, configuration, file I/O, Plotly/pyvista workflows, Dask/HTS drivers.
@@ -70,207 +71,221 @@ This CLI tool is **separate** from the main Mofography Python package but mainta
 
 > **Note**: This is completely standalone from the main mofography Python library, although the core segmentation algorithms (distance grids, watershed, maxima detection, and window connections) use the same Rust backend functions. However, all bookkeeping operations (CIF file reading, atomic radii assignment, periodic boundary condition handling, and reindexing) are implemented entirely in Rust here, which may produce slightly different results compared to the Python version.
 
-# 🚀 Installation Guide
+<a id="installation"></a>
 
-Install from source into a Python environment. **`pip install -e .` pulls in all Python dependencies** declared in `pyproject.toml` (including the **`mgr_src`** stack: pymatgen, freud, networkx, trimesh, scikit-learn, tqdm, rich, and the same web/data helpers as the [mofography](https://github.com/arung-northwestern/mofography) README’s pip list where this repo imports them). It also **builds `mgrcli_rust` automatically** via [maturin](https://www.maturin.rs/). You only need a working **Rust toolchain** on the machine so that compile step can run.
+# Installation
 
-**GPU helpers:** A few functions in `mgr_src` (for example `dgrid_from_atoms_gpu`, Poisson spectral GPU paths) import **CuPy** when called. CuPy is **not** declared in `pyproject.toml`; install a CuPy wheel matching your CUDA stack only if you use those entry points.
+mgrcli is **not on PyPI**. Install from this Git repository. `pip install` compiles the Rust extension `mgrcli_rust` in release mode with [maturin](https://www.maturin.rs/). The first compile is often 5–15 minutes. There are no prebuilt wheels: a local release build matches your CPU.
 
-For users who do not want a local Python/Rust setup, the **Docker** workflow runs the Streamlit app in a container; **public image names and pull commands will be added to this README when the image is published.**
+<a id="one-command"></a>
 
-## Prerequisites and install
+## One command (macOS / Linux)
 
-### Prerequisites
+After this repository is **public**, this installs from the `master` branch:
 
-* **Python 3.10+** recommended (3.8+ minimum): [Download Python](https://www.python.org/downloads/)
-* **Rust & Cargo** (1.70+): required so `mgrcli_rust` can compile (PyO3 / maturin)
-* **Git**: to clone the repository
+```bash
+curl -fsSL https://raw.githubusercontent.com/arung-northwestern/mgr_cli_py/master/install/install.sh | bash
+```
 
-### Local install (quick path)
+Pin a branch or tag:
 
-From a fresh clone — one editable install builds the Rust extension and Python packages together:
+```bash
+curl -fsSL https://raw.githubusercontent.com/arung-northwestern/mgr_cli_py/master/install/install.sh | MGRCLI_REF=master bash
+```
+
+`raw.githubusercontent.com` does not use your git login. While the repository is private, that curl returns 404. Clone with GitHub auth instead and run the same script (see [Private repository](#private-repository)).
+
+The script detects the OS, installs [rustup](https://rustup.rs/) when `cargo` is missing (no sudo), creates a virtualenv at `$MGRCLI_HOME` (default `$HOME/.mgrcli`; `uv` if it is on `PATH`, otherwise `python -m venv`), installs this repo, and checks `mgrcli --version`. Re-running it is safe.
+
+From a clone, the same script installs **that** checkout and does not switch branches:
+
+```bash
+./install/install.sh
+```
+
+<a id="pip"></a>
+
+## pip
+
+```bash
+pip install "git+https://github.com/arung-northwestern/mgr_cli_py.git"
+```
+
+<a id="uv"></a>
+
+## uv
+
+```bash
+uv pip install "git+https://github.com/arung-northwestern/mgr_cli_py.git"
+uv tool install "git+https://github.com/arung-northwestern/mgr_cli_py.git"
+```
+
+`uv tool install` puts the `mgrcli` command on your PATH without activating a project venv.
+
+<a id="from-source"></a>
+
+## From source (development)
 
 ```bash
 git clone https://github.com/arung-northwestern/mgr_cli_py.git
 cd mgr_cli_py
-
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
-
-pip install --upgrade pip
-pip install -e .                   # compiles mgrcli_rust + installs mgrcli + mgr_src
-```
-
-**After changing Rust code** (`src/`, root `Cargo.toml`), reinstall the extension:
-
-```bash
-pip install --force-reinstall -e .
-```
-
-**Verify:**
-
-```bash
-mgrcli --help
-mgrcli process cifs/P1-IRMOF-1.cif -o ./out/ --return-dgrid
-mgrcli interactive --clean         # kill stale Streamlit, then open web UI
-```
-
-> **Note:** `pip install -e .` is the normal path — maturin runs `cargo` for you. You do **not** need a separate manual `cargo build` unless you are debugging the Rust crate in isolation.
-
-**Interactive app:** `mgrcli interactive` runs Streamlit on `python_cli/mgrcli/interactive_app.py`, sets `PYTHONPATH` to the repo root, and forces local mode (`MGR_FORCE_LOCAL=1`). Use **`--clean`** if a previous session left Streamlit running on the same app file.
-
-See also: [CLI ↔ web parity plan](docs/plan_cli_web_parity.md) for aligning batch CLI defaults with the Streamlit app.
-
-### Step 1: Install Rust (one-time)
-
-**Windows:**
-```bash
-# Option 1: winget (recommended)
-winget install Rustlang.Rustup
-
-# Option 2: Manual download from https://rustup.rs/
-```
-
-**Linux:**
-```bash
-# Ubuntu/Debian
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
-
-# Or package manager
-sudo apt install cargo rustc  # Ubuntu
-sudo dnf install cargo rustc  # Fedora
-```
-
-**macOS:**
-```bash
-# Homebrew (recommended)
-brew install rust
-
-# Or manual
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-**Verify Rust installation:**
-```bash
-rustc --version  # Should show version 1.70 or higher
-cargo --version  # Should show cargo version
-```
-
-### Step 2: Clone the repository
-
-```bash
-git clone https://github.com/arung-northwestern/mgr_cli_py.git
-cd mgr_cli_py
-```
-
-Create and activate a virtual environment (recommended):
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-```
-
-### Step 3: Install the package (Rust builds here)
-
-From the **repository root** (the directory that contains `Cargo.toml`, `pyproject.toml`, and `python_cli/`):
-
-```bash
 pip install --upgrade pip
 pip install -e .
 ```
 
-Equivalent with **uv**:
+`pip install -e .` is the development install: it compiles `mgrcli_rust` and points `mgrcli` at this checkout. It also creates `python_cli/mgr` as a symlink to `mgr_src/mgr` so `import mgr` follows the live tree. Do not edit or commit `python_cli/mgr`; edit `mgr_src/mgr`. After you change Rust (`mgr_src/mgrcli_rust/`), rebuild with:
 
 ```bash
-uv pip install -e .
+pip install --force-reinstall --no-deps -e .
 ```
 
-**Non-editable install from a wheel** (for example on a machine where you copy artifacts instead of the full repo):
+A non-editable install of the same tree is `pip install .`. That builds a wheel, installs `mgrcli`, `mgr`, and `mgrcli_rust` into the environment, and does not need the checkout on `PYTHONPATH`.
+
+<a id="windows"></a>
+
+## Windows
+
+```powershell
+git clone https://github.com/arung-northwestern/mgr_cli_py.git
+cd mgr_cli_py
+.\install\install.bat
+```
+
+The batch file creates `%USERPROFILE%\.mgrcli\venv` (or `%MGRCLI_HOME%\venv`), installs this checkout, and runs `mgrcli --version`. It does not request administrator rights.
+
+Manual steps, if you prefer PowerShell without the batch file:
+
+```powershell
+winget install Rustlang.Rustup
+# open a new terminal so cargo is on PATH
+py -3 -m venv $env:USERPROFILE\.mgrcli\venv
+& $env:USERPROFILE\.mgrcli\venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install .
+mgrcli --version
+```
+
+If PowerShell refuses to activate the venv, allow local scripts for your user: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+
+<a id="prerequisites"></a>
+
+## Prerequisites
+
+| Requirement | Notes |
+|-------------|--------|
+| **OS** | macOS, Linux, or Windows. The curl script is macOS/Linux. Windows uses `install\install.bat` or the PowerShell steps above. |
+| **Python** | **3.10–3.13** is the practical range. `pyproject.toml` still says `requires-python >= 3.8`, but current `pymatgen` and `freud-analysis` wheels do not support 3.8 or 3.9. **Tested:** CPython 3.13 on macOS arm64 with this install flow. 3.11 and 3.12 are the usual sweet spot if 3.13 wheels for a dependency are missing. |
+| **pymatgen** | Pinned `pymatgen>=2023.1,<2026` so a 2026 release cannot change the CLI’s Python support or API expectations without an explicit bump. |
+| **RDKit** | Declared as `rdkit` (PyPI). `import mgr` loads `mgr.analyze`, which imports RDKit. |
+| **Rust** | [rustup](https://rustup.rs/), stable toolchain, 1.70 or newer (`rustc`, `cargo` on `PATH`). The installer runs rustup when `cargo` is missing. Set `MGRCLI_SKIP_RUST=1` to refuse that and print the manual step instead. |
+| **Compiler** | Xcode Command Line Tools on macOS, or a C compiler / `build-essential` on Linux. The extension is compiled on your machine. |
+| **Git** | Required for clone and for `pip install git+https://...`. |
+
+**CuPy** is not a dependency. A few `mgr` helpers import it only when you call a GPU entry point. Install a CuPy build that matches your CUDA stack if you use those.
+
+**Docker** (browser UI, no local Rust toolchain) is separate. See [Docker (Local)](#docker-local). Public image names will be added when an image is published.
+
+<a id="private-repository"></a>
+
+## Private repository (maintainers)
+
+Until this repository is public, `git clone` and `pip install git+https://...` need GitHub credentials. The curl one-liner above does not; it only works once the file is public on `master`. Sign in with the GitHub CLI and let git use it:
 
 ```bash
-pip install maturin
-maturin build --release
-pip install target/wheels/mgrcli-*.whl
+gh auth login
+gh auth setup-git
 ```
 
-Adjust the glob if your shell does not expand it (install the single `.whl` file that maturin prints).
+A personal access token works through Git’s credential helper the same way. Do not commit a token, and do not put one in the curl command or in `install/install.sh`.
 
-### Step 4: Verify
+<a id="verify"></a>
+
+## Verify
 
 ```bash
-mgrcli --help
-mgrcli process cifs/ZIF-8-RASPA.cif -o ./out/
-mgrcli interactive
+mgrcli --version
+mgrcli process cifs/ZIF-8-RASPA.cif -o ./out_test
+python -c "import mgrcli, mgr, mgrcli_rust; print(mgrcli.__version__)"
 ```
 
-**What `pip install -e .` does:** resolves Python dependencies from `pyproject.toml`, runs **maturin**, which compiles the **`mgrcli_rust`** crate from the **root** `Cargo.toml` / `src/`, and wires the **`mgrcli`** console script to `python_cli/mgrcli/cli.py`. The CLI and Streamlit app call into **`import mgrcli_rust`** for the hot paths.
+`cifs/ZIF-8-RASPA.cif` ships in the git checkout. A non-editable install does not bundle sample CIFs; pass a path to a CIF you have. `mgrcli interactive` launches Streamlit on the installed `interactive_app.py` (next to the `mgrcli` package) and does not need the repository root on `PYTHONPATH`.
 
-**Interactive app:** `mgrcli interactive` runs Streamlit on `python_cli/mgrcli/interactive_app.py` and sets `PYTHONPATH` to the repo root so `mgr_src` resolves.
-
-### Expected first-time build
-
-- Roughly 5–15 minutes for a release-quality Rust compile, depending on CPU.
-- **`mgrcli`** is available inside the active environment.
+<a id="how-the-rust-backend-is-built"></a>
 
 ## How the Rust backend is built
 
 | Approach | When to use it | What compiles Rust? |
 |----------|----------------|---------------------|
-| **`pip install -e .`** | Normal development | **Automatic** — PEP 517 invokes **maturin**, which runs `cargo` and installs the extension plus Python sources. |
-| **`maturin develop --release`** | Same as editable, but you invoke maturin yourself | maturin |
-| **`maturin build --release`** then **`pip install target/wheels/*.whl`** | CI, air-gapped installs, or shipping a wheel without the source tree | maturin (you install the built wheel afterward) |
-| **`cargo build --release` alone** | Sanity-check the Rust toolchain | **Does not** install `mgrcli_rust` into Python; use one of the rows above for a usable Python module. |
+| **`./install/install.sh`** or the curl one-liner | First install on macOS/Linux | pip / uv invokes maturin, which runs `cargo` in **release** |
+| **`pip install "git+https://github.com/arung-northwestern/mgr_cli_py.git"`** | Install without a long-lived clone | same |
+| **`pip install -e .`** | Day-to-day development in a clone | same, and Python edits are picked up from the checkout |
+| **`pip install .`** | Non-editable install of a clone | same; `mgrcli`, `mgr`, and `mgrcli_rust` are copied into the environment |
+| **`cargo build --release` alone** | Check that the crate compiles | Does **not** install `mgrcli_rust` into Python |
 
-You do **not** need a separate manual “compile Rust, then pip” sequence for day-to-day work: **`pip install -e .` already includes the Rust build** as long as `rustc` / `cargo` are on your `PATH`.
+You do not need a separate “compile Rust, then pip” sequence. `rustc` and `cargo` must be on `PATH` before `pip install`.
 
----
+<a id="troubleshooting"></a>
 
-## 🔧 **Troubleshooting**
+## Troubleshooting
 
-### Common Issues
+**`mgrcli` is not found**
 
-**"mgrcli command not found"**
+The command is installed inside the virtualenv, not as a system package.
+
 ```bash
-# Check if installation succeeded
-pip list | grep mgrcli
-
-# Try using Python module directly
-python -m mgrcli.cli --help
+source "$HOME/.mgrcli/venv/bin/activate"   # or your MGRCLI_HOME
+mgrcli --version
+python -m mgrcli.cli --version
 ```
 
-**"Rust compilation failed"**
-```bash
-# Update Rust toolchain
-rustup update
+**`git clone` or `pip install git+https://...` asks for a password or returns 128**
 
-# From the repository root: clear build cache and retry
-pip uninstall mgrcli
+The GitHub repository is private until publication. Run `gh auth login` and `gh auth setup-git`, then retry. Do not embed a token in the command.
+
+**Rust compilation failed**
+
+```bash
+rustup update stable
+rustc --version    # 1.70 or newer
+cargo --version
+```
+
+From a checkout, after a failed build:
+
+```bash
+pip uninstall -y mgrcli
 rm -rf build/ target/
 pip install -e .
 ```
 
-**"No module named 'mgrcli_rust'"**
-```bash
-# The Rust extension didn't build properly
-# Check Rust installation and retry
-rustc --version
-cargo --version
-```
+On macOS, if the compiler is missing: `xcode-select --install`.
 
-### Getting Help
+**`No module named mgrcli_rust` or `No module named mgr`**
+
+The extension or the `mgr` package did not land in the environment. Reinstall from the repository root (the directory that contains `pyproject.toml`):
 
 ```bash
-# Get detailed help
-mgrcli --help
-
-# See all available commands
-mgrcli process --help
-mgrcli generate-config --help
-
-# Check version and installation
-mgrcli --version
+pip install --force-reinstall --no-deps .
+python -c "import mgrcli, mgr, mgrcli_rust"
 ```
+
+**`pip` cannot find a version of pymatgen or freud-analysis**
+
+Use Python 3.10, 3.11, 3.12, or 3.13. Python 3.8 and 3.9 are below the wheels those libraries publish. The pin `pymatgen<2026` is intentional.
+
+**Windows: `install.bat` cannot find Python or cargo**
+
+Install Python from python.org (enable “Add python.exe to PATH”) or use `py -3`, install rustup, open a **new** terminal, and run `install\install.bat` again.
+
+**Interactive app**
+
+```bash
+mgrcli interactive --clean
+```
+
+`--clean` stops a leftover Streamlit process for this app. The app file is the installed `mgrcli/interactive_app.py`.
 
 ## Docker (Local)
 
@@ -298,14 +313,9 @@ Public pull/run instructions for a registry image (Docker Hub or similar) will b
 
 ### CLI (terminal users)
 
-From the **repository root**, an editable install compiles `mgrcli_rust` and pulls in all runtime dependencies declared in `pyproject.toml`:
+Use the [install](#installation) section (`./install/install.sh`, `pip install git+https://...`, or `pip install -e .` from a clone). An editable install compiles `mgrcli_rust` and pulls in the runtime dependencies in `pyproject.toml`:
 
 ```bash
-# Optional: uv (macOS/Linux)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv pip install -e .
-
-# Or plain pip
 pip install -e .
 ```
 
@@ -348,29 +358,6 @@ An image built with `docker build -t mgrcli:local .` on an ARM Mac is **linux/ar
 - Pull latest image on launch (auto-update)
 - Start container with bind mount to output folder
 - Open browser to `http://localhost:8501`
-
-### Hugging Face Spaces (demo deployment)
-
-**Private testing** (default for agent deploys): `arung-northwestern/mofography-web-demo-private-testing`
-
-**Production** (public demo): `arung-northwestern/mofography-web-demo` — deploy only after explicit approval.
-
-From repo root, bundle and push to private testing:
-
-```bash
-./scripts/push_hf_space.sh --confirm-push -m "Deploy: MC SA default + textural parity"
-```
-
-This runs `deploy_to_hf_space.sh`, syncs into a local Space clone, commits, and pushes to `main` (triggers rebuild). Without `--confirm-push`, only the bundle is prepared.
-
-Manual alternative:
-
-```bash
-./scripts/deploy_to_hf_space.sh
-# push build_space/ to your Space — see spaces/README.md
-```
-
-HTS tab shows a message only on Spaces; full HTS is for local Docker/pip.
 
 ## Quick Start
 
@@ -542,6 +529,83 @@ Legacy profile differences: `mask_thickness=0.5`, `rust_bucket`, `crc` radii. Se
 | `--return-dgrid` | Include distance grid in NPZ |
 | `--no-connections` | Disable connection graph |
 | `--min-box-thickness` | Optional: repeat cell so shortest axis ≥ value (Å) |
+
+### Structure, plots, and PLD downloads
+
+These match the Streamlit sidebar and the PLD tab. Every flag is also a key in `mgrcli generate-config` JSON (snake_case dest, except `--supercell NX NY NZ` → `supercell_nx`, `supercell_ny`, `supercell_nz`).
+
+| Flag | Config key | Default | What it does |
+|------|------------|---------|--------------|
+| `--supercell NX NY NZ` | `supercell_nx/ny/nz` | 1 1 1 | Crystallographic repeats before analysis |
+| `--aromatic-rings` | `compute_aromatic_rings`, `plot_framework_show_rings` | off | Experimental ring detection and highlights |
+| `--framework-style` | `plot_framework_style` | scatter (Plotly); instanced when `--plot-backend threejs` and the key is unset | `scatter`, `mesh`, or `instanced` |
+| `--framework-quality` | `plot_framework_mesh_quality`, `plot_quality` | low / medium | Three.js preset; Plotly surface step uses `plot_quality` |
+| `--atom-scale` | `plot_framework_mesh_scale` | 0.65 | Atom sphere scale |
+| `--bond-radius` | `plot_framework_bond_radius` | 0.15 | Bond cylinder radius (Å) |
+| `--projection` | `plot_projection` | perspective | `perspective` or `orthographic` |
+| `--surface-isovalue` | `plot_surface_isovalue` | 1.0 | Surface isovalue (Å) |
+| `--surface-opacity` | `plot_surface_opacity` | 1.0 | Pore surface opacity |
+| `--surface-pbc-opacity` | `plot_surface_pbc_opacity` | 1.0 | Periodic surface opacity |
+| `--surface-types-opacity` | `plot_surface_types_opacity` | 1.0 | Pocket-type surface opacity |
+| `--no-screen-door` | `plot_surface_screen_door` | on | Screen-door transparency (web default on) |
+| `--no-pore-graph` | `plot_connections` | shown | Hide pore-graph edges |
+| `--no-windows` | `plot_windows` | shown | Hide window markers |
+| `--window-marker-color` | `plot_windows_marker_color` | `#FFFF00` | Window marker color |
+| `--window-marker-size` | `plot_windows_marker_size` | 10 | Window marker size |
+| `--window-min-radius` | `plot_window_min_radius` | off | Hide windows below this radius (Å) |
+| `--no-hide-edges-below-window` | `plot_hide_edges_below_window` | on | Keep edges when the window filter would drop them |
+| `--explode` | `plot_explode` | 0 | Initial Three.js exploded-view offset (Å) |
+| `--explode-plane` | `plot_explode_plane` | `ab` | `ab`, `bc`, or `ca` |
+| `--no-surface` / `--no-surface-pbc` | `plot_surface` / `plot_surface_pbc` | shown | Hide surface meshes |
+| `--no-cell` / `--no-framework` / `--no-maxima` | `plot_cell` / `plot_framework` / `plot_maxima` | shown | Hide those traces |
+| `--maxima-spheres` | `plot_maxima_show_spheres` | off | Spherical maxima (Plotly) |
+| `--show-periodic` | `plot_show_periodic` | off | Periodic images |
+| `--percolation-history` | (output flag) | with `--pore-dia` or `--percolation-plot` | `{stem}_percolation_history.json` |
+| `--filter-graph-at-probe` | `percolation_filter_graph_at_probe` | off | Drop percolation-plot edges below the probe |
+| `--percolation-isovalue` | `percolation_cluster_isovalue` | surface isovalue | Cluster mesh isovalue (Å) |
+| `--percolation-boundary-color` | `percolation_boundary_color` | `#000000` | Plotly boundary color |
+| `--percolation-boundary-width` | `percolation_boundary_width` | 6 | Plotly boundary width |
+| `--percolation-window-marker-color` | `percolation_window_marker_color` | window color | PLD-tab window color |
+| `--percolation-window-marker-size` | `percolation_window_marker_size` | window size | PLD-tab window size |
+| `--cache-dir DIR` | `cache_dir` | unset | Reuse a matching segmentation NPZ |
+| `--no-cache` | `use_result_cache` | cache used when `cache_dir` is set | Recompute (web “Force recompute”) |
+
+`--pore-dia` still writes `{stem}_pore_dia.csv`. `--percolation-plot` writes `{stem}_percolation.html` (the PLD tab’s HTML snapshot). The history JSON is written whenever `--pore-dia`, `--percolation-plot`, or `--percolation-history` is set and a history was computed.
+
+Example (headless, scriptable):
+
+```bash
+mgrcli process structure.cif -o ./out \
+  --supercell 2 2 1 \
+  --plot-html --plot-backend threejs --framework-style instanced \
+  --surface-opacity 0.6 --window-min-radius 1.0 --explode 1.5 --explode-plane ab \
+  --pore-dia --percolation-plot --percolation-history \
+  --filter-graph-at-probe --cache-dir ./cache
+```
+
+Movies are not part of the CLI yet.
+
+### CLI vs web app
+
+| Feature | CLI | Web app |
+|---------|-----|---------|
+| Segmentation defaults | `generate-config --profile web` | Sidebar defaults |
+| Crystallographic supercell | `--supercell NX NY NZ` | a/b/c repeat inputs |
+| Min box thickness | `--min-box-thickness` | Optional checkbox |
+| Aromatic rings | `--aromatic-rings` (off) | “Show aromatic rings” (off, experimental) |
+| Framework style | scatter; instanced with `--plot-backend threejs` | Plotly scatter; Three.js instanced |
+| Plot engine | `--plot-backend` default `plotly` | Three.js selected by default in the UI |
+| Surface / PBC / pocket-type opacity | `--surface-opacity` and siblings (1.0) | Opacity sliders (1.0) |
+| Screen-door transparency | on; `--no-screen-door` | Checkbox on |
+| Pore graph | on; `--no-pore-graph` | “Show pore graph” |
+| Windows + edge filter | `--window-marker-*`, `--window-min-radius` | Window color/size and min-window filter |
+| Exploded view | `--explode`, `--explode-plane` (Three.js HTML) | HUD slider |
+| PLD HTML snapshot | `--percolation-plot` → `{stem}_percolation.html` | Download percolation HTML |
+| Percolation history JSON | `--percolation-history` or `--pore-dia` | Download percolation history JSON |
+| Result cache | `--cache-dir` / `--no-cache` | In-memory cache and Force recompute |
+| PSD, SA, vol, pocket types | flags in the table above | Matching tabs |
+| Batch | `mgrcli batch` (Dask) | HTS tab on a local install |
+| Trajectory movies | not in this release | not in the batch CLI |
 
 ### Batch (parallel)
 
@@ -765,32 +829,26 @@ Test CIF files are available in the `cifs/` directory:
 ### Project structure
 ```
 mgr_cli_py/                    # repository root — run pip/maturin from here
-├── Cargo.toml                 # Rust crate mgrcli_rust (PyO3 extension)
-├── src/lib.rs                 # Rust implementation compiled into mgrcli_rust
 ├── pyproject.toml             # Python package metadata; maturin build backend
-├── setup.py                   # Legacy setuptools-rust layout (optional)
 ├── python_cli/
 │   ├── mgrcli/
 │   │   ├── cli.py             # CLI entry and commands
 │   │   ├── interactive_app.py  # Streamlit app (mgrcli interactive)
 │   │   └── ...
 │   └── tests/
-├── mgr_src/                   # Python reference / library code used by the CLI
+├── mgr_src/
+│   ├── mgr/                   # Python library code used by the CLI
+│   └── mgrcli_rust/           # Rust crate (PyO3 extension, built by maturin)
 ├── cifs/                      # Sample CIF inputs
 └── requirements.txt           # Mirrors pyproject.toml (optional `pip install -r` workflows)
 ```
-A duplicate Rust tree under `mgr_src/mgrcli_rust/` is not used for **`pip install`**; the authoritative crate is **root `Cargo.toml` + `src/`**.
 
 ### Building a wheel for distribution
 
-```bash
-pip install maturin
-maturin build --release
-# Wheel under target/wheels/ — install with pip on compatible platforms
-pip install target/wheels/mgrcli-*.whl
-```
+From the repository root, `pip install .` (or `pip wheel . -w dist/`) builds a release wheel that contains `mgrcli`, `mgr`, and `mgrcli_rust`. Install that wheel with pip on the same OS and CPU architecture. `maturin build` by itself does not stage `mgr_src/mgr` into the wheel; use pip so `packaging/mgrcli_pep517.py` runs.
 
-Cross-platform wheels for the Rust extension typically require **per-target builds** (or CI such as cibuildwheel); maturin documents supported targets.
+Cross-platform wheels for the Rust extension require **per-target builds** (or CI such as cibuildwheel). This project does not publish them.
+
 
 ## Performance
 
@@ -808,7 +866,7 @@ Cross-platform wheels for the Rust extension typically require **per-target buil
 
 ## License
 
-Licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Licensed under the BSD 3-Clause License - see the [LICENSE](LICENSE) file for details.
 
 ## Contributing
 
@@ -829,7 +887,7 @@ If you use MCLI in your research, please cite:
 ```bibtex
 @software{mgrcli2024,
   title={{MCLI: MOF Analysis CLI Tool}},
-  author={MOF Analysis Team},
+  author={Gopalan, Arun},
   year={2024},
   url={https://github.com/arung-northwestern/mgr_cli_py}
 }
@@ -844,7 +902,7 @@ If you use MCLI in your research, please cite:
 **Root Cause**: Used `.len()` instead of `.nrows()` on 2D ndarray in Rust code
 - `.len()` returns total elements (48 for [16,3] array)
 - `.nrows()` returns number of rows (16 for [16,3] array)
-**Fix**: Lines 5771, 5777 in `src/lib.rs` - replaced `.len()` with `.nrows()`
+**Fix**: Lines 5771, 5777 in `mgr_src/mgrcli_rust/src/lib.rs` - replaced `.len()` with `.nrows()`
 **Lesson**: Always use `.nrows()` for 2D array bounds checking in ndarray
 
 #### 2. Numpy Inhomogeneous Shape Error (FIXED)
@@ -879,12 +937,11 @@ DEFAULTS = {
 
 ### Key files for development
 
-- **`src/lib.rs`**: Rust implementation compiled into **`mgrcli_rust`**
+- **`mgr_src/mgrcli_rust/src/lib.rs`**: Rust implementation compiled into **`mgrcli_rust`**
 - **`python_cli/mgrcli/cli.py`**: CLI entry and commands (imports `mgrcli_rust`)
 - **`python_cli/mgrcli/interactive_app.py`**: Streamlit UI (same backend)
 - **`pyproject.toml`**: Python dependencies and **maturin** build backend
-- **Root `Cargo.toml`**: Crate consumed by maturin for `pip install`
-- **`setup.py`**: Legacy setuptools-rust path (optional; normal installs use maturin)
+- **`mgr_src/mgrcli_rust/Cargo.toml`**: Crate consumed by maturin for `pip install`
 
 ### Build and development tips
 

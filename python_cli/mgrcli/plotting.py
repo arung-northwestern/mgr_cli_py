@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 import hashlib
+from pathlib import Path
 from threading import Lock
 
 import numpy as np
@@ -18,15 +19,11 @@ from skimage.measure import marching_cubes
 from scipy.interpolate import RegularGridInterpolator
 from matplotlib.colors import to_rgba
 
-import sys
-from pathlib import Path
-# Add mgr_src to path to use reference functions directly
-REPO_ROOT = Path(__file__).resolve().parents[2]
-MGR_SRC_PATH = REPO_ROOT / "mgr_src"
-if str(MGR_SRC_PATH) not in sys.path:
-    sys.path.insert(0, str(MGR_SRC_PATH))
+from mgrcli.layout import ensure_import_paths
 
-# Import the reference MGR library from mgr_src/mgr
+ensure_import_paths()
+
+# Import the reference MGR library (mgr_src/mgr in a checkout, site-packages when installed).
 import mgr.visualize as mgr_visualize
 from mgr.analyze import update_with_covalent_bonds
 
@@ -1148,6 +1145,16 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
         connections_trimmed = trim_connections_to_unique_regions(connections, unique_regions)
     else:
         connections_trimmed = list(connections)
+    _window_min = defaults.get("plot_window_min_radius")
+    if (
+        _window_min is not None
+        and bool(defaults.get("plot_hide_edges_below_window", True))
+    ):
+        from mgr.helper import filter_connections_by_window_min_radius
+
+        connections_trimmed = filter_connections_by_window_min_radius(
+            connections_trimmed, _window_min
+        )
 
     if defaults.get("plot_surface", True):
         _emit(_step_labels[_step_idx])
@@ -1243,6 +1250,7 @@ def show_mof(results: Dict[str, Any], stylize: bool = True, options: Dict[str, A
             opacity=0.8,
             show_periodic=bool(defaults.get("plot_windows_periodic", False)),
             legendgroup="Windows",
+            min_window_radius=_window_min,
         )
         traces.extend(win_traces)
 

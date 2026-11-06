@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
 DGRID_FLOAT_BYTES = 4
 LOCAL_DGRID_RAM_BUDGET_BYTES = int(16 * 1024**3)
-DGRID_OPS_AUTO_AABB = 1_000_000_000
+# No work-based switch by default: local/CLI runs use exact dgrid unless RAM is exceeded.
+# Set MGR_DGRID_OPS_AUTO_AABB to opt in (the hosted demo uses 1e9 in interactive_app).
+DGRID_OPS_AUTO_AABB = sys.maxsize
 
 
 def _dgrid_shape_from_cell_lengths(cell_lengths_abc, spacing: float) -> Tuple[int, int, int]:

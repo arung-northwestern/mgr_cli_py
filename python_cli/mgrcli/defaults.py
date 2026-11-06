@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from pathlib import Path
 from typing import Any, Dict, Mapping, MutableMapping, Optional
 
 # Segmentation — matches interactive_app _run_segmentation / HTS worker
@@ -72,15 +75,24 @@ PLOT_DEFAULTS: Dict[str, Any] = {
     "plot_enable": True,
     "plot_cell": True,
     "plot_framework": True,
-    "plot_framework_style": "mesh",
+    "plot_framework_style": "scatter",
     "plot_framework_show_rings": False,
     "plot_framework_mesh_scale": 0.65,
     "plot_framework_bond_radius": 0.15,
+    "plot_framework_bond_linewidth": 8.0,
+    "plot_framework_mesh_quality": "low",
+    "plot_quality": "medium",
     "plot_maxima": True,
     "plot_maxima_show_spheres": False,
     "plot_show_periodic": False,
     "plot_connections": True,
     "plot_windows": True,
+    "plot_windows_marker_color": "#FFFF00",
+    "plot_windows_marker_size": 10,
+    "plot_window_min_radius": None,
+    "plot_hide_edges_below_window": True,
+    "plot_explode": 0.0,
+    "plot_explode_plane": "ab",
     "plot_surface": True,
     "plot_surface_pbc": True,
     "plot_surface_isovalue": 1.0,
@@ -89,9 +101,25 @@ PLOT_DEFAULTS: Dict[str, Any] = {
     "plot_surface_types_opacity": 1.0,
     "plot_surface_taubin_smooth": True,
     "plot_surface_taubin_intensity": 0.05,
-    "plot_surface_screen_door": False,
+    "plot_surface_screen_door": True,
     "plot_projection": "perspective",
     "plot_layout": "dark",
+    "percolation_cluster_isovalue": None,
+    "percolation_boundary_color": "#000000",
+    "percolation_boundary_width": 6,
+    "percolation_filter_graph_at_probe": False,
+    "percolation_window_marker_color": "#FFFF00",
+    "percolation_window_marker_size": 10,
+}
+
+# Structure repeats, opt-in rings, and on-disk segmentation cache (web sidebar equivalents)
+STRUCTURE_DEFAULTS: Dict[str, Any] = {
+    "supercell_nx": 1,
+    "supercell_ny": 1,
+    "supercell_nz": 1,
+    "compute_aromatic_rings": False,
+    "use_result_cache": True,
+    "cache_dir": None,
 }
 
 # Legacy batch profile (pre–web parity); kept for regression tests only
@@ -113,6 +141,7 @@ def analysis_defaults(profile: str = "web") -> Dict[str, Any]:
     out.update(PSD_DEFAULTS)
     out.update(TEXTURAL_DEFAULTS)
     out.update(PLOT_DEFAULTS)
+    out.update(STRUCTURE_DEFAULTS)
     if profile == "legacy":
         out.update(LEGACY_CLI_DEFAULTS)
     return out
@@ -182,3 +211,41 @@ def apply_config_overrides(
         if value is not None:
             result[config_key] = value
     return result
+
+
+SEGMENTATION_CACHE_KEYS = (
+    "spacing",
+    "h",
+    "mask_thickness",
+    "threshold_abs",
+    "min_distance",
+    "minimum_window_separation",
+    "wall_thickness",
+    "extra_padding",
+    "min_region_size",
+    "compactness",
+    "watershed_backend",
+    "skip_endchannel_pairs",
+    "compute_connections",
+    "return_padded_regions",
+    "return_dgrid",
+    "dgrid_method",
+    "dgrid_block_size",
+    "dgrid_n_neighbors",
+    "dgrid_coarse_factor",
+    "vdw_radii_set",
+    "auto_dgrid",
+    "supercell_nx",
+    "supercell_ny",
+    "supercell_nz",
+    "min_box_thickness",
+)
+
+
+def segmentation_cache_token(cif_path, config: Mapping[str, Any]) -> str:
+    """Stable id for a CIF plus the segmentation inputs that change the grid."""
+    digest = hashlib.sha256()
+    digest.update(Path(cif_path).read_bytes())
+    payload = {key: config.get(key) for key in SEGMENTATION_CACHE_KEYS}
+    digest.update(json.dumps(payload, sort_keys=True, default=str).encode())
+    return digest.hexdigest()[:20]

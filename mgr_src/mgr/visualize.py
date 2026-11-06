@@ -2520,6 +2520,7 @@ def plot_windows_from_results(
     periodic_opacity=0.4,
     show_periodic=False,
     legendgroup="Windows",
+    min_window_radius=None,
 ):
     """Plot window positions with optional periodic reclassification (Plotly backend).
 
@@ -2591,6 +2592,8 @@ def plot_windows_from_results(
             wr = c[4] if c[4] is not None else []
             n1, n2 = c[0]
             for p, r in zip(pts, wr):
+                if min_window_radius is not None and float(r) < float(min_window_radius):
+                    continue
                 wp = np.asarray(p, dtype=float)
                 txt = f"{n1}-{n2}<br>{ctype}<br>{float(r):.3f} A"
                 if ctype == "internal":
@@ -2615,6 +2618,8 @@ def plot_windows_from_results(
             wr = c[4] if c[4] is not None else []
             n1, n2 = c[0]
             for p, r in zip(pts, wr):
+                if min_window_radius is not None and float(r) < float(min_window_radius):
+                    continue
                 wp = np.asarray(p, dtype=float)
                 txt = f"{n1}-{n2}<br>{ctype}<br>{float(r):.3f} A"
                 if ctype == "periodic":

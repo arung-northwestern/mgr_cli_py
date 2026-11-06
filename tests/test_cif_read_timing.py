@@ -135,8 +135,9 @@ def run_timing_table() -> str:
             }
         )
 
+    keys = ("mat", "atoms", "time_ase_s", "time_fast_s", "speedup")
     headers = ("mat", "atoms", "time_ase_s", "time_fast_s", "speedup_ase_over_fast")
-    col_w = [max(len(h), max(len(str(r[k])) for r in rows)) for k, h in zip(headers, headers)]
+    col_w = [max(len(h), max(len(str(r[k])) for r in rows)) for k, h in zip(keys, headers)]
 
     def fmt_row(cells: Tuple[str, ...]) -> str:
         return " | ".join(c.ljust(col_w[i]) for i, c in enumerate(cells))

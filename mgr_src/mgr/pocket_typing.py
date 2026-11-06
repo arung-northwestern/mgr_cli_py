@@ -75,7 +75,9 @@ DEFAULT_PROBE_RADIUS_PSD_A = 1.2
 DEFAULT_PSD_MAX_DIAMETER_A = 50.0
 DEFAULT_PSD_BIN_WIDTH_A = 0.25
 SECOND_PEAK_FRAC = 0.10
-WINDOW_TRUST_MIN_A = 1.0
+# Trusted-window gate on the window RADIUS (A): 0.5 A radius = 1.0 A window diameter,
+# i.e. a connection counts as a window when its diameter is >= 1.0 A.
+WINDOW_TRUST_MIN_A = 0.5
 # Lower trust gate for connectivity-direction fingerprint: any real saddle point.
 # Watershed region boundaries always sit at dgrid local minima which are small
 # (0.3-0.6 A for ZIF-20), so the 1.0 A gate must be relaxed to see connections.

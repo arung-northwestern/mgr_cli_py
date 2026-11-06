@@ -468,7 +468,7 @@ def compute_connectivity_fingerprints(
 
     The minimum image convention (MIC) is applied so that the nearest periodic
     image of each neighbour is used.  Connections that pass through a window
-    smaller than ``WINDOW_TRUST_MIN_A`` (1 Å radius) are already excluded by
+    smaller than ``WINDOW_TRUST_MIN_A`` (0.5 Å radius, i.e. 1 Å diameter) are already excluded by
     the caller (``build_pockets_from_segmentation`` in pocket_typing.py).
     """
     from ase.geometry import complete_cell as _complete_cell

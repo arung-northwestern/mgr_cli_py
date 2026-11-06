@@ -1,95 +1,91 @@
 @echo off
-REM MCLI Installation Script for Windows
-REM Installs MCLI with UV package manager for optimal performance
+setlocal EnableExtensions
+REM Install mgrcli on Windows from this checkout.
+REM Creates %USERPROFILE%\.mgrcli\venv (override with MGRCLI_HOME). No admin required.
+REM Rust: https://rustup.rs if cargo is not on PATH.
+REM Python: 3.10+ (3.11-3.13 recommended).
 
-echo 🔬 MCLI - Molecular Geometry Analysis Tool Installation
-echo ======================================================
-echo.
+cd /d "%~dp0\.."
+if not exist "pyproject.toml" (
+  echo error: run this from a clone of mgr_cli_py. pyproject.toml was not found in %CD%.
+  exit /b 1
+)
+if not exist "mgr_src\mgrcli_rust\Cargo.toml" (
+  echo error: mgr_src\mgrcli_rust\Cargo.toml is missing. This is not a complete checkout.
+  exit /b 1
+)
 
-REM Check if UV is installed
-uv --version >nul 2>&1
+where cargo >nul 2>&1
 if errorlevel 1 (
-    echo 📦 Installing UV (fast package manager)...
-    pip install uv
-    if errorlevel 1 (
-        echo ❌ Failed to install UV. Please install pip first and try again.
-        pause
-        exit /b 1
-    )
+  echo error: cargo is not on PATH.
+  echo Install Rust with rustup, then open a new terminal and re-run:
+  echo   winget install Rustlang.Rustup
+  echo   or https://rustup.rs
+  exit /b 1
+)
+
+set "PY="
+if defined MGRCLI_PYTHON (
+  set "PY=%MGRCLI_PYTHON%"
 ) else (
-    echo ✅ UV already installed
+  where py >nul 2>&1 && set "PY=py -3"
+)
+if not defined PY (
+  where python >nul 2>&1 && set "PY=python"
+)
+if not defined PY (
+  echo error: Python 3.10+ was not found. Install it from https://www.python.org/downloads/ and re-run.
+  exit /b 1
 )
 
-REM Create environment and install
-echo 🏗️  Creating environment and installing dependencies...
-uv venv mgrcli_env
+if defined MGRCLI_HOME (
+  set "PREFIX=%MGRCLI_HOME%"
+) else (
+  set "PREFIX=%USERPROFILE%\.mgrcli"
+)
+set "VENV=%PREFIX%\venv"
+
+echo Detected Windows
+echo Using prefix %PREFIX%
+echo Creating virtualenv
+if exist "%VENV%\Scripts\python.exe" (
+  echo Reusing %VENV%
+) else (
+  where uv >nul 2>&1
+  if not errorlevel 1 (
+    uv venv "%VENV%"
+  ) else (
+    %PY% -m venv "%VENV%"
+  )
+)
+if not exist "%VENV%\Scripts\python.exe" (
+  echo error: virtualenv was not created at %VENV%.
+  exit /b 1
+)
+
+echo Installing mgrcli. The Rust compile often takes 5-15 minutes the first time.
+"%VENV%\Scripts\python.exe" -m pip install --upgrade pip
+if errorlevel 1 exit /b 1
+"%VENV%\Scripts\python.exe" -m pip install "%CD%"
 if errorlevel 1 (
-    echo ❌ Failed to create virtual environment
-    pause
-    exit /b 1
+  echo error: pip install failed. Confirm Rust is on PATH and Python is 3.10 or newer.
+  exit /b 1
 )
 
-call mgrcli_env\Scripts\activate.bat
-if errorlevel 1 (
-    echo ❌ Failed to activate virtual environment
-    pause
-    exit /b 1
+echo Checking the install
+"%VENV%\Scripts\mgrcli.exe" --version
+if errorlevel 1 exit /b 1
+"%VENV%\Scripts\python.exe" -c "import mgrcli, mgr, mgrcli_rust; print('import ok', mgrcli.__version__)"
+if errorlevel 1 exit /b 1
+
+echo.
+echo mgrcli is installed.
+echo Activate it with:
+echo   %VENV%\Scripts\activate.bat
+echo Or call:
+echo   %VENV%\Scripts\mgrcli.exe --version
+if exist "cifs\ZIF-8-RASPA.cif" (
+  echo Sample:
+  echo   %VENV%\Scripts\mgrcli.exe process cifs\ZIF-8-RASPA.cif -o %PREFIX%\verify_out
 )
-
-REM Install with release optimizations
-echo ⚡ Building with release optimizations...
-set SETUPTOOLS_RUST_RELEASE=1
-set RUSTFLAGS=-C target-cpu=native -C opt-level=3 -C lto=true -C codegen-units=1
-
-uv pip install -e . --force-reinstall --no-cache-dir
-if errorlevel 1 (
-    echo ❌ Failed to install MCLI
-    pause
-    exit /b 1
-)
-
-REM Create launcher scripts
-echo 🚀 Creating command-line launchers...
-
-REM CLI launcher
-echo @echo off > mgrcli.bat
-echo call "%%~dp0mgrcli_env\Scripts\activate.bat" >> mgrcli.bat
-echo python "%%~dp0python_cli\mgrcli\cli.py" %%* >> mgrcli.bat
-
-REM GUI launcher
-echo @echo off > mgrcli-gui.bat
-echo call "%%~dp0mgrcli_env\Scripts\activate.bat" >> mgrcli-gui.bat
-echo streamlit run "%%~dp0python_cli\mgrcli\interactive_app.py" >> mgrcli-gui.bat
-
-REM Create desktop shortcuts using PowerShell
-echo 🖥️  Creating desktop shortcuts...
-powershell -Command ^
-"$WshShell = New-Object -comObject WScript.Shell; ^
-$Shortcut = $WshShell.CreateShortcut('%USERPROFILE%\Desktop\MCLI CLI.lnk'); ^
-$Shortcut.TargetPath = '%CD%\mgrcli.bat'; ^
-$Shortcut.WorkingDirectory = '%CD%'; ^
-$Shortcut.Save()"
-
-powershell -Command ^
-"$WshShell = New-Object -comObject WScript.Shell; ^
-$Shortcut = $WshShell.CreateShortcut('%USERPROFILE%\Desktop\MCLI GUI.lnk'); ^
-$Shortcut.TargetPath = '%CD%\mgrcli-gui.bat'; ^
-$Shortcut.WorkingDirectory = '%CD%'; ^
-$Shortcut.Save()"
-
-echo.
-echo ✅ Installation completed successfully!
-echo.
-echo 📋 Usage:
-echo   mgrcli.bat --help                    # Show CLI help
-echo   mgrcli.bat process structure.cif     # Process a CIF file
-echo   mgrcli-gui.bat                       # Launch web interface
-echo.
-echo 🧪 Test with sample file:
-echo   mgrcli.bat process cifs\ZIF-8-RASPA.cif
-echo.
-echo 📚 Documentation: https://github.com/arung-northwestern/mgr_cli_py
-echo.
-echo 💡 Tip: Desktop shortcuts created for easy access!
-echo.
-pause
+exit /b 0

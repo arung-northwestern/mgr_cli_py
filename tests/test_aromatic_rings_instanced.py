@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +11,8 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 FIXTURES = REPO / "tests" / "fixtures" / "cif"
+if str(REPO / "mgr_src") not in sys.path:
+    sys.path.insert(0, str(REPO / "mgr_src"))
 
 
 def _mil101_atoms():

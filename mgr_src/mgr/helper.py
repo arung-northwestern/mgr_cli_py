@@ -15,6 +15,79 @@ import numpy as np
 import logging
 logger = logging.getLogger(__name__)
 
+_ORTHO_TOL = 1e-12
+_MIC_OFFSETS_7 = np.array(
+    [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, -1.0],
+    ],
+    dtype=np.float64,
+)
+
+
+def cell_matrix_for_dgrid(ase_atoms):
+    """Return C for ``cart = C @ delta_frac`` (matches ASE ``frac @ M``)."""
+    from ase.geometry import cellpar_to_cell
+
+    return cellpar_to_cell(ase_atoms.cell.cellpar()).T
+
+
+def cell_is_orthogonal(cell, tol=_ORTHO_TOL):
+    """True when off-diagonal lattice coupling is negligible."""
+    c = np.asarray(cell, dtype=np.float64)
+    off = (c[0, 1], c[0, 2], c[1, 0], c[1, 2], c[2, 0], c[2, 1])
+    return all(abs(v) < tol for v in off)
+
+
+def mic_frac_diff_batch(raw_diff, cell, xp=np):
+    """Minimum-image fractional displacement for orthogonal or skewed cells.
+
+    Orthogonal cells use per-component wrapping. Skewed cells use the Wassenaar
+    7-image set (nearest fractional image plus six face neighbors).
+    """
+    cell = xp.asarray(cell, dtype=xp.float64)
+    raw_diff = xp.asarray(raw_diff, dtype=xp.float64)
+
+    if cell_is_orthogonal(cell):
+        return raw_diff - xp.round(raw_diff)
+
+    nint = raw_diff - xp.round(raw_diff)
+    offsets = xp.asarray(_MIC_OFFSETS_7, dtype=xp.float64)
+    candidates = nint[..., None, :] + offsets
+    cart = xp.einsum("...ni,ji->...nj", candidates, cell)
+    sq = xp.sum(cart * cart, axis=-1)
+    best = xp.argmin(sq, axis=-1)
+
+    lead_shape = raw_diff.shape[:-1]
+    n_lead = 1
+    for dim in lead_shape:
+        n_lead *= int(dim)
+    flat_cand = candidates.reshape(n_lead, 7, 3)
+    flat_best = best.ravel()
+    idx = xp.arange(flat_cand.shape[0])
+    flat_mic = flat_cand[idx, flat_best]
+    return flat_mic.reshape(*lead_shape, 3)
+
+
+def gpd_from_frac_points(points_frac, fpoints_frac, cell, radii, xp=np):
+    """Shortest surface distance from centered fractional grid points to atoms."""
+    points_frac = xp.asarray(points_frac, dtype=xp.float64)
+    fpoints_frac = xp.asarray(fpoints_frac, dtype=xp.float64)
+    cell = xp.asarray(cell, dtype=xp.float64)
+    radii = xp.asarray(radii, dtype=xp.float64).reshape(-1)
+
+    diff = points_frac[:, None, :] - fpoints_frac[None, :, :]
+    mic = mic_frac_diff_batch(diff, cell, xp=xp)
+    cart = xp.einsum("pai,ji->paj", mic, cell)
+    dists = xp.linalg.norm(cart, axis=-1) - radii[None, :]
+    return xp.min(dists, axis=1)
+
+
 def find_coord_from_indices(indices, shape, ase_atoms):
     """Get the cartesian coordinates from the indces of a grid mapped over an ase atoms object.
 
@@ -68,6 +141,23 @@ def get_fractional_coordinates(points, ase_atoms):
     cell_inv = np.linalg.inv(cell)
     frac_coords = np.dot(cell_inv, points.T).T
     return frac_coords
+
+
+def ase_frac_to_egrid_query(frac, extent_x=1.0, extent_y=1.0, extent_z=1.0):
+    """Map ASE fractional coordinates to egrid query coords in ``[0, 1)``.
+
+    Grids built with ``extent < 1`` cover only the first unit-cell tile along
+    that axis. Periodic images are folded before indexing the interpolator.
+    """
+    f = np.asarray(frac, dtype=np.float64)
+    out = f - np.floor(f)
+    extents = (float(extent_x), float(extent_y), float(extent_z))
+    for ax, ext in enumerate(extents):
+        if ext < 1.0 - 1.0e-15:
+            out[..., ax] -= np.floor(out[..., ax] / ext) * ext
+            out[..., ax] /= ext
+    return np.where(out >= 1.0, 1.0 - np.finfo(np.float64).eps, out)
+
 
 def zoom_grid(grid, zoom_factor):
     """
@@ -418,6 +508,24 @@ def filter_connections_at_probe_radius(connections, probe_radius, maxima_radii=N
             continue
         filtered.append(c)
     return filtered
+
+
+def filter_connections_by_window_min_radius(connections, min_radius):
+    """Drop edges whose every window radius is below *min_radius* (Å).
+
+    Same keep-rule as :func:`connection_passes_window_threshold`: an edge stays
+    when at least one window on that pair is at or above the threshold.
+    ``min_radius is None`` returns a shallow copy unchanged.
+    """
+    if min_radius is None:
+        return list(connections)
+    threshold = float(min_radius)
+    kept = []
+    for c in connections:
+        wr = c[4] if len(c) > 4 and c[4] is not None else []
+        if connection_passes_window_threshold(wr, threshold):
+            kept.append(c)
+    return kept
 
 
 def collect_unique_percolation_components(components):

@@ -15,52 +15,44 @@ Repository: `arung-northwestern/mgr_cli_py`. Batch CLI + `mgrcli interactive` (S
 
 ## Install (local, no Conda)
 
-Use a **venv + uv** (or plain pip). **Conda is not required.** Run all commands from the **repository root** after clone.
+Not on PyPI. **Conda is not required.** Python **3.10–3.13** (tested on 3.13). Rust **1.70+** via rustup (`pymatgen` is pinned `<2026`).
 
-### Prerequisites
+### One command (macOS / Linux)
 
-- **Rust 1.70+** (compiles `mgrcli_rust` during install): `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh` then `source "$HOME/.cargo/env"`
-- **Python 3.10+** recommended (`requires-python >=3.8`)
+```bash
+# public repo only — raw.githubusercontent.com does not use git credentials
+curl -fsSL https://raw.githubusercontent.com/arung-northwestern/mgr_cli_py/master/install/install.sh | bash
+# private repo, from a clone: ./install/install.sh
+# then: source "$HOME/.mgrcli/venv/bin/activate"
+```
 
-### Recommended: standalone [uv](https://docs.astral.sh/uv/)
+### pip or uv from GitHub
+
+```bash
+pip install "git+https://github.com/arung-northwestern/mgr_cli_py.git"
+uv pip install "git+https://github.com/arung-northwestern/mgr_cli_py.git"
+uv tool install "git+https://github.com/arung-northwestern/mgr_cli_py.git"
+```
+
+Private checkout: `gh auth login` and `gh auth setup-git`. Do not embed a token.
+
+### Development install
 
 ```bash
 git clone https://github.com/arung-northwestern/mgr_cli_py.git
 cd mgr_cli_py
-
-# Install uv if missing (macOS/Linux — no Conda)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-# Windows (PowerShell): irm https://astral.sh/uv/install.ps1 | iex
-
-uv venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-
-uv pip install -e .                # builds mgrcli_rust + installs mgrcli (maturin)
-
-# Verify CLI
-mgrcli --help
-mgrcli process cifs/ZIF-8-RASPA.cif -o ./out/ --return-dgrid
-
-# Interactive Streamlit web app (same env — opens browser locally)
-mgrcli interactive --clean         # --clean kills stale Streamlit from prior runs
-# Optional: mgrcli interactive --port 8501 --no-browser
-```
-
-After editing Rust (`mgr_src/mgrcli_rust/`): `uv pip install --force-reinstall -e .`
-
-**One-liner script:** `./install/install.sh` (also uv-based; creates `mgrcli_env/` venv).
-
-### Alternative: stdlib venv + pip
-
-```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install --upgrade pip && pip install -e .
-mgrcli interactive --clean
+pip install -e .                   # builds mgrcli_rust; mgr stays the live checkout
+mgrcli --version
+mgrcli process cifs/ZIF-8-RASPA.cif -o ./out/ --return-dgrid
+mgrcli interactive --clean         # Streamlit; --clean kills a stale session
 ```
+
+Windows: `install\install.bat` or the PowerShell steps in the README. After Rust edits: `pip install --force-reinstall --no-deps -e .`
 
 ### Interactive mode notes
 
-- `mgrcli interactive` runs `python_cli/mgrcli/interactive_app.py` via Streamlit (installed by `pip install -e .`).
+- `mgrcli interactive` runs the installed `mgrcli/interactive_app.py` (in a checkout that file is `python_cli/mgrcli/interactive_app.py`).
 - Sets local mode (`MGR_FORCE_LOCAL=1`) — no HF Spaces limits on your machine.
 - HTS tab in the web UI is **local/Docker only**; from terminal use `mgrcli batch` instead.
 - Sample structures: `cifs/` (`ZIF-8-RASPA.cif`, etc.).
@@ -146,15 +138,22 @@ mgrcli process MOF.cif -o out/ -c config/web_analysis_template.json \
 | `dgrid_method` | `rust_exact` |
 | `auto_dgrid` | **on**; `--no-auto-dgrid` to disable |
 | `min_box_thickness` / `--min-box-thickness` | off (optional supercell convenience) |
+| `supercell_nx/ny/nz` / `--supercell NX NY NZ` | 1 1 1 |
 | `window_fp` | on; `--no-window-fp` to disable |
-| `plot_backend` | `plotly` (override `--plot-backend threejs`) |
+| `plot_backend` | `plotly` (web UI opens on Three.js; `--plot-backend threejs`) |
+| `plot_surface_screen_door` | on; `--no-screen-door` |
+| `compute_aromatic_rings` / `--aromatic-rings` | off (experimental) |
+| `plot_explode` / `--explode` | 0 (Three.js HTML; `--explode-plane ab\|bc\|ca`) |
+| `plot_window_min_radius` / `--window-min-radius` | off; hides small windows and, by default, edges |
+| `cache_dir` / `--cache-dir` | unset; `--no-cache` forces recompute |
 
 ## Textural flags & outputs
 
 | Flag | Output |
 |------|--------|
-| `--pore-dia` | `{stem}_pore_dia.csv` |
-| `--percolation-plot` | `{stem}_percolation.html` |
+| `--pore-dia` | `{stem}_pore_dia.csv` and `{stem}_percolation_history.json` |
+| `--percolation-history` | `{stem}_percolation_history.json` (also with `--pore-dia` / `--percolation-plot`) |
+| `--percolation-plot` | `{stem}_percolation.html` (PLD-tab snapshot) |
 | `--psd` | `{stem}_psd_psd_uniform.csv`, `{stem}_psd_psd_pockets.csv` |
 | `--psd-accessible` | `{stem}_psd_accessible_psd_*.csv` |
 | `--psd-plot-html` | `{stem}_psd_plot.html` |
@@ -176,14 +175,20 @@ Always: `{stem}_results.npz`.
 | Per-analysis probe radii | `--sa-probe-radius`, etc. | single global in HTS | **CLI richer** |
 | PSD sampling + plot | flags + `--psd-plot-html` | PSD tab / HTS | **Yes** |
 | Min box thickness | `--min-box-thickness` | HTS checkbox | **Yes** (convenience) |
+| Crystallographic supercell | `--supercell` | sidebar repeats | **Yes** |
+| Aromatic rings | `--aromatic-rings` | experimental checkbox, off | **Yes** |
+| Opacities, windows, explode | flags above | visualization HUD | **Yes** (explode is the initial Three.js value) |
+| Percolation HTML + history JSON | `--percolation-plot`, `--percolation-history` | PLD tab downloads | **Yes** |
+| Segmentation cache | `--cache-dir` / `--no-cache` | in-memory cache / Force recompute | **Yes** (CLI cache is on disk) |
+| Plot engine default | `plotly` unless `--plot-backend threejs` | Three.js selected | CLI stays Plotly until the flag |
 | Lattice accessibility | `--accessibility-method lattice` | not in single-material UI | CLI only |
+| Movies | not in this release | not a batch output | leave `movies.py` playback alone |
 
 ## Pitfalls
 
 1. **CWD:** repo root for `config/` and `cifs/` paths.
-2. **Rust edits:** `mgr_src/mgrcli_rust/`, then `pip install --force-reinstall -e .`.
-3. **Batch:** needs `dask[distributed]` (in `pyproject.toml`); not on HF Spaces.
-4. **HF push:** see `AGENTS.md` — no push without explicit user consent.
+2. **Rust edits:** `mgr_src/mgrcli_rust/`, then `pip install --force-reinstall --no-deps -e .`.
+3. **Batch:** needs `dask[distributed]` (declared in `pyproject.toml`).
 
 ## Reference paths
 

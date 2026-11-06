@@ -15,8 +15,11 @@ With uniform global_radial for all pockets, the radial channels always contribut
   (above tight threshold 0.90 → merges; below → stays separate)
 
 The gap-dependent two-tier threshold:
-  gap ≤ 0.25 Å → tight threshold (ENV_CLUSTER_MERGE_COSINE = 0.90)
-  gap > 0.25 Å → loose threshold (ENV_CLUSTER_MERGE_COSINE_LARGE_GAP = 0.85)
+  gap ≤ 0.20 Å → tight threshold (ENV_CLUSTER_MERGE_COSINE = 0.90)
+  gap > 0.20 Å → large-gap threshold (ENV_CLUSTER_MERGE_COSINE_LARGE_GAP = 0.90)
+
+The singleton max_r pass (isolated 1-pocket bands within 0.4 Å, e.g. ZIF-8) is not
+cosine-gated; tests of the cosine rule disable it with merge_singleton_bands=False.
 """
 from __future__ import annotations
 
@@ -141,7 +144,9 @@ def test_different_env_close_max_r_stays_split():
         1: _make_fp(1, mr_a, _E1),
         2: _make_fp(2, mr_b, _E2),   # orthogonal → low cosine
     }
-    n, r2t, audit = assign_pocket_types_env_cluster(pockets, fps)
+    # The singleton max_r pass deliberately merges isolated 1-pocket bands (e.g. ZIF-8
+    # corner vs center); turn it off to test the fingerprint-cosine rule on its own.
+    n, r2t, audit = assign_pocket_types_env_cluster(pockets, fps, merge_singleton_bands=False)
     assert n == 2, f"Should stay split; got {n} types, audit={audit}"
     assert r2t[1] != r2t[2]
 
@@ -236,5 +241,5 @@ def test_small_gap_requires_tight_cosine():
         1: _make_fp(1, mr_a, _E1),
         2: _make_fp(2, mr_b, _E2),  # orthogonal → cosine ~0.5 < 0.90 → NO merge
     }
-    n, r2t, audit = assign_pocket_types_env_cluster(pockets, fps)
+    n, r2t, audit = assign_pocket_types_env_cluster(pockets, fps, merge_singleton_bands=False)
     assert n == 2, f"Small-gap, diff-env: should stay split; got {n} types"

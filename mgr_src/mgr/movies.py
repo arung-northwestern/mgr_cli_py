@@ -1870,7 +1870,7 @@ def _make_aromatic_rings_instanced_trace(
     *,
     style_circles,
     style_highlights,
-    n_template_segments: int = 24,
+    n_template_segments: int = 16,
     cell=None,
 ):
     centers_l = []; normals_l = []; inner_l = []
@@ -1974,7 +1974,7 @@ def make_aromatic_rings_trace(
     n_circle_points: int = 72,
     *,
     use_instanced=None,
-    n_template_segments: int = 24,
+    n_template_segments: int = 16,
 ) -> dict:
     """Build aromatic ring traces (instanced torus/ngon when possible).
 
@@ -4875,7 +4875,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const centers = trace.data.centers || [];
       const normals = trace.data.normals || [];
       const innerRadii = trace.data.inner_radii || [];
-      const radialSegments = trace.data.radial_segments || 24;
+      const radialSegments = trace.data.radial_segments || 16;
       const style = styleFor(trace);
       const baseLw = Number(style.linewidth !== undefined ? style.linewidth : 4);
       const tubeRadius = Math.max(0.012, 0.008 * baseLw);
@@ -5970,6 +5970,29 @@ function readWindowMinThreshold() {
       const v = parseFloat(raw);
       return Number.isFinite(v) ? v : null;
     }
+    function applyViewerInit() {
+      const viewerInit = (DATA.layout && DATA.layout.viewer) || {};
+      if (explodePlane && viewerInit.explode_plane) {
+        explodePlane.value = String(viewerInit.explode_plane);
+      }
+      if (explodeSlider && viewerInit.explode != null && viewerInit.explode !== "") {
+        explodeSlider.value = String(viewerInit.explode);
+        applyExplodeOffsets();
+      }
+      if (windowMinThresholdInput && viewerInit.window_min_radius != null && viewerInit.window_min_radius !== "") {
+        windowMinThresholdInput.value = String(viewerInit.window_min_radius);
+      }
+      if (hideEdgesBelowWindowInput && viewerInit.hide_edges_below_window === false) {
+        hideEdgesBelowWindowInput.checked = false;
+      }
+      if (
+        windowMinThresholdInput &&
+        viewerInit.window_min_radius != null &&
+        viewerInit.window_min_radius !== ""
+      ) {
+        applyWindowThresholdFilter();
+      }
+    }
     function edgeFilterThreshold() {
       if (!hideEdgesBelowWindowInput || !hideEdgesBelowWindowInput.checked) return null;
       return readWindowMinThreshold();
@@ -6324,6 +6347,7 @@ function readWindowMinThreshold() {
 
     explodeSlider.addEventListener("input", applyExplodeOffsets);
     if (explodePlane) explodePlane.addEventListener("change", applyExplodeOffsets);
+    applyViewerInit();
 
     bgPicker.addEventListener("input", () => {
       updateSceneBackground();

@@ -27,13 +27,14 @@ def _cubic_atoms(n_atoms: int, length_ang: float) -> Atoms:
     )
 
 
-def test_zif20_like_stays_on_rust_at_demo_spacing():
-    """ZIF-20 (~4800 atoms, ~45 Å cell): Rust is fine; old formula falsely forced AABB."""
+def test_zif20_like_uses_aabb_on_hosted_demo():
+    """Hosted demo: ZIF-20 (~4800 atoms) is over the 1e9 work threshold, so AABB (faster)."""
     atoms = _cubic_atoms(4800, 45.4725)
     for spacing in (0.5, 0.4):
         use_aabb, meta = spaces_should_auto_aabb_dgrid(atoms, spacing)
-        assert not use_aabb, meta
-        assert meta["ops"] < SPACES_DGRID_OPS_AUTO_AABB
+        assert use_aabb and meta["reason"] == "work", meta
+        assert meta["ops"] > SPACES_DGRID_OPS_AUTO_AABB
+        assert meta["estimated_bytes"] < meta["budget_bytes"]
 
 
 def test_mil101_like_uses_aabb_at_fine_spacing():
@@ -50,13 +51,33 @@ def test_local_budget_constant_is_16_gib():
 
 
 def test_zif20_like_stays_on_rust_with_local_budget():
-    from mgrcli.interactive_app import LOCAL_DGRID_RAM_BUDGET_BYTES, spaces_should_auto_aabb_dgrid
+    from mgrcli.interactive_app import (
+        LOCAL_DGRID_OPS_AUTO_AABB,
+        LOCAL_DGRID_RAM_BUDGET_BYTES,
+        spaces_should_auto_aabb_dgrid,
+    )
 
     atoms = _cubic_atoms(4800, 45.0)
     for spacing in (0.5, 0.4):
         use_aabb, meta = spaces_should_auto_aabb_dgrid(
-            atoms, spacing, ram_budget_bytes=LOCAL_DGRID_RAM_BUDGET_BYTES
+            atoms,
+            spacing,
+            ram_budget_bytes=LOCAL_DGRID_RAM_BUDGET_BYTES,
+            ops_threshold=LOCAL_DGRID_OPS_AUTO_AABB,
         )
         assert not use_aabb, meta
         assert meta["budget_bytes"] == LOCAL_DGRID_RAM_BUDGET_BYTES
 
+
+
+def test_cli_policy_has_no_work_threshold_by_default(monkeypatch):
+    """CLI/local: exact dgrid for ZIF-20-like cases; env var opts in to a work limit."""
+    from mgrcli.dgrid_policy import resolve_dgrid_method
+
+    monkeypatch.delenv("MGR_DGRID_OPS_AUTO_AABB", raising=False)
+    atoms = _cubic_atoms(4800, 45.4725)
+    method, meta = resolve_dgrid_method(atoms, 0.4, "rust_exact")
+    assert method == "rust_exact", meta
+    monkeypatch.setenv("MGR_DGRID_OPS_AUTO_AABB", "1e9")
+    method, meta = resolve_dgrid_method(atoms, 0.4, "rust_exact")
+    assert method == "rust_aabb" and meta["reason"] == "work", meta
