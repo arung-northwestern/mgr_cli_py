@@ -4,7 +4,7 @@
 
 # Cache-busting: change this timestamp to force a full Docker rebuild on HF Spaces.
 # Last updated: 2026-06-20 (drop Docker HEALTHCHECK — HF uses app_port probe)
-ARG BUILD_DATE=2026-06-20c
+ARG BUILD_DATE=2026-11-07a
 
 FROM python:3.11-slim AS builder
 
@@ -63,7 +63,6 @@ COPY --from=builder /app/mgr_src/mgrcli_rust/target/wheels/*.whl /app/target/whe
 COPY python_cli /app/python_cli
 COPY mgr_src /app/mgr_src
 COPY cifs /app/cifs
-COPY docs /app/docs
 COPY scripts/docker_entrypoint.sh /app/scripts/docker_entrypoint.sh
 COPY spaces/.streamlit/config.toml /app/.streamlit/config.toml
 
