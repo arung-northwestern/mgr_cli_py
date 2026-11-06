@@ -2162,7 +2162,8 @@ def main() -> None:
         "PoroNet: intrinsically interpretable pore-graph NN for pore-level adsorption in MOFs "
         "(Zheng et al., <em>J. Chem. Theory Comput.</em> 2026, <em>22</em>, 5716)</a><br>"
         "📚 <a href='https://mofography.github.io/mofography/#cite' style='color:inherit;' target='_blank'>How to cite</a>"
-        " · <a href='https://github.com/mofography/mofography' style='color:inherit;' target='_blank'>GitHub</a><br>"
+        " · <a href='https://github.com/mofography/mofography' style='color:inherit;' target='_blank'>Mofography (Python)</a>"
+        " · <a href='https://github.com/arung-northwestern/mgr_cli_py' style='color:inherit;' target='_blank'>mgr_cli_py (CLI + web app)</a><br>"
         f"🐛 Pre-release demo · <a href='{FEEDBACK_FORM_URL}' style='color:inherit;' target='_blank'>Share your thoughts and suggestions with us!</a>"
         "</div>"
         "</div>",
