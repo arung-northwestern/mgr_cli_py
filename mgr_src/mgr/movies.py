@@ -5528,7 +5528,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const thrLabel = document.createElement("label");
       thrLabel.id = "labelWindowMinThreshold";
       thrLabel.style.cssText = "margin-left:8px;";
-      thrLabel.appendChild(document.createTextNode("Min window (Å): "));
+      thrLabel.appendChild(document.createTextNode("Min window radius (Å): "));
       const thrInput = document.createElement("input");
       thrInput.id = "windowMinThreshold";
       thrInput.type = "number";
@@ -5536,7 +5536,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       thrInput.min = "0";
       thrInput.placeholder = "off";
       thrInput.style.cssText = "width:52px;vertical-align:middle;";
-      thrInput.title = "Hide individual windows below this size; optionally hide edges only when every window on that connection is below it";
+      thrInput.title = "Hide individual windows whose radius is below this value (Å); optionally hide edges only when every window on that connection has a radius below it";
       thrLabel.appendChild(thrInput);
       const edgeLabel = document.createElement("label");
       edgeLabel.id = "labelHideEdgesBelowWindow";
@@ -5546,7 +5546,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       edgeCb.id = "hideEdgesBelowWindow";
       edgeCb.checked = true;
       edgeLabel.appendChild(edgeCb);
-      edgeLabel.appendChild(document.createTextNode(" Hide edges only when all windows between the two regions are below threshold"));
+      edgeLabel.appendChild(document.createTextNode(" Hide edges only when all windows between the two regions have radius below threshold"));
       wrap.appendChild(thrLabel);
       wrap.appendChild(edgeLabel);
       parent.appendChild(wrap);
