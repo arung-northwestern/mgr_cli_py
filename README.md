@@ -4,6 +4,8 @@
 [![Python](https://img.shields.io/badge/Python-3.10%E2%80%933.13-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-BSD--3--Clause-green.svg)](LICENSE)
 
+**Links:** [Mofography on GitHub](https://github.com/mofography/mofography) · [Mofography docs](https://mofography.github.io/mofography/) · [Try the web app](https://arung-northwestern-mofography-web-demo.hf.space/)
+
 A high-performance command-line interface for analyzing Metal-Organic Frameworks (MOFs) using advanced segmentation algorithms. This repository ships a **terminal CLI** (`mgrcli`) and an **interactive Streamlit web app** (`mgrcli interactive`), powered by a **Rust extension** (`mgrcli_rust`, PyO3) compiled from the workspace root and Python packages under `python_cli/`.
 
 ## Table of Contents
@@ -52,7 +54,7 @@ A high-performance command-line interface for analyzing Metal-Organic Frameworks
 
 ## Relationship to Mofography Python Package
 
-This CLI tool is **separate** from the main Mofography Python package but maintains compatibility with the same core algorithms and reference functions. It's kept up-to-date with the latest computational methods while offering the advantages of a dedicated command-line interface and interactive web mode.
+This CLI tool is **separate** from the main [Mofography Python package](https://github.com/mofography/mofography) ([docs](https://mofography.github.io/mofography/)) but maintains compatibility with the same core algorithms and reference functions. It's kept up-to-date with the latest computational methods while offering the advantages of a dedicated command-line interface and interactive web mode.
 
 ## Architecture
 
@@ -790,16 +792,27 @@ For major changes, please open an issue first to discuss what you would like to 
 
 ## Citation
 
-If you use MCLI in your research, please cite:
-(not a real citation, yet!)
+If you use this tool in your research, please cite the Mofography methods paper:
+
+> A. Gopalan, C. Zheng, B. Azadpour, K. Shi, L. Sarkisov. *Advanced High-Throughput Characterization of Nanoporous Materials using Pore Graphs.* ChemRxiv 2026. [doi:10.26434/chemrxiv.15011793/v1](https://doi.org/10.26434/chemrxiv.15011793/v1)
+
 ```bibtex
-@software{mgrcli2024,
-  title={{MCLI: MOF Analysis CLI Tool}},
-  author={Gopalan, Arun},
-  year={2024},
-  url={https://github.com/arung-northwestern/mgr_cli_py}
+@article{gopalan2026mofography,
+  title   = {Advanced High-Throughput Characterization of Nanoporous Materials using Pore Graphs},
+  author  = {Gopalan, Arun and Zheng, Chao and Azadpour, Behnam and Shi, Kaihang and Sarkisov, Lev},
+  journal = {ChemRxiv},
+  year    = {2026},
+  doi     = {10.26434/chemrxiv.15011793/v1},
+  url     = {https://doi.org/10.26434/chemrxiv.15011793/v1}
 }
 ```
+
+Other relevant papers:
+
+- C. Zheng, A. Gopalan, K. Shi. *PoroNet: An Intrinsically Interpretable Pore Graph Neural Network for Resolving Pore-Level Adsorption in Metal-Organic Frameworks.* J. Chem. Theory Comput. 2026, 22 (11), 5716-5730. [doi:10.1021/acs.jctc.6c00100](https://doi.org/10.1021/acs.jctc.6c00100)
+- C. Zheng, A. Gopalan, K. Shi. *Revisiting Percolation and Molecular Diffusion in Disordered Pore Networks.* ChemRxiv, 2026. [doi:10.26434/chemrxiv.15011012/v1](https://doi.org/10.26434/chemrxiv.15011012/v1)
+
+See the [Mofography citation page](https://mofography.github.io/mofography/#cite) for BibTeX of all three and for citing a software release.
 
 ## Development Notes & Recent Fixes
 
