@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install mgrcli (Python CLI + Rust extension) on macOS or Linux.
 #
-# One-liner (public repo, or a private repo after `gh auth setup-git`):
+# One-liner:
 #   curl -fsSL https://raw.githubusercontent.com/arung-northwestern/mgr_cli_py/master/install/install.sh | bash
 #
 # From a clone (uses this checkout; does not switch branches):

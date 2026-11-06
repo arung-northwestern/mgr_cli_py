@@ -81,7 +81,7 @@ mgrcli is **not on PyPI**. Install from this Git repository. `pip install` compi
 
 ## One command (macOS / Linux)
 
-After this repository is **public**, this installs from the `master` branch:
+This installs from the `master` branch:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/arung-northwestern/mgr_cli_py/master/install/install.sh | bash
@@ -92,8 +92,6 @@ Pin a branch or tag:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/arung-northwestern/mgr_cli_py/master/install/install.sh | MGRCLI_REF=master bash
 ```
-
-`raw.githubusercontent.com` does not use your git login. While the repository is private, that curl returns 404. Clone with GitHub auth instead and run the same script (see [Private repository](#private-repository)).
 
 The script detects the OS, installs [rustup](https://rustup.rs/) when `cargo` is missing (no sudo), creates a virtualenv at `$MGRCLI_HOME` (default `$HOME/.mgrcli`; `uv` if it is on `PATH`, otherwise `python -m venv`), installs this repo, and checks `mgrcli --version`. Re-running it is safe.
 
@@ -187,18 +185,6 @@ If PowerShell refuses to activate the venv, allow local scripts for your user: `
 
 **Docker** (browser UI, no local Rust toolchain) is separate. See [Docker (Local)](#docker-local). Public image names will be added when an image is published.
 
-<a id="private-repository"></a>
-
-## Private repository (maintainers)
-
-Until this repository is public, `git clone` and `pip install git+https://...` need GitHub credentials. The curl one-liner above does not; it only works once the file is public on `master`. Sign in with the GitHub CLI and let git use it:
-
-```bash
-gh auth login
-gh auth setup-git
-```
-
-A personal access token works through Git’s credential helper the same way. Do not commit a token, and do not put one in the curl command or in `install/install.sh`.
 
 <a id="verify"></a>
 
@@ -239,10 +225,6 @@ source "$HOME/.mgrcli/venv/bin/activate"   # or your MGRCLI_HOME
 mgrcli --version
 python -m mgrcli.cli --version
 ```
-
-**`git clone` or `pip install git+https://...` asks for a password or returns 128**
-
-The GitHub repository is private until publication. Run `gh auth login` and `gh auth setup-git`, then retry. Do not embed a token in the command.
 
 **Rust compilation failed**
 
