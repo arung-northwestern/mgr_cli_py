@@ -49,7 +49,6 @@ A high-performance command-line interface for analyzing Metal-Organic Frameworks
 * **🎯 Distraction-Free**: For TUI lovers who prefer focused, command-line workflows
 * **🔄 Automation Ready**: Easy integration into scripts, pipelines, and automated workflows
 * **💾 Resource Efficient**: Lower memory footprint compared to full Python environment
-* **🐳 Docker path**: For a browser-only experience without a local Python/Rust toolchain, use the Docker-based Streamlit image (see [Docker (Local)](#docker-local)); public registry images will be documented when published.
 
 ## Relationship to Mofography Python Package
 
@@ -183,7 +182,6 @@ If PowerShell refuses to activate the venv, allow local scripts for your user: `
 
 **CuPy** is not a dependency. A few `mgr` helpers import it only when you call a GPU entry point. Install a CuPy build that matches your CUDA stack if you use those.
 
-**Docker** (browser UI, no local Rust toolchain) is separate. See [Docker (Local)](#docker-local). Public image names will be added when an image is published.
 
 
 <a id="verify"></a>
@@ -268,77 +266,6 @@ mgrcli interactive --clean
 ```
 
 `--clean` stops a leftover Streamlit process for this app. The app file is the installed `mgrcli/interactive_app.py`.
-
-## Docker (Local)
-
-**CLI** = use the terminal with a pip/uv install (`mgrcli`). **GUI only** (no terminal) = run the Docker image via Docker Desktop; the image serves the Streamlit app. This section covers the Docker (GUI) path.
-
-### Build + Run Streamlit
-```bash
-./scripts/docker_build_run.sh
-```
-You will be prompted to choose an output folder. The app runs at `http://localhost:8501`.
-
-### Docker Desktop (GUI-only) Run Steps
-1. Open Docker Desktop → Images
-2. Find `mgrcli:local` → Click Run
-3. In Optional settings:
-   - Ports: set Host `8501` → Container `8501`
-   - Volumes: mount a host folder to `/results`
-4. Click Run, then open `http://localhost:8501`
-
-For non-terminal users, use the web app: `mgrcli interactive`.
-
-### Prebuilt image (when published)
-
-Public pull/run instructions for a registry image (Docker Hub or similar) will be added here once the image is published. Until then, build locally with `./scripts/docker_build_run.sh` or `docker build` as above.
-
-### CLI (terminal users)
-
-Use the [install](#installation) section (`./install/install.sh`, `pip install git+https://...`, or `pip install -e .` from a clone). An editable install compiles `mgrcli_rust` and pulls in the runtime dependencies in `pyproject.toml`:
-
-```bash
-pip install -e .
-```
-
-### Environment Overrides
-```bash
-# Image name
-IMAGE_NAME=mgrcli:local ./scripts/mgrbox --help
-
-# Output folder
-MGR_RESULTS_DIR="$HOME/MGR_Results" ./scripts/mgrbox process *.cif -o /results
-
-# Optional: override Rayon thread count
-MGR_RAYON_THREADS=4 ./scripts/mgrbox process *.cif -o /results
-```
-
-### Cross-Platform Build (Windows, Linux amd64, ARM Mac)
-
-An image built with `docker build -t mgrcli:local .` on an ARM Mac is **linux/arm64** and will not run on Windows or Intel Linux (they need **linux/amd64**). The Rust backend is compiled inside the image for the target platform, so you must use a **multi-platform** build.
-
-**Use the buildx script** (not plain `docker build`) so the image runs on all targets:
-
-```bash
-./scripts/docker_buildx.sh
-```
-
-- By default this builds for `linux/amd64,linux/arm64`. Only the **first** platform is loaded into Docker (amd64), so the same image runs on Windows and Intel Linux. On ARM Mac it will run via emulation; for native ARM Mac use a single-platform build (below).
-- **Build for one platform only** (faster, no registry):
-  - Windows / Intel Linux: `PLATFORMS=linux/amd64 ./scripts/docker_buildx.sh`
-  - ARM Mac: `PLATFORMS=linux/arm64 ./scripts/docker_buildx.sh`
-- **Export to tar files** (no Docker Hub): build both platforms and save as tarballs for sharing (e.g. Google Drive). Filenames are friendly: **mgrcli-windows_linux_64.tar** (Windows + Intel/AMD Linux) and **mgrcli-mac_arm64.tar** (ARM Mac).
-  ```bash
-  EXPORT_TAR=1 ./scripts/docker_buildx.sh
-  # Produces mgrcli-windows_linux_64.tar and mgrcli-mac_arm64.tar
-  ```
-
-### GUI Launcher Behavior (Spec)
-- Check Docker Desktop is installed/running
-- Prompt user to select output folder (default per OS)
-- Pull latest image on launch (auto-update)
-- Start container with bind mount to output folder
-- Open browser to `http://localhost:8501`
 
 ## Quick Start
 
