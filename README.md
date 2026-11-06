@@ -305,7 +305,7 @@ You will be prompted to choose an output folder. The app runs at `http://localho
    - Volumes: mount a host folder to `/results`
 4. Click Run, then open `http://localhost:8501`
 
-For non-terminal users, see `docs/GUI_ONLY_QUICKSTART.md`.
+For non-terminal users, use the web app: `mgrcli interactive`.
 
 ### Prebuilt image (when published)
 
@@ -349,7 +349,6 @@ An image built with `docker build -t mgrcli:local .` on an ARM Mac is **linux/ar
   ```bash
   EXPORT_TAR=1 ./scripts/docker_buildx.sh
   # Produces mgrcli-windows_linux_64.tar and mgrcli-mac_arm64.tar
-  # Colabs: see docs/DOCKER_DESKTOP_SHARED_IMAGE.md for load + Docker Desktop settings (ports, volume, Dask).
   ```
 
 ### GUI Launcher Behavior (Spec)
@@ -502,7 +501,7 @@ mgrcli config-building
 | `min_box_thickness` | `--min-box-thickness` | off | Optional supercell convenience (Å) |
 | `window_fp` | `--no-window-fp` | on | Window fingerprint rescue (SA/vol winding) |
 
-Legacy profile differences: `mask_thickness=0.5`, `rust_bucket`, `crc` radii. See [parity plan](docs/plan_cli_web_parity.md).
+Legacy profile differences: `mask_thickness=0.5`, `rust_bucket`, `crc` radii.
 
 ### Analysis flags
 
@@ -636,7 +635,7 @@ Both use `mgr_src` and shared defaults in `python_cli/mgrcli/defaults.py` (`sa_m
 | SA/vol breakdown bar HTML | `--sa-plot-html` / `--vol-plot-html` | Streamlit charts | **Yes** |
 | Auto dgrid | on by default (`auto_dgrid: true`) | UI auto | **Yes** (`--no-auto-dgrid` to disable) |
 
-For lattice or MC comparisons, use `mgr.compute_surface_area_mc_lattice` / `compute_surface_area_mesh_lattice` on saved NPZ in Python — see `docs/accessibility_and_surface_area.org`.
+For lattice or MC comparisons, use `mgr.compute_surface_area_mc_lattice` / `compute_surface_area_mesh_lattice` on saved NPZ in Python.
 
 ## AI agents
 

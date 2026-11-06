@@ -6,6 +6,8 @@ streamlit.components.v1.html().
 """
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +20,8 @@ from .movies import (
 )
 from .visualize import resolve_plot_surface_taubin_params
 
+logger = logging.getLogger(__name__)
+
 
 def _dgrid_spacing(atoms, dgrid: np.ndarray) -> float:
     """Estimate grid spacing from cell vectors and dgrid shape."""
@@ -26,6 +30,27 @@ def _dgrid_spacing(atoms, dgrid: np.ndarray) -> float:
     shape = np.asarray(dgrid.shape, dtype=float)
     per_axis = lengths / np.maximum(shape, 1.0)
     return float(np.mean(per_axis))
+
+
+# Baked sphere/cylinder meshes grow the HTML by ~100 KB per atom (MIL-101, 15k atoms: 2.5 GB),
+# which exceeds Streamlit's 200 MB message limit and browser memory.
+_MESH_MAX_ATOMS = 5_000
+_INSTANCED_MAX_ATOMS = 25_000
+
+
+def _auto_framework_style(style: str, n_atoms: int) -> str:
+    """Downgrade the framework style for large structures so the HTML stays viewable."""
+    if n_atoms > _INSTANCED_MAX_ATOMS:
+        new_style = "scatter"
+    elif n_atoms > _MESH_MAX_ATOMS and style == "mesh":
+        new_style = "instanced"
+    else:
+        return style
+    logger.warning(
+        "Framework has %d atoms: switching framework style %r -> %r to keep the Three.js HTML small.",
+        n_atoms, style, new_style,
+    )
+    return new_style
 
 
 def show_mof_threejs(
@@ -129,6 +154,9 @@ def show_mof_threejs(
         stylize = False
 
     framework_style = defaults.get("plot_framework_style", "mesh")
+    if defaults.get("plot_framework", True) and framework_style in ("mesh", "instanced"):
+        framework_style = _auto_framework_style(framework_style, len(mat_atoms))
+        defaults["plot_framework_style"] = framework_style
 
     # Progress bookkeeping
     _step_labels = []

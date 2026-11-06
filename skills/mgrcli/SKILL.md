@@ -198,4 +198,3 @@ Always: `{stem}_results.npz`.
 | `python_cli/mgrcli/batch.py` | Dask parallel runner |
 | `python_cli/mgrcli/defaults.py` | Web / legacy defaults |
 | `config/web_analysis_template.json` | Web-aligned config |
-| `docs/plan_cli_web_parity.md` | Parity notes |

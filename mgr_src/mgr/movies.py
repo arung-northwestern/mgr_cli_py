@@ -284,9 +284,10 @@ def _serialize_trimesh(mesh: trimesh.Trimesh) -> dict[str, Any]:
     if colors is None:
         colors = np.tile(np.asarray([[0.7, 0.7, 0.7]], dtype=float), (len(v), 1))
     return {
-        "positions": v.reshape(-1).tolist(),
+        # Rounded: full float64 repr is ~19 chars/value and dominated 250 MB MIL-101 HTML.
+        "positions": np.round(v, 3).reshape(-1).tolist(),
         "indices": f.reshape(-1).tolist(),
-        "colors": colors.reshape(-1).tolist(),
+        "colors": np.round(colors, 3).reshape(-1).tolist(),
         "n_vertices": int(len(v)),
         "n_triangles": int(len(f)),
     }
@@ -616,13 +617,14 @@ def _serialize_segmentation_surface_mesh(
     cscale = _normalize_cscale(cscale)
     uniq = sorted([int(x) for x in np.unique(labels) if int(x) > 0])
     cmap = {rid: cscale[i % len(cscale)] for i, rid in enumerate(uniq)}
-    colors = np.asarray(
-        [cmap.get(int(r), [180, 180, 180]) for r in labels], dtype=float
-    ) / 255.0
+    _lut = np.full((int(labels.max()) + 1, 3), 180.0)
+    for rid, rgb in cmap.items():
+        _lut[rid] = rgb
+    colors = _lut[labels] / 255.0
     return {
-        "positions": np.asarray(mesh.vertices, dtype=float).reshape(-1).tolist(),
+        "positions": np.round(np.asarray(mesh.vertices, dtype=float), 3).reshape(-1).tolist(),
         "indices": np.asarray(mesh.faces, dtype=int).reshape(-1).tolist(),
-        "colors": colors.reshape(-1).tolist(),
+        "colors": np.round(colors, 3).reshape(-1).tolist(),
         "labels": labels.tolist(),
         "n_vertices": int(len(mesh.vertices)),
         "n_triangles": int(len(mesh.faces)),
@@ -6140,6 +6142,9 @@ function readWindowMinThreshold() {
           hover: threshold === null ? origHover.slice() : filteredHover,
         });
         replacePointsGeometry(obj, filteredTrace);
+        // replacePointsGeometry overwrites originalPositions with the filtered set;
+        // restore full set so windowRadii indices stay aligned on the next filter.
+        obj.userData.originalPositions = orig;
         obj.count = Math.floor(filtered.length / 3);
         obj.userData.filteredByThreshold = threshold !== null;
         obj.userData.activeHover = threshold === null ? origHover.slice() : filteredHover;

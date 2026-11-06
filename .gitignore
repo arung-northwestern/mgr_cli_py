@@ -42,7 +42,6 @@ test_outputs/
 
 # Test output HTML files
 *.html
-!docs/*.html
 
 # Build packages
 build_package/
@@ -78,3 +77,24 @@ tmp/
 .doom-cockpit/
 hts_output/
 build_space/
+
+# Large / generated artifacts
+*.tar
+*.tar.gz
+*.tar.zst
+*.dmg
+*.zip
+*.npz
+tmp/
+hts_output/
+build_package/
+graphify-out/
+
+# Local agent tooling
+.claude/
+.serena/
+.cursor/
+.doom-cockpit/
+AGENTS.md
+agents.md
+CLAUDE.md

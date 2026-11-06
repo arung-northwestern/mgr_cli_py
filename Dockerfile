@@ -50,7 +50,7 @@ RUN pip install --no-cache-dir uv \
     && uv pip install --system -r /app/requirements.docker.lock
 
 COPY --from=builder /app/mgr_src/mgrcli_rust/target/wheels/*.whl /app/target/wheels/
-# Only copy runtime source and data (see docs/docker_exclude_candidates.md for full list of exclusions)
+# Only copy runtime source and data
 COPY python_cli /app/python_cli
 COPY mgr_src /app/mgr_src
 COPY cifs /app/cifs
