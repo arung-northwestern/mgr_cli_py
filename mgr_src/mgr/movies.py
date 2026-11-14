@@ -1627,6 +1627,7 @@ def make_framework_scatter_trace(
             "positions": positions.reshape(-1).tolist(),
             "colors": atom_colors_rgb.reshape(-1).tolist(),
             "sizes": sizes,
+            "world_radii": radii.tolist(),
             "n_points": n_atoms,
         },
         style={"color": [0.7, 0.7, 0.7], "size": float(max(sizes)) if sizes else 2.5,
@@ -3547,6 +3548,8 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       <label>Representation:
         <select id="reprSelect" style="font-size:10px;width:100%;"><option value="ball_and_stick">Ball-and-stick</option><option value="stick">Stick</option><option value="space_filling">Space-filling</option></select>
       </label>
+      <label id="atomRadiusLabel" style="display:none;">Atom radius: <input id="atomRadiusSlider" type="range" min="0.1" max="3" step="0.05" value="1" style="width:80px;vertical-align:middle;" /></label>
+      <label id="bondRadiusLabel" style="display:none;">Bond radius: <input id="bondRadiusSlider" type="range" min="0.1" max="4" step="0.05" value="1" style="width:80px;vertical-align:middle;" /></label>
       <label>Play speed: <input id="speedSlider" type="range" min="0.25" max="4" step="0.25" value="1" style="width:80px;vertical-align:middle;" /></label>
       <label>Ambient: <input id="ambSlider" type="range" min="0" max="1" step="0.05" value="0.28" style="width:80px;vertical-align:middle;" /></label>
       <label>Directional: <input id="dirSlider" type="range" min="0" max="2" step="0.05" value="1" style="width:80px;vertical-align:middle;" /></label>
@@ -4105,6 +4108,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       ));
     }
     const _billboardDummy = new THREE.Object3D();
+    const _billboardLift = new THREE.Vector3();
     function pixelSizeToWorldScale(pixelSize, position, camera, renderer) {
       const height = Math.max(renderer.domElement.clientHeight, 1);
       if (camera.isOrthographicCamera) {
@@ -4122,12 +4126,24 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const mult = pointSizeMultFor(mesh.name);
       const pixelSize = Math.max(base * mult * (isOrtho ? 2.0 : 1.0), 0);
       mesh.userData.targetPixelSize = pixelSize;
-      mesh.visible = pixelSize > 0.01 && legendEnabledByTrace[mesh.name] !== false;
+      const isFwAtoms = mesh.name === "framework_atoms" || mesh.name === "framework_stick_atoms" || mesh.name === "framework_spacefill_atoms";
+      const worldRadii = mesh.userData.worldRadii;
+      const wMult = mesh.userData.worldScaleMult !== undefined ? mesh.userData.worldScaleMult : 1.0;
+      mesh.visible = (worldRadii ? wMult > 0.001 : pixelSize > 0.01) && legendEnabledByTrace[mesh.name] !== false &&
+        (!isFwAtoms || scene.userData.fwLegendEnabled !== false);
       const n = mesh.count;
       for (let i = 0; i < n; i++) {
         _billboardDummy.position.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
         _billboardDummy.quaternion.copy(camera.quaternion);
-        const ws = pixelSizeToWorldScale(pixelSize, _billboardDummy.position, camera, renderer);
+        // world-size discs (framework atoms): diameter in Angstrom, consistent with bond radius
+        const ws = worldRadii
+          ? 2 * worldRadii[i] * wMult
+          : pixelSizeToWorldScale(pixelSize, _billboardDummy.position, camera, renderer);
+        if (isFwAtoms) {
+          // lift disc to the sphere's front so bond cylinders do not poke over atoms
+          _billboardLift.subVectors(camera.position, _billboardDummy.position).normalize();
+          _billboardDummy.position.addScaledVector(_billboardLift, ws * 0.5);
+        }
         _billboardDummy.scale.set(ws, ws, 1);
         _billboardDummy.updateMatrix();
         mesh.setMatrixAt(i, _billboardDummy.matrix);
@@ -4699,6 +4715,10 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       points.userData.baseSize = baseSize;
       points.userData.pointPositions = pts.slice();
       points.userData.originalPositions = pts.slice();
+      if (trace.data.world_radii && trace.data.world_radii.length >= n) {
+        points.userData.worldRadii = trace.data.world_radii.slice();
+        points.userData.worldScaleMult = 1.0;
+      }
       if (trace.hover && trace.hover.length) {
         points.userData.traceHover = trace.hover.slice();
       }
@@ -5293,6 +5313,26 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       const ids = fwMerge ? FW_MERGE_IDS.filter(function(tid) { return objectsById[tid]; }) : traceIds.slice();
       ids.forEach(function(tid) {
         const obj = objectsById[tid];
+        if (obj && !obj.material && obj.children && obj.children.length) {
+          // Group (e.g. thick-line bond cylinders sharing one material)
+          const mats = [];
+          obj.children.forEach(function(ch) {
+            if (ch.material && mats.indexOf(ch.material) < 0) mats.push(ch.material);
+          });
+          if (obj.userData.originalOpacity === undefined) {
+            obj.userData.originalOpacity = mats.length ? mats[0].opacity : 1.0;
+          }
+          const gOp = val * (obj.userData.originalOpacity || 1.0);
+          mats.forEach(function(m) {
+            m.opacity = gOp;
+            m.transparent = gOp < 1.0;
+            m.depthWrite = true;
+            m.needsUpdate = true;
+          });
+          obj.visible = traceLegendVisible(tid) && val > 0.001 &&
+            (!(FW_MERGE_IDS.indexOf(tid) >= 0) || scene.userData.fwLegendEnabled !== false);
+          return;
+        }
         if (!obj || !obj.material) return;
         const isFw = FW_MERGE_IDS.indexOf(tid) >= 0;
         const hiddenByOpacity = val <= 0.001;
@@ -5427,6 +5467,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
       cb.addEventListener("change", function() {
         if (entry.fwMerge) {
           scene.userData.fwLegendEnabled = cb.checked;
+          FW_MERGE_IDS.forEach(function(tid) { legendEnabledByTrace[tid] = cb.checked; });
           updateFrameworkVisibility();
         } else if (entry.id === "connections_internal" || entry.id === "connections_periodic") {
           traceIds.forEach(function(tid) {
@@ -5926,6 +5967,50 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
     }
     // Initialize visibility so only the selected representation is shown
     updateFrameworkVisibility();
+
+    // ---- Dynamic atom / bond radius (instanced framework traces only) ----
+    (function() {
+      const ATOM_IDS = ["framework_atoms", "framework_stick_atoms", "framework_spacefill_atoms"];
+      const BOND_IDS = ["framework_bonds", "framework_stick_bonds"];
+      const _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3();
+      function rescale(ids, k, uniform) {
+        ids.forEach(function(tid) {
+          const mesh = objectsById[tid];
+          if (mesh && mesh.userData && mesh.userData.worldRadii) {
+            mesh.userData.worldScaleMult = k;       // scatter atoms: world-size discs
+            updateBillboardPointsMesh(mesh);
+            return;
+          }
+          if (mesh && mesh.isGroup && mesh.userData.thickLines && !uniform) {
+            // scatter bonds: cylinder radius only
+            mesh.children.forEach(function(ch) {
+              if (ch.userData.baseRadius === undefined) ch.userData.baseRadius = ch.scale.x;
+              ch.scale.x = ch.scale.z = ch.userData.baseRadius * k;
+            });
+            return;
+          }
+          if (!mesh || !mesh.isInstancedMesh) return;
+          const arr = mesh.instanceMatrix.array;
+          if (!mesh.userData.baseMatrices) mesh.userData.baseMatrices = arr.slice();
+          const base = mesh.userData.baseMatrices;
+          for (let i = 0; i < mesh.count; i++) {
+            _m.fromArray(base, i * 16).decompose(_p, _q, _s);
+            if (uniform) _s.multiplyScalar(k); else { _s.x *= k; _s.z *= k; }  // cylinders: radius only, keep length
+            _m.compose(_p, _q, _s).toArray(arr, i * 16);
+          }
+          mesh.instanceMatrix.needsUpdate = true;
+        });
+      }
+      function wire(labelId, sliderId, ids, uniform) {
+        const has = ids.some(function(tid) { const o = objectsById[tid]; return o && (o.isInstancedMesh || (o.isGroup && o.userData.thickLines)); });
+        if (!has) return;
+        document.getElementById(labelId).style.display = "";
+        const sl = document.getElementById(sliderId);
+        sl.addEventListener("input", function() { rescale(ids, parseFloat(sl.value), uniform); });
+      }
+      wire("atomRadiusLabel", "atomRadiusSlider", ATOM_IDS, true);
+      wire("bondRadiusLabel", "bondRadiusSlider", BOND_IDS, false);
+    })();
     // Helpers to keep exploded cell-copy visibility in sync with actual trace visibility
     // (works for individual checkboxes, group checkboxes, and any other toggle mechanism)
     function updateCellCopyVisibility() {

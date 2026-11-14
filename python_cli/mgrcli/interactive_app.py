@@ -2718,7 +2718,7 @@ def main() -> None:
             else:
                 atom_scale = 0.65
                 bond_radius = 0.15
-            framework_bond_linewidth = 8.0
+            framework_bond_linewidth = 3.75
         show_aromatic_rings = st.checkbox(
             "Show aromatic rings (experimental)",
             value=False,
@@ -5229,7 +5229,7 @@ def _render_hts_mode() -> None:
                         "plot_framework_show_rings": hts_show_rings,
                         "plot_framework_mesh_quality": "low",  # HTS: fast default
                         "plot_quality": "low",  # shared by Plotly backend
-                        "plot_framework_bond_linewidth": 8.0,
+                        "plot_framework_bond_linewidth": 3.75,
                         "plot_cell": hts_plot_cell,
                         "plot_maxima": hts_plot_maxima,
                         "plot_surface": hts_show_surface,

@@ -109,7 +109,7 @@ def show_mof_threejs(
         "plot_framework_show_rings": False,
         "plot_framework_mesh_scale": 0.65,
         "plot_framework_bond_radius": 0.15,
-        "plot_framework_bond_linewidth": 8.0,
+        "plot_framework_bond_linewidth": 3.75,
         "plot_framework_mesh_quality": "medium",
         "plot_maxima": True,
         "plot_maxima_show_spheres": False,
@@ -226,7 +226,7 @@ def show_mof_threejs(
                 bonds="auto",
                 style="framework",
                 atom_scale=float(defaults.get("plot_framework_mesh_scale", 0.65)),
-                bond_linewidth=float(defaults.get("plot_framework_bond_linewidth", 8.0)),
+                bond_linewidth=float(defaults.get("plot_framework_bond_linewidth", 3.75)),
             )
             fig.add_trace(scatter_traces["atoms"])
             fig.add_trace(scatter_traces["bonds"])
