@@ -888,6 +888,23 @@ def do_periodic_segmentation_rust( dgrid, mat_atoms, mask_thickness=0.05, h=0.2,
     )
     # lets find the core maxima ids (region labels), dont' forget to add 1 to get label from index
     valid_maxima_ids = np.where(valid_maxima_mask)[0] + 1
+    # A close-or-inside maximum that labels no voxel in the box was not indexed at
+    # priority 2/3 (see the guard in the indexing stages above); it is a padding node.
+    # Drop it from the valid set so close_or_inside_* stays a subset of unique_regions
+    # and connections touching it are classified periodic, not internal.
+    _in_box = np.isin(valid_maxima_ids, np.unique(regions))
+    if not np.all(_in_box):
+        _dropped = valid_maxima_ids[~_in_box]
+        logger.warning(
+            "close-or-inside maxima %s label no voxels in the box; treating as padding "
+            "nodes (periodic images). If pore-graph/pocket results look wrong for this "
+            "structure, try a larger mask_thickness (e.g. 0.5), which also removes small "
+            "shallow pockets.",
+            _dropped.tolist(),
+        )
+        valid_maxima_mask[_dropped - 1] = False
+        valid_maxima_ids = valid_maxima_ids[_in_box]
+    valid_maxima_indices = maxima_indices[valid_maxima_mask]
     # print("computed maxima close to the cell")
     # pairs_filtered = [p for p in pairs if np.any(np.isin(p, valid_maxima_ids))]
 
