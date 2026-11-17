@@ -4854,7 +4854,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
 
     function quaternionFromPlaneNormal(nx, ny, nz) {
       const zAxis = new THREE.Vector3(0, 0, 1);
-      const n = new THREE.Vector3(nx || 0, ny || 0, nz || 1);
+      const n = new THREE.Vector3(nx || 0, ny || 0, nz || 0);
       if (n.lengthSq() < 1e-12) n.set(0, 0, 1);
       else n.normalize();
       const q = new THREE.Quaternion();
@@ -4923,7 +4923,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         const cz = centers[i * 3 + 2] || 0;
         const nx = normals[i * 3] || 0;
         const ny = normals[i * 3 + 1] || 0;
-        const nz = normals[i * 3 + 2] || 1;
+        const nz = normals[i * 3 + 2] || 0;
         const r = Math.max(innerRadii[i] || 0.2, 0.05);
         q.copy(quaternionFromPlaneNormal(nx, ny, nz));
         dummy.position.set(cx, cy, cz);
@@ -4975,7 +4975,7 @@ _DEFAULT_THREEJS_TEMPLATE = r'''<!doctype html>
         const cz = centers[i * 3 + 2] || 0;
         const nx = normals[i * 3] || 0;
         const ny = normals[i * 3 + 1] || 0;
-        const nz = normals[i * 3 + 2] || 1;
+        const nz = normals[i * 3 + 2] || 0;
         const s = Math.max(scales[i] || 0.5, 0.05);
         q.copy(quaternionFromPlaneNormal(nx, ny, nz));
         dummy.position.set(cx, cy, cz);
